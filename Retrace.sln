@@ -1,0 +1,44 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{5340CC32-3A6E-47DD-9CB6-7F4F9F76CC23}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Retrace", "src\Retrace\Retrace.csproj", "{C1DE0497-5209-4B9D-B393-10C3BBCB5EA0}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0F55255A-4804-478F-8D48-D56BB76B98CE}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Retrace.Tests", "tests\Retrace.Tests\Retrace.Tests.csproj", "{E631C42D-AB88-4259-9C4C-1E5D63FDA46C}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "samples", "samples", "{B9ADB4A4-C91A-4E6A-A9C5-91A2BBA993F1}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Retrace.Samples", "samples\Retrace.Samples\Retrace.Samples.csproj", "{7D5272AD-604B-4307-99DB-1703E0770C6A}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{C1DE0497-5209-4B9D-B393-10C3BBCB5EA0}.Debug|x64.ActiveCfg = Debug|x64
+		{C1DE0497-5209-4B9D-B393-10C3BBCB5EA0}.Debug|x64.Build.0 = Debug|x64
+		{C1DE0497-5209-4B9D-B393-10C3BBCB5EA0}.Release|x64.ActiveCfg = Release|x64
+		{C1DE0497-5209-4B9D-B393-10C3BBCB5EA0}.Release|x64.Build.0 = Release|x64
+		{E631C42D-AB88-4259-9C4C-1E5D63FDA46C}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{E631C42D-AB88-4259-9C4C-1E5D63FDA46C}.Debug|x64.Build.0 = Debug|Any CPU
+		{E631C42D-AB88-4259-9C4C-1E5D63FDA46C}.Release|x64.ActiveCfg = Release|Any CPU
+		{E631C42D-AB88-4259-9C4C-1E5D63FDA46C}.Release|x64.Build.0 = Release|Any CPU
+		{7D5272AD-604B-4307-99DB-1703E0770C6A}.Debug|x64.ActiveCfg = Debug|x64
+		{7D5272AD-604B-4307-99DB-1703E0770C6A}.Debug|x64.Build.0 = Debug|x64
+		{7D5272AD-604B-4307-99DB-1703E0770C6A}.Release|x64.ActiveCfg = Release|x64
+		{7D5272AD-604B-4307-99DB-1703E0770C6A}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{C1DE0497-5209-4B9D-B393-10C3BBCB5EA0} = {5340CC32-3A6E-47DD-9CB6-7F4F9F76CC23}
+		{E631C42D-AB88-4259-9C4C-1E5D63FDA46C} = {0F55255A-4804-478F-8D48-D56BB76B98CE}
+		{7D5272AD-604B-4307-99DB-1703E0770C6A} = {B9ADB4A4-C91A-4E6A-A9C5-91A2BBA993F1}
+	EndGlobalSection
+EndGlobal

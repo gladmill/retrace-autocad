@@ -1,0 +1,84 @@
+<Project>
+  <!--
+    The AutoCAD autoloader bundle. Imported by src/Retrace/Retrace.csproj; runs after every build of it.
+
+    RetraceBundle (any OS) lays out src/Retrace/bin/<Configuration>/Retrace.bundle (a fixed path: it is deleted and rewritten):
+      PackageContents.xml                bundle/PackageContents.template.xml with {Version} (<Version>) and {Series} (<AutoCADSeries>)
+      Contents/Retrace.dll, Retrace.pdb  the build output (one dll: the dependencies are embedded, see Retrace.csproj)
+      Contents/trust-retrace.ps1         scripts/trust-retrace.ps1
+      Contents/LICENSE, THIRD-PARTY-NOTICES.txt
+
+    RetraceDeploy then installs it for this Windows user. It runs by default on Windows, outside CI, once this user has started
+    AutoCAD <AutoCADSeries> (its HKCU key holds CurVer). It replaces $(RetraceDeployDir), by default
+    %APPDATA%\Autodesk\ApplicationPlugins\Retrace.bundle, so AutoCAD loads the new build at its next start, and runs
+    trust-retrace.ps1 on it, which adds the folder to TRUSTEDPATHS in every AutoCAD profile of that release so that AutoCAD does
+    not stop at "Security - Unsigned Executable File". It changes nothing else (not SECURELOAD).
+    While AutoCAD has the installed Retrace.dll loaded, nothing is replaced (warning); while any AutoCAD runs, the trust step is
+    skipped (warning), because AutoCAD writes its profiles back when it exits.
+
+    Switches (also as environment variables): RetraceDeploy=false (bundle only) or true (install even without an AutoCAD
+    profile), RetraceTrust=false (install, leave TRUSTEDPATHS alone), RetraceDeployDir=<one folder ending in .bundle>.
+  -->
+  <PropertyGroup>
+    <_RetraceBundleDir>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', 'bin', '$(Configuration)', 'Retrace.bundle'))</_RetraceBundleDir>
+    <_RetraceCI Condition="'$(CI)' == 'true' Or '$(TF_BUILD)' != '' Or '$(JENKINS_URL)' != '' Or '$(TEAMCITY_VERSION)' != '' Or '$(ContinuousIntegrationBuild)' == 'true'">true</_RetraceCI>
+    <_RetraceAcadProfile Condition="'$(OS)' == 'Windows_NT'">$([MSBuild]::GetRegistryValue('HKEY_CURRENT_USER\Software\Autodesk\AutoCAD\$(AutoCADSeries)', 'CurVer'))</_RetraceAcadProfile>
+    <RetraceDeploy Condition="'$(RetraceDeploy)' == '' And '$(OS)' == 'Windows_NT' And '$(_RetraceCI)' != 'true' And '$(APPDATA)' != '' And '$(_RetraceAcadProfile)' != ''">true</RetraceDeploy>
+    <RetraceTrust Condition="'$(RetraceTrust)' == ''">true</RetraceTrust>
+    <RetraceDeployDir Condition="'$(RetraceDeployDir)' == '' And '$(APPDATA)' != ''">$(APPDATA)\Autodesk\ApplicationPlugins\Retrace.bundle</RetraceDeployDir>
+  </PropertyGroup>
+
+  <Target Name="RetraceBundle" AfterTargets="Build" Condition="'$(DesignTimeBuild)' != 'true'">
+    <Error Condition="'$(AutoCADSeries)' == ''" Text="Retrace.Bundle.targets: set AutoCADSeries (for example R25.1) in Retrace.csproj." />
+    <PropertyGroup>
+      <_RetraceManifest>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)PackageContents.template.xml').Replace('{Version}', '$(Version)').Replace('{Series}', '$(AutoCADSeries)').TrimEnd())</_RetraceManifest>
+    </PropertyGroup>
+    <ItemGroup>
+      <_RetraceContents Include="$(TargetPath)" />
+      <_RetraceContents Include="$(TargetDir)$(TargetName).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
+      <_RetraceContents Include="$(MSBuildThisFileDirectory)..\scripts\trust-retrace.ps1" />
+      <_RetraceContents Include="$(MSBuildThisFileDirectory)..\LICENSE" />
+      <_RetraceContents Include="$(MSBuildThisFileDirectory)..\THIRD-PARTY-NOTICES.txt" />
+    </ItemGroup>
+    <RemoveDir Directories="$(_RetraceBundleDir)" />
+    <Copy SourceFiles="@(_RetraceContents)" DestinationFolder="$(_RetraceBundleDir)Contents" />
+    <!-- Escape: the manifest holds characters MSBuild would otherwise treat as list separators or wildcards (Platform="AutoCAD*"). -->
+    <WriteLinesToFile File="$(_RetraceBundleDir)PackageContents.xml" Lines="$([MSBuild]::Escape($(_RetraceManifest)))" Overwrite="true" />
+    <Message Importance="high" Text="$(MSBuildProjectName) bundle -> $(_RetraceBundleDir)" />
+    <Message Importance="high" Condition="'$(OS)' == 'Windows_NT' And '$(RetraceDeploy)' == '' And '$(_RetraceCI)' != 'true'"
+             Text="$(MSBuildProjectName) not installed: this Windows user has not started AutoCAD $(AutoCADSeries) yet. Start it once, close it, and build again (or build with -p:RetraceDeploy=true)." />
+  </Target>
+
+  <Target Name="RetraceDeploy" AfterTargets="RetraceBundle" Condition="'$(RetraceDeploy)' == 'true' And '$(DesignTimeBuild)' != 'true'">
+    <Error Condition="'$(RetraceDeployDir)' == ''" Text="Retrace: APPDATA is not set, so there is no ApplicationPlugins folder to install to. Build with -p:RetraceDeploy=false, or set RetraceDeployDir." />
+    <!-- the folder is deleted and rewritten on every build: only ever one *.bundle folder (RemoveDir would split a list at ';') -->
+    <Error Condition="$(RetraceDeployDir.Contains(';')) Or $(RetraceDeployDir.Contains('*')) Or $(RetraceDeployDir.Contains('?')) Or !$(RetraceDeployDir.TrimEnd('\').ToLowerInvariant().EndsWith('.bundle'))"
+           Text="Retrace: RetraceDeployDir must be one folder whose name ends in .bundle (it is deleted and rewritten), not '$(RetraceDeployDir)'." />
+
+    <!-- AutoCAD keeps a loaded Retrace.dll open: try to remove the installed dll first, and change nothing else if it stays -->
+    <Delete Files="$(RetraceDeployDir)\Contents\Retrace.dll" ContinueOnError="true" />
+    <PropertyGroup>
+      <_RetraceInUse Condition="Exists('$(RetraceDeployDir)\Contents\Retrace.dll')">true</_RetraceInUse>
+    </PropertyGroup>
+    <Warning Condition="'$(_RetraceInUse)' == 'true'" Text="Retrace: $(RetraceDeployDir)\Contents\Retrace.dll is in use (AutoCAD has it loaded), so this build was not installed. Close AutoCAD and build again." />
+
+    <ItemGroup Condition="'$(_RetraceInUse)' != 'true'">
+      <_RetraceBundleFile Include="$(_RetraceBundleDir)**" />
+    </ItemGroup>
+    <RemoveDir Condition="'$(_RetraceInUse)' != 'true'" Directories="$([MSBuild]::Escape($(RetraceDeployDir)))" />
+    <Copy Condition="'$(_RetraceInUse)' != 'true'" SourceFiles="@(_RetraceBundleFile)" DestinationFiles="@(_RetraceBundleFile->'$(RetraceDeployDir)\%(RecursiveDir)%(Filename)%(Extension)')" />
+    <Message Condition="'$(_RetraceInUse)' != 'true'" Importance="high" Text="$(MSBuildProjectName) installed -> $(RetraceDeployDir) (AutoCAD loads it at its next start)" />
+
+    <!-- no trailing backslash before a closing quote: \" would escape the quote -->
+    <Exec Condition="'$(_RetraceInUse)' != 'true' And '$(RetraceTrust)' == 'true'"
+          Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(RetraceDeployDir.TrimEnd('\'))\Contents\trust-retrace.ps1&quot; -Folder &quot;$(RetraceDeployDir.TrimEnd('\'))&quot; -Series $(AutoCADSeries)"
+          ConsoleToMSBuild="true" IgnoreExitCode="true" IgnoreStandardErrorWarningFormat="true" EchoOff="true" StandardOutputImportance="normal">
+      <Output TaskParameter="ExitCode" PropertyName="_RetraceTrustExit" />
+      <Output TaskParameter="ConsoleOutput" PropertyName="_RetraceTrustOut" />
+    </Exec>
+    <Message Condition="'$(_RetraceTrustExit)' == '0'" Importance="high" Text="$(MSBuildProjectName) trusted -> $(RetraceDeployDir.TrimEnd('\'))\... is a Trusted Location in every AutoCAD $(AutoCADSeries) profile" />
+    <Warning Condition="'$(_RetraceTrustExit)' == '2'" Text="Retrace: AutoCAD is running, so the installed bundle was not made a Trusted Location (AutoCAD writes its profiles back when it exits). Close AutoCAD and build again." />
+    <Warning Condition="'$(_RetraceTrustExit)' == '3'" Text="Retrace: this Windows user has no AutoCAD $(AutoCADSeries) profile yet, so the bundle is not a Trusted Location. Start AutoCAD once (answer its security prompt with Load Once), close it, and build again." />
+    <Warning Condition="'$(_RetraceTrustExit)' != '' And '$(_RetraceTrustExit)' != '0' And '$(_RetraceTrustExit)' != '2' And '$(_RetraceTrustExit)' != '3'" Text="Retrace: trust-retrace.ps1 exited with $(_RetraceTrustExit): $(_RetraceTrustOut)" />
+  </Target>
+</Project>

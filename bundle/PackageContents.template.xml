@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ApplicationPackage SchemaVersion="1.0"
+                    ProductType="Application"
+                    Name="Retrace"
+                    Description="Records ribbon clicks, commands, prompts and dialogs during a manual test, replays them, and documents the AutoCAD UI from source."
+                    AppVersion="{Version}"
+                    Author="Retrace contributors"
+                    ProductCode="{B95EF013-0CDE-4A6F-9A2D-B1566DD338E5}"
+                    UpgradeCode="{2F9AC8ED-9790-4913-AE3B-76BDDEB2DF8F}">
+  <CompanyDetails Name="Retrace contributors" />
+  <Components>
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SeriesMin="{Series}" SeriesMax="{Series}" />
+    <ComponentEntry AppName="Retrace"
+                    Version="{Version}"
+                    ModuleName="./Contents/Retrace.dll"
+                    AppDescription="Retrace recorder, replayer and documentation builder"
+                    LoadOnAutoCADStartup="True"
+                    LoadOnCommandInvocation="False" />
+  </Components>
+</ApplicationPackage>

@@ -1,0 +1,71 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <Platforms>x64</Platforms>
+    <!-- lets macOS and Linux build the Windows target -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <UseWPF>true</UseWPF>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>Retrace</AssemblyName>
+    <RootNamespace>Retrace</RootNamespace>
+    <Version>0.1.0</Version>
+    <!-- Retrace.dll is the only file of the plugin: the packages below are embedded into it (target EmbedDependencies), not copied -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+    <!-- the WebView2 package would copy WebView2Loader.dll to runtimes\ next to Retrace.dll; the loader is embedded instead -->
+    <WebView2NeverCopyLoaderDllToOutputDirectory>true</WebView2NeverCopyLoaderDllToOutputDirectory>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- the AutoCAD release the bundle loads in (PackageContents.xml SeriesMin/SeriesMax); keep in step with the AutoCAD.NET package
+         below (the build passes it to trust-retrace.ps1 as -Series) -->
+    <AutoCADSeries>R25.1</AutoCADSeries>
+    <!-- Visual Studio skips MSBuild when the dll is up to date, and with it the bundle and the install (bundle/Retrace.Bundle.targets) -->
+    <DisableFastUpToDateCheck Condition="'$(OS)' == 'Windows_NT'">true</DisableFastUpToDateCheck>
+  </PropertyGroup>
+  <ItemGroup>
+    <Using Include="System.IO" />
+    <Using Include="Retrace.Core" />
+    <Using Include="Retrace.Engine.Util" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="AutoCAD.NET" Version="25.1.0" ExcludeAssets="runtime" />
+    <PackageReference Include="Markdig" Version="0.38.0" />
+    <!-- AutoCAD 2026 ships DocumentFormat.OpenXml 2.16.0 in its program folder and the runtime binds every load of that name to it, so build
+         against exactly that version and use AutoCAD's copy (not embedded). -->
+    <PackageReference Include="DocumentFormat.OpenXml" Version="2.16.0" ExcludeAssets="runtime" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2849.39" />
+  </ItemGroup>
+
+  <!--
+    One dll. The managed dependencies and the native WebView2 loader are embedded as resources with fixed names (Embedded/Dependencies.cs
+    loads them): Retrace.Deps.<file>.dll and Retrace.Deps.native.WebView2Loader.dll. Everything the build would copy next to Retrace.dll
+    is dropped from ReferenceCopyLocalPaths afterwards; a copy-local dll that is neither embedded nor on the ignore list fails the build,
+    so a new package cannot be forgotten.
+  -->
+  <PropertyGroup>
+    <EmbeddedDependencies>;Markdig;Microsoft.Web.WebView2.Core;Microsoft.Web.WebView2.Wpf;</EmbeddedDependencies>
+    <EmbeddedDependencyCount>3</EmbeddedDependencyCount>
+  </PropertyGroup>
+  <Target Name="EmbedDependencies" DependsOnTargets="ResolveReferences" BeforeTargets="AssignTargetPaths">
+    <ItemGroup>
+      <_CopyLocalDll Include="@(ReferenceCopyLocalPaths)" Condition="'%(Extension)' == '.dll'" />
+      <_EmbedDll Include="@(_CopyLocalDll)" Condition="$(EmbeddedDependencies.Contains(';%(Filename);')) And !$([System.String]::Copy('%(FullPath)').Replace('\', '/').Contains('/runtimes/'))" />
+      <_EmbedNative Include="@(_CopyLocalDll)" Condition="'%(Filename)' == 'WebView2Loader' And $([System.String]::Copy('%(FullPath)').Replace('\', '/').Contains('/runtimes/win-x64/native/'))" />
+      <_IgnoredDll Include="@(_CopyLocalDll)" Condition="'%(Filename)' == 'Microsoft.Web.WebView2.WinForms' Or '%(Filename)' == 'WebView2Loader'" />
+      <_ForgottenDll Include="@(_CopyLocalDll)" Exclude="@(_EmbedDll);@(_EmbedNative);@(_IgnoredDll)" />
+    </ItemGroup>
+    <Error Condition="'@(_ForgottenDll)' != ''" Text="Retrace.csproj: copy-local dll(s) not embedded: @(_ForgottenDll->'%(Filename)'). Add them to EmbeddedDependencies." />
+    <Error Condition="'@(_EmbedDll->Count())' != '$(EmbeddedDependencyCount)' Or '@(_EmbedNative->Count())' != '1'" Text="Retrace.csproj: expected $(EmbeddedDependencyCount) managed dependencies and 1 native loader to embed, found @(_EmbedDll->Count()) and @(_EmbedNative->Count())." />
+    <ItemGroup>
+      <EmbeddedResource Include="@(_EmbedDll)" LogicalName="Retrace.Deps.%(Filename)%(Extension)" WithCulture="false" Type="Non-Resx" />
+      <EmbeddedResource Include="@(_EmbedNative)" LogicalName="Retrace.Deps.native.%(Filename)%(Extension)" WithCulture="false" Type="Non-Resx" />
+      <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)" />
+    </ItemGroup>
+  </Target>
+
+  <!-- after every build: lay out bin/<Configuration>/Retrace.bundle; on Windows also install and trust it (see the file) -->
+  <Import Project="..\..\bundle\Retrace.Bundle.targets" />
+</Project>
