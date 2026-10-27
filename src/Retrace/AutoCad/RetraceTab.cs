@@ -34,8 +34,9 @@ public static class RetraceTab
         var src = new RibbonPanelSource();
         src.Title = "Record";
         src.Items.Add(Button("RETRACERECORD", "Record", "record", "^C^C_RETRACERECORD ", "Start recording a manual test. Asks for a name."));
-        src.Items.Add(Button("RETRACEMARK", "Checkpoint", "flag", "^C^C_RETRACEMARK ", "Add a checkpoint: a note of what you expect, plus a snapshot of the drawing, checked when the test is run."));
+        src.Items.Add(Button("RETRACEMARK", "Checkpoint", "flag", "^C^C_RETRACEMARK ", "Add a checkpoint now: a snapshot of the drawing that is checked when the test is run. No typing: it is named for you (checkpoint1_draw_grid_button_ok); rename it after Stop."));
         src.Items.Add(Button("RETRACESTOP", "Stop", "stop", "^C^C_RETRACESTOP ", "Stop recording, close the recording and write steps.md."));
+        src.Items.Add(Button("RETRACECHECKPOINTS", "Name checkpoints", "flag", "^C^C_RETRACECHECKPOINTS ", "See the checkpoints of the newest test with their pictures and rename them."));
         src.Items.Add(Button("RETRACESTEPS", "Steps", "book", "^C^C_RETRACESTEPS ", "Open the steps and screenshots written for the newest recording."));
         src.Items.Add(Button("RETRACESTATUS", "Status", "info", "^C^C_RETRACESTATUS ", "Show whether a recording is running, and where files go."));
         return Wrap(src);

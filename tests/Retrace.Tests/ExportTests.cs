@@ -188,7 +188,7 @@ public class ExportTests : IDisposable
         Assert.Contains("\n", Cell(rows[1], 2));     // sub-items joined with line breaks
         Assert.Equal("", Cell(rows[1], 3));
         Assert.Contains("line drawn", Cell(rows[3], 3));   // the checkpoint's expected text
-        Assert.Equal("screenshots/step-01-click.png", Cell(rows[1], 4));
+        Assert.StartsWith("screenshots/step-01-click.png", Cell(rows[1], 4));   // one line per picture, the link opens the first
         Assert.Equal(3, steps.HyperlinkRelationships.Count());   // a link per step that has a picture
         Assert.All(steps.HyperlinkRelationships, r => Assert.False(Path.IsPathRooted(r.Uri.OriginalString)));
         Assert.Equal("", Cell(rows[1], 5));
@@ -205,6 +205,24 @@ public class ExportTests : IDisposable
     }
 
     [Fact]
+    public void A_step_with_several_pictures_lists_all_of_them_and_links_the_first()
+    {
+        var md = "# t\n\n## Steps\n\n1. Click **Go**\n\n   ![a](screenshots/step-01-a.png)\n\n   ![b](screenshots/step-01-b%20x.png)\n\n   - Detail\n\n     ![c](screenshots/step-01-c.png)\n\n2. Next\n";
+        var doc = new Retrace.Engine.Recordings.StepsDoc(md, _root);
+        Assert.Equal(new[] { "screenshots/step-01-a.png", "screenshots/step-01-b%20x.png", "screenshots/step-01-c.png" }, doc.Steps[0].Pictures);
+        Assert.Empty(doc.Steps[1].Pictures);
+        var xlsx = Path.Combine(_root, "multi.xlsx");
+        Retrace.Engine.Recordings.ExportXlsx.Write(doc, _root, xlsx);
+        using var xl = SpreadsheetDocument.Open(xlsx, false);
+        NoErrors(xl);
+        var wb = xl.WorkbookPart!;
+        var sheet = (WorksheetPart)wb.GetPartById(wb.Workbook!.Sheets!.Elements<S.Sheet>().First().Id!);
+        var cell = sheet.Worksheet!.Descendants<S.Row>().ElementAt(1).Elements<S.Cell>().ElementAt(4);
+        Assert.Equal("screenshots/step-01-a.png\nscreenshots/step-01-b x.png\nscreenshots/step-01-c.png", cell.InnerText);
+        Assert.Equal("screenshots/step-01-a.png", sheet.HyperlinkRelationships.Single().Uri.OriginalString);
+    }
+
+    [Fact]
     public void Steps_are_read_back_from_the_script()
     {
         var doc = StepsDoc.Load(Path.Combine(TestFolder(), "steps.md"));
@@ -212,7 +230,7 @@ public class ExportTests : IDisposable
         Assert.Equal(3, doc.Steps.Count);
         Assert.Equal([1, 2, 3], doc.Steps.Select(s => s.Number).ToArray());
         Assert.StartsWith("a new empty drawing", doc.StartWith);
-        Assert.Equal("screenshots/step-02-dialog-before.png", doc.Steps[1].Picture);
+        Assert.Equal("screenshots/step-02-dialog-before.png", doc.Steps[1].Pictures[0]);
         Assert.StartsWith("Check:", doc.Steps[2].Action);
     }
 

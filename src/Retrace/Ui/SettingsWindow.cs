@@ -26,6 +26,7 @@ sealed class SettingsWindow : Window
     readonly CheckBox _shots = new() { Content = "Take screenshots while recording (saved in the test folder, used by steps.md)", Margin = new Thickness(0, 10, 0, 0) };
     readonly CheckBox _autoFill = new() { Content = "RETRACERUN fills dialogs with the recorded values and closes them (else you do it)", Margin = new Thickness(0, 6, 0, 0) };
     readonly CheckBox _dialogValues = new() { Content = "Record which values you change in dialogs (shown in the test script)", Margin = new Thickness(0, 6, 0, 0) };
+    readonly CheckBox _review = new() { Content = "After Stop, show the checkpoints so you can rename them", Margin = new Thickness(0, 6, 0, 0), ToolTip = "Opens the checkpoints window when a recording with checkpoints stops. RETRACECHECKPOINTS opens it any time." };
     readonly CheckBox _docx = new() { Content = "Also write Word (.docx)", Margin = new Thickness(0, 6, 0, 0), ToolTip = "steps.docx next to steps.md, made when a recording is stopped." };
     readonly CheckBox _xlsx = new() { Content = "Also write Excel (.xlsx)", Margin = new Thickness(0, 6, 0, 0), ToolTip = "steps.xlsx next to steps.md: one row per step with a PASS / FAIL column." };
     readonly ComboBox _tabPos = new() { MinWidth = 320, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(8, 0, 0, 0) };
@@ -68,6 +69,8 @@ sealed class SettingsWindow : Window
         root.Children.Add(_dialogValues);
         _autoFill.IsChecked = current.AutoFillDialogs;
         root.Children.Add(_autoFill);
+        _review.IsChecked = current.ReviewCheckpoints;
+        root.Children.Add(_review);
         _docx.IsChecked = current.ExportDocx;
         root.Children.Add(_docx);
         _xlsx.IsChecked = current.ExportXlsx;
@@ -184,6 +187,7 @@ sealed class SettingsWindow : Window
         _shots.IsChecked = true;
         _dialogValues.IsChecked = true;
         _autoFill.IsChecked = true;
+        _review.IsChecked = true;
         _docx.IsChecked = false;
         _xlsx.IsChecked = false;
         _tabPos.SelectedIndex = 0;
@@ -200,6 +204,7 @@ sealed class SettingsWindow : Window
         s.Screenshots = _shots.IsChecked == true;
         s.DialogValues = _dialogValues.IsChecked == true;
         s.AutoFillDialogs = _autoFill.IsChecked == true;
+        s.ReviewCheckpoints = _review.IsChecked == true;
         s.ExportDocx = _docx.IsChecked == true;
         s.ExportXlsx = _xlsx.IsChecked == true;
         var pos = _tabPos.SelectedIndex >= 0 ? _tabPosValues[_tabPos.SelectedIndex] : RibbonTabPosition.AfterHome;

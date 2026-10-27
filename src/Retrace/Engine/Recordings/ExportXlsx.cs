@@ -80,10 +80,11 @@ public static class ExportXlsx
             row.Append(Str(1, r, s.Action, Bold));
             row.Append(Str(2, r, s.Details, Wrap));
             row.Append(Str(3, r, s.Check, Wrap));
-            if (s.Picture != null)
+            if (s.Pictures.Count > 0)
             {
-                var rel = part.AddHyperlinkRelationship(new Uri(s.Picture, UriKind.Relative), true);
-                row.Append(Str(4, r, Uri.UnescapeDataString(s.Picture), Link));
+                // One line per picture, in the order the script shows them. A cell holds one hyperlink: it opens the first picture.
+                var rel = part.AddHyperlinkRelationship(new Uri(s.Pictures[0], UriKind.Relative), true);
+                row.Append(Str(4, r, string.Join("\n", s.Pictures.Select(Uri.UnescapeDataString)), Link));
                 links.Append(new Hyperlink { Reference = Ref(4, r), Id = rel.Id });
             }
             else row.Append(Str(4, r, "", Wrap));

@@ -193,6 +193,8 @@ public sealed class RecordingStep
     public List<RecordingStep> InnerDialogs { get; } = new();
     // mark / doc
     public string? Note { get; set; }
+    /// <summary>mark: the event's `n` (what a rename refers to); null in recordings without event numbers.</summary>
+    public long? N { get; init; }
     /// <summary>mark: the drawing state at the checkpoint (null in sessions recorded before checkpoints carried state).</summary>
     public RecordingState? State { get; set; }
     // set by the joiner
@@ -423,7 +425,7 @@ public static class RecordingReader
                     }
                     break;
                 case "mark":
-                    s.Steps.Add(new RecordingStep { Kind = "mark", T = e.T, Note = e.Str("note"), State = e.Raw.TryGetProperty("state", out var ms) ? RecordingState.From(ms) : null });
+                    s.Steps.Add(new RecordingStep { Kind = "mark", T = e.T, N = e.N, Note = e.Str("note"), State = e.Raw.TryGetProperty("state", out var ms) ? RecordingState.From(ms) : null });
                     break;
                 case "state": // the drawing as it was when recording started; not a step
                     if (s.InitialState == null && e.Raw.TryGetProperty("state", out var st0)) s.InitialState = RecordingState.From(st0);
