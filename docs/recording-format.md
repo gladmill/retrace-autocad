@@ -79,9 +79,11 @@ Every event has `t` (ms since the recording started), `n` (the event's number: 1
 | `modal_title` | `title`, `windowClass`, sent 300 ms after `modal_enter` if the foreground window changed (the dialog often is not foreground yet at `EnterModal`) | |
 | `dialog_values` | `for` (`n` of the dialog's `modal_title` event, else of its `modal_enter`), `title`, `source` (`win32` or `uia`), `fields` (only the fields that changed: `key`, `label`, `kind`, `before`, `after`), `read` (how many fields were read), `closedWith` (`ok` or `cancel`; left out when the dialog was closed some other way) | written when the dialog closes, just before its `modal_leave`; see below. Only with setting `dialogValues` on (default). `read: 0` = nothing could be read |
 | `modal_leave` | | `Application.LeaveModal` |
+| `palette_values` | `palette` (the palette's name: its tab in the set), `set` (the palette set's title), `source` (`win32` or `wpf`), `fields` (as in `dialog_values`), `read` | the user changed fields in a palette set and then clicked a push button in it (written just before that `palette_click`), moved to another palette, or did something outside it; also before a checkpoint and at Stop. Only with setting `dialogValues` on. See "Palette sets" |
+| `palette_click` | `palette`, `set`, `button` (the push button's text), `index` (only when several enabled buttons of the palette have that text: which one, 1 = the first) | a click on a push button in a palette set, or Space on a focused WinForms push button (read before the button acts) |
 | `doc_active`, `doc_created`, `doc_closing` | | `DocumentActivated`, `DocumentCreated`, `DocumentToBeDestroyed` |
 | `state` | `state` (a drawing digest) | `RETRACERECORD`: written right after the header, the drawing as it was when recording started. Readers treat it as session metadata, not a step |
-| `mark` | `note` (the checkpoint's name: the automatic one, or what the person typed in the Checkpoints window or at `-RETRACEMARK`; empty in older recordings), `autoName` (the automatic name, `checkpoint<n>` plus where the last action happened: `_<dialog title>_button_<ok\|cancel>`, `_<ribbon panel>_button_<button text>` or `_cmd_<command>`, in lowercase words joined by `_`; missing in older recordings), `state` (a drawing digest, left out if the drawing could not be read) | `RETRACEMARK`, `-RETRACEMARK` |
+| `mark` | `note` (the checkpoint's name: the automatic one, or what the person typed in the Checkpoints window or at `-RETRACEMARK`; empty in older recordings), `autoName` (the automatic name, `checkpoint<n>` plus where the last action happened: `_<dialog title>_button_<ok\|cancel>`, `_<ribbon panel>_button_<button text>`, `_<palette>_button_<button text>` (`_<palette>_palette` when only values changed) or `_cmd_<command>`, in lowercase words joined by `_`; with the checkpoint shortcut and the cursor on a palette control or a ribbon item, `_<palette or panel>_<control>` instead; missing in older recordings), `state` (a drawing digest, left out if the drawing could not be read), `near` (the shortcut only: what was at the cursor, in a sentence: the control under it or nearest it, its value, and up to three controls near it; left out when the cursor was not on a palette or the ribbon) | `RETRACEMARK`, `-RETRACEMARK`, the checkpoint shortcut (setting `checkpointKey`) |
 | `shot` | `for` (the `n` of the event the picture belongs to), `file` (path of the PNG relative to the recording file, forward slashes: `screenshots/012-ribbon.png` as recorded, `screenshots/step-02-click.png` after the steps are written, `screenshots/unused/004-prompt.png` for a picture the steps do not show), `what` (`window` = AutoCAD's main window, `dialog` = the dialog in front, shortly after it opened; `dialog-after` = the same dialog at the moment OK or Enter was pressed, file `NNN-dialog-after.png`, one per dialog, only while dialog values are on) | a screenshot taken after the event, see below. Written some 100 to 300 ms after the event it belongs to, so it sits later in the file |
 | `session_end` | | `RETRACESTOP` |
 
@@ -114,16 +116,51 @@ The recorder finds the dialog window (the foreground window of AutoCAD's process
 `fields` holds only the changed ones; an event with empty `fields` and `read > 0` means "looked, nothing changed". Nested dialogs each get their own event.
 
 - `kind`: `edit`, `check` (`on`/`off`/`mixed`), `radio` (`before`/`after` = text of the checked radio of the group; `label` lists the group's radios as `A / B`), `combo`, `list`, `slider`.
-- `key`: `id:<control id>` if the id is non-zero and unique in the dialog, else `label:<label>#<occurrence>`. `label` is the control's own text (check, radio), else the nearest static text left of it on the same row or just above it, else `#<control id>`.
+- `key`: `name:<control name>` for a WinForms control with a unique `Name` (stable between runs; WinForms window ids are not), else `id:<control id>` if the id is non-zero and unique in the dialog, else `label:<label>#<occurrence>`. `label` is the control's own text (check, radio), else the nearest static text left of it on the same row or just above it, else `#<control id>`.
 - `source` `win32`: child windows (stock AutoCAD dialogs, DCL, WinForms, MFC). `uia`: no readable child windows (WPF), read through UI Automation on a pool thread (at most 200 elements, 1 s); a radio is then one field per button with `on`/`off`.
 - Values are cut at 200 characters. Password edits and read-only edits are skipped.
 - Readers: events without a matching `for`, or recordings without the event, change nothing.
 
+### Palette sets (`palette_values`, `palette_click`)
+
+A palette set is not a dialog: there is no modal phase to watch. The recorder looks at every click and key press (`PreTranslateMessage`): if it lands
+in a palette with .NET content (WinForms or WPF windows under AutoCAD's palette windows: palette, palette set, control bar), it reads that palette's
+fields (the initial values), again every ~300 ms while the user works in it, and once more at a push-button click or when input goes elsewhere. It
+then writes the changed fields (`palette_values`, nothing if none changed) and the click (`palette_click`). Readers make one step of a
+`palette_values` followed directly by a `palette_click` of the same palette.
+
+- `source` `win32`: the fields are child windows (WinForms), read like a dialog; WinForms check boxes and radio buttons are asked through WinForms.
+  `wpf`: read in process from the WPF visual tree (text boxes, check boxes, radio buttons, combo boxes, sliders); the label is the control's
+  automation name, its own text, a `Label` that targets it, the `Label` or `TextBlock` before it in its panel, else its `x:Name`.
+- Not read: AutoCAD's native palettes (no .NET content), the ribbon (hosted the same way, ruled out by its window), and Retrace's guide palette.
+- Pictures: besides the window picture (`<n>-palette.png`), a palette step gets a `shot` with `what` `"palette"` (file
+  `<n>-palette-closeup.png`, named `step-NN-palette.png` in steps.md): the palette's control bar as it looked while open, taken when the button
+  was pressed, else the last one taken while the user worked in it (taken again when its values change). Only with setting `screenshots`. The
+  recorder never opens a palette to take it.
+- Labels: a WinForms control's `AccessibleName` is its label when set; else the static text left of or above it. Give fields next to text that
+  changes (a status line such as "21 parts") an `AccessibleName`, or the steps name them after that text.
+- Keys: `name:<Name>` for a WinForms control's `Name` or a WPF element's `x:Name` when unique; else as for dialogs. Labels: a WinForms control's
+  `AccessibleName`, a WPF element's `AutomationProperties.Name`, else the text next to it.
+- Replay (`RETRACERUN`): finds the palette by `set` and `palette` (also while it is auto-hidden), sets the recorded values the palette does not
+  show yet (matched by name, else like dialog values), checks them, and presses the button (the `index`-th enabled one with that text).
+  WinForms: values through the controls (a NumericUpDown through its `Value`), a posted click. WPF: in process through the visual tree; a
+  TextBox's binding is pushed to its source at once, a list or combo item is chosen by the text it shows (its data template too), the button is
+  pressed through its automation peer (Click handlers and its Command run). A press that runs code at once is queued, never run inside the
+  replay's own tick. A step that cannot be done yet (a list still empty because an async call has not answered, a button still disabled) is
+  tried again every 0.5 s for up to 15 s. If the button started a command, the recorded answers are typed into it once it runs (a command
+  without prompts may already be done; it may start up to 30 s after the press). Check boxes are toggled the way a click does (their Click
+  handlers and commands run). A field that already shows the recorded value is not set again: its change handler does not run, so a palette
+  left open from an earlier run keeps what that run did. A field that rewrites what is typed (upper case, a format) never shows the
+  recorded text and needs a person. A missing palette, field or button after that: a person does the step and clicks Next; unattended
+  (`RETRACEREPLAY ... Auto`) the run stops as `INCOMPLETE`.
+
 ### `origin` on `cmd_start`
 
 `"ribbon"` if a `ribbon` event happened at most 2000 ms earlier, was not yet matched to another command, and its `macro`
-contains the command name (ignoring `^C`, `_`, `.`, `-` prefixes); `via` is then that item's `id`. Otherwise `"typed/other"`
-(typed, a toolbar, a LISP call, a palette, a script...). Commands that start while another one runs (transparent, nested) are
+contains the command name (ignoring `^C`, `_`, `.`, `-` prefixes); `via` is then that item's `id`. Else `"palette"` if a
+`palette_click` happened at most 30 s earlier, was not yet matched, and no other click or key press came in between (a palette button that
+runs a command with `SendStringToExecute`, also after an awaited call); `via` is then the button's text, and readers make the command and its answers part of that palette step.
+Otherwise `"typed/other"` (typed, a toolbar, a LISP call, a script...). Commands that start while another one runs (transparent, nested) are
 recorded the same way; readers treat a `cmd_start` before the matching `cmd_end` as nested.
 
 ### `prompt`

@@ -13,8 +13,9 @@ public readonly record struct Box(int Left, int Top, int Right, int Bottom)
 public sealed record DialogField(string Key, string Label, string Kind, string Value);
 
 /// <summary>A control as the reader saw it, before grouping and keying.
-/// Kind "radio" = a Win32 radio button (value "on"/"off"; consecutive radios form a group), "radio1" = a stand-alone radio (UI Automation).</summary>
-public sealed record RawControl(int Id, string Label, string Kind, string Value, bool GroupStart = false, long Parent = 0);
+/// Kind "radio" = a Win32 radio button (value "on"/"off"; consecutive radios form a group), "radio1" = a stand-alone radio (UI Automation).
+/// Name: the control's own name where the toolkit has one (WinForms <c>Control.Name</c>): stable between runs, unlike WinForms window ids.</summary>
+public sealed record RawControl(int Id, string Label, string Kind, string Value, bool GroupStart = false, long Parent = 0, string? Name = null);
 
 public sealed record FieldChange(string Key, string Label, string Kind, string Before, string After);
 
@@ -120,14 +121,14 @@ public static class DialogFieldsCore
     /// (one, or all radios of a group). The filler uses it to find the live control behind a field.</summary>
     public static List<(DialogField Field, IReadOnlyList<int> Raw)> BuildMapped(IReadOnlyList<RawControl> raw)
     {
-        var items = new List<(int Id, string Label, string Kind, string Value, List<int> Raw)>();
+        var items = new List<(int Id, string Label, string Kind, string Value, List<int> Raw, string? Name)>();
         var group = new List<RawControl>();
         var groupIdx = new List<int>();
         void Flush()
         {
             if (group.Count == 0) return;
             var sel = group.FirstOrDefault(r => r.Value == "on");
-            items.Add((group[0].Id, string.Join(" / ", group.Select(r => r.Label)), "radio", sel?.Label ?? "", new List<int>(groupIdx)));
+            items.Add((group[0].Id, string.Join(" / ", group.Select(r => r.Label)), "radio", sel?.Label ?? "", new List<int>(groupIdx), null));
             group.Clear(); groupIdx.Clear();
         }
         for (int ri = 0; ri < raw.Count; ri++)
@@ -140,18 +141,21 @@ public static class DialogFieldsCore
                 continue;
             }
             Flush();
-            items.Add((r.Id, r.Label, r.Kind == "radio1" ? "radio" : r.Kind, r.Value, new List<int> { ri }));
+            items.Add((r.Id, r.Label, r.Kind == "radio1" ? "radio" : r.Kind, r.Value, new List<int> { ri }, r.Name));
         }
         Flush();
 
         var idCount = new Dictionary<int, int>();
         foreach (var i in items) idCount[i.Id] = idCount.GetValueOrDefault(i.Id) + 1;
+        var nameCount = new Dictionary<string, int>();
+        foreach (var i in items) if (!string.IsNullOrEmpty(i.Name)) nameCount[i.Name] = nameCount.GetValueOrDefault(i.Name) + 1;
         var labelSeen = new Dictionary<string, int>();
         var result = new List<(DialogField, IReadOnlyList<int>)>();
         foreach (var i in items)
         {
             var occ = labelSeen[i.Label] = labelSeen.GetValueOrDefault(i.Label) + 1;
-            var key = i.Id is not (0 or -1 or 0xFFFF) && idCount[i.Id] == 1 ? $"id:{i.Id}" : $"label:{i.Label}#{occ}";
+            var key = !string.IsNullOrEmpty(i.Name) && nameCount[i.Name] == 1 ? $"name:{i.Name}"
+                    : i.Id is not (0 or -1 or 0xFFFF) && idCount[i.Id] == 1 ? $"id:{i.Id}" : $"label:{i.Label}#{occ}";
             result.Add((new DialogField(key, i.Label, i.Kind, Clip(i.Value)), i.Raw));
         }
         return result;

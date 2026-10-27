@@ -158,7 +158,8 @@ public sealed record RecordingDialogValue(string Label, string Kind, string Befo
 /// <summary>One thing the tester did: a ribbon click, a typed command, a dialog, a checkpoint note...</summary>
 public sealed class RecordingStep
 {
-    /// <summary>ribbon | command | lisp | dialog | mark | doc</summary>
+    /// <summary>ribbon | command | lisp | dialog | palette | mark | doc. A palette step: <see cref="DialogTitle"/> is the palette (its tab in the
+    /// palette set), <see cref="Panel"/> the palette set, <see cref="Text"/> the button clicked (null: values only), <see cref="Values"/> what changed.</summary>
     public string Kind { get; init; } = "";
     public long T { get; init; }
     // ribbon
@@ -193,6 +194,8 @@ public sealed class RecordingStep
     public List<RecordingStep> InnerDialogs { get; } = new();
     // mark / doc
     public string? Note { get; set; }
+    /// <summary>mark: what the checkpoint shortcut found at the cursor (`near`), or null.</summary>
+    public string? Description { get; set; }
     /// <summary>mark: the event's `n` (what a rename refers to); null in recordings without event numbers.</summary>
     public long? N { get; init; }
     /// <summary>mark: the drawing state at the checkpoint (null in sessions recorded before checkpoints carried state).</summary>
@@ -320,6 +323,7 @@ public static class RecordingReader
         int depth = 0;
         bool inLisp = false;
         RecordingStep? modal = null;
+        RecordingStep? palette = null;   // the last palette step: a click right after its values joins it
         var modalByN = new Dictionary<long, RecordingStep>();   // event n of modal_enter / modal_title -> its dialog step
         string? firstDoc = null, lastDoc = null;
         var targets = new Dictionary<long, List<RecordingShot>>();
@@ -349,7 +353,14 @@ public static class RecordingReader
                     var origin = e.Str("origin") ?? (!ribbonConsumed && lastRibbon != null && e.T - lastRibbon.T <= RibbonAttributionMs && MacroMentions(lastRibbon.Macro, cmd) ? "ribbon" : "typed/other");
                     // built-in buttons carry no macro and older recorders then wrote "typed/other": a command within 1 s is the click's
                     if (origin != "ribbon" && !ribbonConsumed && lastRibbon is { Macro: null } && e.T - lastRibbon.T <= 1000) origin = "ribbon";
-                    if (origin == "ribbon" && lastRibbon != null)
+                    // a palette button that runs a command (SendStringToExecute): the command and its answers are part of the palette step
+                    if (origin == "palette" && palette is { Command: null, Text: not null } && s.Steps.Count > 0 && ReferenceEquals(s.Steps[^1], palette))
+                    {
+                        palette.Command = cmd;
+                        palette.Commands.Add(cmd);
+                        cur = palette;
+                    }
+                    else if (origin == "ribbon" && lastRibbon != null)
                     {
                         ribbonConsumed = true;
                         lastRibbon.Command ??= cmd;
@@ -424,8 +435,26 @@ public static class RecordingReader
                             }
                     }
                     break;
+                case "palette_values":
+                case "palette_click":
+                {
+                    var name = e.Str("palette"); var set = e.Str("set");
+                    // values and the click that applies them are one step: "make these changes, then click Draw box"
+                    bool join = e.Type == "palette_click" && palette != null && s.Steps.Count > 0 && ReferenceEquals(s.Steps[^1], palette)
+                                && palette.Text == null && palette.DialogTitle == name && palette.Panel == set;
+                    if (!join) { palette = new RecordingStep { Kind = "palette", T = e.T, N = e.N, DialogTitle = name, Panel = set }; s.Steps.Add(palette); }
+                    if (e.Type == "palette_click") { palette!.Text = e.Str("button"); break; }
+                    palette!.ValuesRead = e.Raw.TryGetProperty("read", out var prd) && prd.ValueKind == JsonValueKind.Number && prd.TryGetInt32(out var prn) ? prn : 0;
+                    if (e.Raw.TryGetProperty("fields", out var pfs) && pfs.ValueKind == JsonValueKind.Array)
+                        foreach (var f in pfs.EnumerateArray())
+                        {
+                            string S(string k) => f.ValueKind == JsonValueKind.Object && f.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
+                            palette.Values.Add(new RecordingDialogValue(S("label"), S("kind"), S("before"), S("after")));
+                        }
+                    break;
+                }
                 case "mark":
-                    s.Steps.Add(new RecordingStep { Kind = "mark", T = e.T, N = e.N, Note = e.Str("note"), State = e.Raw.TryGetProperty("state", out var ms) ? RecordingState.From(ms) : null });
+                    s.Steps.Add(new RecordingStep { Kind = "mark", T = e.T, N = e.N, Note = e.Str("note"), Description = e.Str("near"), State = e.Raw.TryGetProperty("state", out var ms) ? RecordingState.From(ms) : null });
                     break;
                 case "state": // the drawing as it was when recording started; not a step
                     if (s.InitialState == null && e.Raw.TryGetProperty("state", out var st0)) s.InitialState = RecordingState.From(st0);
@@ -448,6 +477,7 @@ public static class RecordingReader
                 "cmd_end" or "cmd_cancel" or "cmd_fail" or "lisp_end" or "lisp_cancel" => cur?.EndShots,
                 "prompt" => added?.Shots,
                 "modal_enter" or "modal_title" => modal?.Shots,
+                "palette_values" or "palette_click" => palette?.Shots,
                 "mark" => s.Steps.Count > 0 ? s.Steps[^1].Shots : null,
                 _ => null,
             };

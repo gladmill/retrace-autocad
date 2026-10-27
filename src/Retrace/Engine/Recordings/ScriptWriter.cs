@@ -40,7 +40,7 @@ public static class ScriptWriter
     private static int CountSteps(RecordingSession s) => s.Steps.Count(IsNumbered);
 
     /// <summary>True for the steps the script numbers (the kinds <see cref="StepWording.Render"/> writes; a dialog a command opened is part of that command's step).</summary>
-    public static bool IsNumbered(RecordingStep st) => st.Kind is "ribbon" or "command" or "lisp" or "mark" or "doc" || (st.Kind == "dialog" && st.OpenedIn == null);
+    public static bool IsNumbered(RecordingStep st) => st.Kind is "ribbon" or "command" or "lisp" or "palette" or "mark" or "doc" || (st.Kind == "dialog" && st.OpenedIn == null);
 
     public static string Build(RecordingSession s, SourceMapIndex? map, string scriptDir, List<string> warnings, ShotNamer? namer = null, bool filesTable = false)
     {

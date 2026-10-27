@@ -123,6 +123,7 @@ internal static unsafe class Win32
     [DllImport("user32")] public static extern int FillRect(IntPtr hdc, ref RECT r, IntPtr brush);
     [DllImport("user32", EntryPoint = "DrawTextW", CharSet = CharSet.Unicode)] public static extern int DrawText(IntPtr hdc, string text, int len, ref RECT r, uint format);
     [DllImport("user32")] public static extern IntPtr LoadCursor(IntPtr hInst, IntPtr name);
+    [DllImport("user32")] public static extern short GetKeyState(int vk);
     [DllImport("user32")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
 
     // gdi32

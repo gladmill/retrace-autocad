@@ -91,6 +91,31 @@ public sealed partial class Commands
     /// <summary>-RETRACEMARK: the same, but asks for the name on the command line (Enter = the automatic name). For scripts.</summary>
     public void MarkAsk() => MarkCore(ask: true);
 
+    /// <summary>The checkpoint shortcut (<see cref="CheckpointKey"/>): the same checkpoint as RETRACEMARK, taken outside any command. Pressed
+    /// during a command, it is taken when that command ends (the recorder calls this again): a replay can only check the drawing between
+    /// steps, and the command keeps running undisturbed.</summary>
+    /// <param name="at">what was at the cursor when the key was pressed (<see cref="CursorContext"/>): the checkpoint is named after it</param>
+    public void MarkFromKey(Checkpoints.CheckpointContext? at = null)
+    {
+        var doc = AcApp.DocumentManager.MdiActiveDocument;
+        var rec = Recorder.Instance;
+        if (doc == null || !rec.IsRecording) return;
+        if (!string.IsNullOrEmpty(doc.CommandInProgress))
+        {
+            if (!rec.MarkPending) doc.Editor.WriteMessage($"\nCheckpoint: taken when {doc.CommandInProgress} ends.\n" + (rec.OpenPrompt ?? ""));
+            rec.MarkPending = true;
+            rec.PendingAt = at;
+            return;
+        }
+        rec.MarkPending = false;
+        var state = DrawingState.Read(doc);
+        var name = Recorder.Instance.Mark(null, state, at);
+        var msg = name == null ? "Checkpoint NOT saved: the recording could not be written (see retrace.log)."
+                : state == null ? $"Checkpoint saved: {name} (drawing state could not be read)." : $"Checkpoint saved: {name} ({state.Summary()}).";
+        doc.Editor.WriteMessage("\n" + msg + "\n");
+        doc.Editor.PostCommandPrompt();
+    }
+
     void MarkCore(bool ask)
     {
         var ed = Ed; if (ed == null) return;

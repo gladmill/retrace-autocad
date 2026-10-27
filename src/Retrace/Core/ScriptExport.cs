@@ -25,6 +25,9 @@ public static class ScriptExport
                 case "dialog":
                     sb.AppendLine($"; MANUAL: dialog \"{s.DialogTitle}\" - not scriptable, fill in by hand and continue");
                     break;
+                case "palette":
+                    sb.AppendLine($"; MANUAL: {s.Title} - not scriptable, do it in the palette by hand and continue");
+                    break;
                 case "ribbon" or "command" or "lisp":
                 {
                     sb.AppendLine($"; {s.Title}");

@@ -47,6 +47,7 @@ public static class ShotRules
         "cmd_cancel" => new ShotRequest(n, "cmd-cancel", ShotTarget.Window, nowMs + SettleMs),
         "cmd_fail" => new ShotRequest(n, "cmd-fail", ShotTarget.Window, nowMs + SettleMs),
         "mark" => new ShotRequest(n, "mark", ShotTarget.Window, nowMs + SettleMs),
+        "palette_values" or "palette_click" => new ShotRequest(n, "palette", ShotTarget.Window, nowMs + SettleMs),
         _ => null,
     };
 

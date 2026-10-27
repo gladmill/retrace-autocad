@@ -76,6 +76,13 @@ public static class FillMatcher
         {
             var r = recorded[i];
             result[i] = -1;
+            // a control's own name (WinForms) is stable between runs: it decides before any label
+            if (r.Key.StartsWith("name:", StringComparison.Ordinal))
+            {
+                int byName = -1;
+                for (int j = 0; j < live.Count; j++) if (!used.Contains(j) && live[j].Key == r.Key && live[j].Kind == r.Kind) { byName = j; break; }
+                if (byName >= 0) { used.Add(byName); result[i] = byName; continue; }
+            }
             var same = new List<int>();   // live fields with the label, in dialog order
             for (int j = 0; j < live.Count; j++) if (SameLabel(live[j].Label, r.Label)) same.Add(j);
             if (same.Count == 0) for (int j = 0; j < live.Count; j++) if (SameLeaf(live[j].Label, r.Label)) same.Add(j);
@@ -105,6 +112,11 @@ public static class FillMatcher
     public static string Expected(FieldChange c) => c.Kind == "radio" && c.After == "on" ? c.Label : c.After;
 
     /// <summary>A radio group recorded as "none selected" cannot be put back to that: nothing to do.</summary>
+    /// <summary>Does the live value show the recorded change? A radio button read on its own (WinForms, UI Automation) reads "on"/"off", not the
+    /// text of the chosen button.</summary>
+    public static bool Satisfied(FieldChange c, string? current) =>
+        current != null && (c.Kind == "radio" && c.After == "on" && current is "on" or "off" ? current == "on" : ValueMatches(c.Kind, Expected(c), current));
+
     public static bool IsNoOp(FieldChange c) => c.Kind == "radio" && c.After is "" or "off";
 
     static string LastPart(string s) { var i = s.LastIndexOf(" › ", StringComparison.Ordinal); return i < 0 ? s : s[(i + 3)..]; }

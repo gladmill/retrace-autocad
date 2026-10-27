@@ -172,6 +172,9 @@ public sealed partial class Commands
                 var rc = ed.GetKeywords(new PromptKeywordOptions($"\nShow the checkpoints to rename after Stop [Yes/No] <{(s.ReviewCheckpoints ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
                 if (rc.Status == PromptStatus.Cancel) return;
                 n.ReviewCheckpoints = rc.Status == PromptStatus.OK ? rc.StringResult == "Yes" : s.ReviewCheckpoints;
+                var su = ed.GetKeywords(new PromptKeywordOptions($"\nRun test opens hidden palettes while it drives them [Yes/No] <{(s.ShowDrivenUi ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
+                if (su.Status == PromptStatus.Cancel) return;
+                n.ShowDrivenUi = su.Status == PromptStatus.OK ? su.StringResult == "Yes" : s.ShowDrivenUi;
                 var xd = ed.GetKeywords(new PromptKeywordOptions($"\nAlso write a Word file (steps.docx) [exportDocx] [Yes/No] <{(s.ExportDocx ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
                 if (xd.Status == PromptStatus.Cancel) return;
                 n.ExportDocx = xd.Status == PromptStatus.OK ? xd.StringResult == "Yes" : s.ExportDocx;
@@ -182,6 +185,16 @@ public sealed partial class Commands
                 if (tp.Status == PromptStatus.Cancel) return;
                 var tpv = (tp.StringResult ?? "").Trim();
                 if (tpv.Length > 0) n.RibbonTabPosition = tpv == "." || tpv.Equals("default", StringComparison.OrdinalIgnoreCase) ? "" : RibbonTabPosition.Normalize(tpv);
+                var ck = ed.GetString(new PromptStringOptions($"\nCheckpoint shortcut, e.g. Ctrl+Shift+K or F8, None = off <{(KeyChord.IsOff(s.CheckpointKey) ? "None" : s.CheckpointKey)}> (Enter keeps, . resets): ") { AllowSpaces = true });
+                if (ck.Status == PromptStatus.Cancel) return;
+                var ckv = (ck.StringResult ?? "").Trim();
+                if (ckv.Length > 0)
+                {
+                    if (ckv == "." || ckv.Equals("default", StringComparison.OrdinalIgnoreCase)) n.CheckpointKey = KeyChord.Default;
+                    else if (KeyChord.IsOff(ckv)) n.CheckpointKey = "None";
+                    else if (KeyChord.TryParse(ckv, out var chord, out var ckErr)) n.CheckpointKey = chord.Format();
+                    else { ed.WriteMessage($"\nCheckpoint shortcut not changed: {ckErr}\n"); }
+                }
                 SaveAndReport(ed, n);
                 return;
             }
@@ -198,6 +211,8 @@ public sealed partial class Commands
         if (!n.Save(out var err)) { ed.WriteMessage($"\nCould not save settings: {err}\n"); return; }
         n.EnsureFolders();
         RibbonInstaller.ApplyPosition(n.RibbonTabPosition);
+        CheckpointKey.Reload();
+        RibbonInstaller.ShowCheckpointKey();
         ed.WriteMessage("\nSettings saved.\n" + Describe(n));
     }
 
@@ -224,9 +239,11 @@ public sealed partial class Commands
                $"  Dialog values    : {(s.DialogValues ? "on" : "off")} (changed fields of dialogs, while recording)\n" +
                $"  Fill dialogs     : {(s.AutoFillDialogs ? "on" : "off")} (RETRACERUN fills a dialog with the recorded values and closes it)\n" +
                $"  Review checks    : {(s.ReviewCheckpoints ? "on" : "off")} (after Stop, the checkpoints window opens to rename them)\n" +
+               $"  Show driven UI   : {(s.ShowDrivenUi ? "on" : "off")} (Run test opens a rolled-up or auto-hidden palette while it drives it)\n" +
                $"  Word export      : {(s.ExportDocx ? "on" : "off")} (steps.docx next to steps.md)\n" +
                $"  Excel export     : {(s.ExportXlsx ? "on" : "off")} (steps.xlsx next to steps.md)\n" +
-               $"  Ribbon tab       : {RibbonTabPosition.Normalize(s.RibbonTabPosition)} (afterHome, first, last, after:<tab id or title>)\n";
+               $"  Ribbon tab       : {RibbonTabPosition.Normalize(s.RibbonTabPosition)} (afterHome, first, last, after:<tab id or title>)\n" +
+               $"  Checkpoint key   : {(s.CheckpointChord(out var warn) is { } kc ? kc.Format() : "off")} (while recording; Ctrl+Shift+K, F8, None = off){(warn.Length > 0 ? "\n  WARNING: " + warn : "")}\n";
     }
 
     // ---- docs and guide --------------------------------------------------------------------------------------------

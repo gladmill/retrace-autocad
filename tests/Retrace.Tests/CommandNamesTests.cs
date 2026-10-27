@@ -84,6 +84,8 @@ public class CommandNamesTests
     [InlineData("RETRACERECORD", true)]
     [InlineData("retracestop", true)]
     [InlineData("RETRACEFOLDER_TESTS", true)]
+    [InlineData("'_RETRACESTATUS", true)]
+    [InlineData("'RETRACESTATUS", true)]
     [InlineData("DRAWLINE", false)]
     [InlineData("DRAWGRID", false)]
     [InlineData("LINE", false)]

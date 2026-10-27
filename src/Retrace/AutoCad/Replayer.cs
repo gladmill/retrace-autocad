@@ -40,6 +40,17 @@ sealed class Replayer
     int _checks;
     int _i;
     bool _running, _userNext;
+    // the current palette step: retried since _paletteSince; waiting for a person (Next); its button's command still to start
+    bool _paletteForPerson;
+    DateTime _paletteSince = DateTime.MinValue, _paletteRetryAt = DateTime.MinValue, _paletteClickedAt;
+    Step? _paletteCommand;
+    // showing the palette being driven (setting showDrivenUi): the mouse is rested on it as a person would, and put back after
+    readonly bool _showUi = RetraceSettings.Load().ShowDrivenUi;
+    bool _revealDone;
+    int _revealTry = -1;
+    DateTime _revealAt, _cursorBackAt = DateTime.MaxValue;
+    PaletteReveal.POINT? _cursorHome, _cursorSet;   // where the mouse was before; where Retrace last put it
+    bool _paletteCommandStarted;
     int _modalDepth;
     int _modalsSeen;
     int _modalsAtStepStart;
@@ -131,6 +142,7 @@ sealed class Replayer
     {
         if (!_running) return;
         _running = false;
+        CursorBack();
         _timer.Stop();
         Log.Safe("Replay stop", () =>
         {
@@ -190,7 +202,13 @@ sealed class Replayer
     void OnCmdCancelled(object? s, CommandEventArgs e) { if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) _dialog.CommandEnded(true, DateTime.Now); }
     void OnCmdFailed(object? s, CommandEventArgs e) { if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) _eventError ??= $"command {e.GlobalCommandName} failed"; }
     void OnUnknown(object? s, UnknownCommandEventArgs e) { _eventError ??= $"unknown command {e.GlobalCommandName}"; }
-    void OnCmdStart(object? s, CommandEventArgs e) { if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) _pendingStart = false; }
+    void OnCmdStart(object? s, CommandEventArgs e)
+    {
+        if (OwnCommands.IsOwnCommand(e.GlobalCommandName)) return;
+        _pendingStart = false;
+        // a command without prompts can start and end between two ticks: remember that the palette button's command started
+        if (_paletteCommand != null && string.Equals(e.GlobalCommandName, _paletteCommand.Command, StringComparison.OrdinalIgnoreCase)) _paletteCommandStarted = true;
+    }
 
     bool Settled()
     {
@@ -219,6 +237,14 @@ sealed class Replayer
             // the dialog came and went between two ticks: count it as handled
             if (_modalDepth == 0 && _modalsSeen > _modalsAtStepStart) { _dialog.ModalEntered(); _dialog.ModalLeft(0); }
         }
+        if (DateTime.Now >= _cursorBackAt) CursorBack();
+        if (_modalDepth > 0 && Native.ForegroundOfThisProcess() is var dlg && dlg != IntPtr.Zero && dlg != AcApp.MainWindow.Handle && dlg != _win.Handle)
+        {
+            var d = PaletteReveal.RectOf(dlg);
+            _win.Avoid(d.Left, d.Top, d.Right, d.Bottom);   // keep the replay window off the dialog being filled
+        }
+        if (PaletteFill.TakePressFailure() is { } pressFailed) { Finish(false, true, pressFailed); return; }
+        if (_paletteCommand != null) { TickPaletteCommand(); return; }
         if (_dialog.Active) { TickDialog(); return; }
         if (_modalDepth > 0)
         {
@@ -250,6 +276,8 @@ sealed class Replayer
             _doc.Editor.WriteMessage($"\n[replay {_i + 1}/{_steps.Count}] {s.Title}\n");
         }
         if (_mode == ReplayMode.Step && !_userNext) return;
+
+        if (s.Kind == "palette") { TickPalette(s); return; }
 
         // a dialog step needs a person; unattended (Auto) the run cannot go on
         if (s.Kind == "dialog" && _mode == ReplayMode.Auto)
@@ -385,6 +413,123 @@ sealed class Replayer
             }
         }
         catch (Exception ex) { Log.Error("dialog script ref", ex); }
+    }
+
+    /// <summary>How long a palette step is retried while it cannot be done yet: results of an async call still loading, a button still disabled.</summary>
+    public static readonly TimeSpan PaletteWait = TimeSpan.FromSeconds(15);
+
+    /// <summary>A palette step: Retrace sets the values and clicks the button (<see cref="PaletteFill"/>), retrying for up to
+    /// <see cref="PaletteWait"/>; when it still cannot, a person does it and clicks Next, and an unattended run stops there. A button that started
+    /// a command (<see cref="Step.Command"/>) gets the recorded answers once that command runs (<see cref="TickPaletteCommand"/>).</summary>
+    void TickPalette(Step s)
+    {
+        var now = DateTime.Now;
+        if (_paletteForPerson)
+        {
+            if (!_userNext) return;
+            _result.Steps.Add(new StepResult { Index = _i + 1, Kind = "palette", Title = s.Title, WaitedForPerson = true });
+            NextPaletteStep();
+            return;
+        }
+        if (_showUi && !_revealDone && !Reveal(s, now)) return;
+        if (_paletteSince == DateTime.MinValue) _paletteSince = now;
+        if (now < _paletteRetryAt) return;
+        var problem = PaletteFill.Run(s);
+        if (problem == null)
+        {
+            _doc.Editor.WriteMessage($"\n  Palette \"{s.DialogTitle}\": done.\n");
+            _result.Steps.Add(new StepResult { Index = _i + 1, Kind = "palette", Title = s.Title });
+            if (s.Command != null) { _paletteCommand = s; _paletteCommandStarted = false; _paletteClickedAt = now; return; }
+            NextPaletteStep();
+            return;
+        }
+        if (now - _paletteSince < PaletteWait) { _paletteRetryAt = now.AddMilliseconds(500); return; }
+        if (_mode == ReplayMode.Auto && !_interactive)
+        {
+            _result.Steps.Add(new StepResult { Index = _i + 1, Kind = "palette", Title = s.Title, Status = "needs-person", Message = problem });
+            Finish(false, false, $"needs a person: palette {s.DialogTitle} ({problem})");
+            return;
+        }
+        _doc.Editor.WriteMessage($"\n  Palette \"{s.DialogTitle}\": {problem}. Do it by hand, then click Next.\n");
+        _win.Show($"Step {_i + 1}/{_steps.Count}: palette", $"{s.Title}\nRetrace could not do it: {problem}.\nDo it in the palette, then click Next.", true);
+        _userNext = false;
+        _paletteForPerson = true;
+    }
+
+    /// <summary>The palette button was clicked and should start <see cref="Step.Command"/>: once it runs, type the recorded answers into it (the
+    /// command started from the button's own SendStringToExecute, after the posted click).</summary>
+    void TickPaletteCommand()
+    {
+        var s = _paletteCommand!;
+        bool running = string.Equals(_doc.CommandInProgress, s.Command, StringComparison.OrdinalIgnoreCase);
+        if (running || _paletteCommandStarted)
+        {
+            var text = Plan.InputText(s, includeStart: false);
+            if (running && !string.IsNullOrEmpty(text)) _doc.SendStringToExecute(text, true, false, true);
+            _paletteCommand = null;
+            NextPaletteStep();
+            _pendingStart = true; _sentAt = DateTime.Now;   // Settled waits until the command is done
+            return;
+        }
+        if (DateTime.Now - _paletteClickedAt > TimeSpan.FromSeconds(30))   // as long as the recorder links a command to a click (an awaited call first)
+        {
+            _paletteCommand = null;
+            Finish(false, true, $"the {s.Button} button in the {s.DialogTitle} palette did not start {s.Command}");
+        }
+    }
+
+    /// <summary>Opens a rolled-up or auto-hidden palette before it is driven: rests the mouse on its title strip or tab (trying the likely spots,
+    /// 1.2 s each) until it is shown, then keeps the mouse inside it and Retrace's window off it. False while still waiting. When it does not
+    /// open, the step is done with the palette hidden (as with showDrivenUi off).</summary>
+    bool Reveal(Step s, DateTime now)
+    {
+        var page = PaletteFill.FindPage(s);
+        if (page == IntPtr.Zero) { _revealDone = true; return true; }   // not open yet: PaletteFill says so and retries
+        _cursorBackAt = DateTime.MaxValue;   // the restore of the previous palette waits: this one may need the mouse
+        if (!PaletteReveal.IsShown(page) && PaletteReveal.SetIsOpen(page)) { _revealDone = true; return true; }   // another tab of an open set: hovering changes nothing
+        if (PaletteReveal.IsShown(page))
+        {
+            if (_cursorHome != null) { var inside = PaletteReveal.Inside(page); MoveCursor(inside); }
+            var r = PaletteReveal.Screen(page);
+            _win.Avoid(r.Left, r.Top, r.Right, r.Bottom);
+            _revealDone = true;
+            return true;
+        }
+        if (_revealTry < 0 || now - _revealAt > TimeSpan.FromMilliseconds(1200))
+        {
+            var points = PaletteReveal.HoverPoints(page);
+            if (++_revealTry >= points.Count) { Log.Info($"replay: could not open the {s.DialogTitle} palette; driving it hidden"); _revealDone = true; return true; }
+            if (_cursorHome == null && PaletteReveal.GetCursorPos(out var home)) _cursorHome = home;
+            MoveCursor(points[_revealTry]);
+            _revealAt = now;
+        }
+        return false;
+    }
+
+    void MoveCursor(PaletteReveal.POINT p) { PaletteReveal.SetCursorPos(p.X, p.Y); _cursorSet = p; }
+
+    /// <summary>Puts the mouse back where it was before a palette was opened for the replay, unless the user has moved it since.</summary>
+    void CursorBack()
+    {
+        if (_cursorHome is { } h && _cursorSet is { } set && PaletteReveal.GetCursorPos(out var now) && Math.Abs(now.X - set.X) <= 3 && Math.Abs(now.Y - set.Y) <= 3)
+            PaletteReveal.SetCursorPos(h.X, h.Y);
+        _cursorHome = null; _cursorSet = null;
+        _cursorBackAt = DateTime.MaxValue;
+    }
+
+    void NextPaletteStep()
+    {
+        // the next step in the same palette keeps it open; otherwise the mouse goes back once the press has had time to show its result
+        var next = _i + 1 < _steps.Count ? _steps[_i + 1] : null;
+        var cur = _steps[_i];
+        if (_cursorHome != null && !(next is { Kind: "palette" } && next.DialogTitle == cur.DialogTitle && next.Panel == cur.Panel))
+            _cursorBackAt = DateTime.Now.AddMilliseconds(900);
+        _revealDone = false; _revealTry = -1;
+        _i++;
+        _shown = false;
+        _paletteForPerson = false;
+        _paletteSince = DateTime.MinValue; _paletteRetryAt = DateTime.MinValue;
+        _notBefore = DateTime.Now.AddMilliseconds(800);   // a clicked button runs from the palette's own loop, after this tick
     }
 
     static string Describe(Step s)

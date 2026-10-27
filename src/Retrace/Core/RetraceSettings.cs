@@ -40,8 +40,15 @@ public sealed class RetraceSettings
     /// <summary>After RETRACESTOP, open the window that shows the checkpoints with their pictures, to rename them. On by default.</summary>
     [JsonPropertyName("reviewCheckpoints")] public bool ReviewCheckpoints { get; set; } = true;
 
+    /// <summary>During a replay, open a rolled-up or auto-hidden palette before driving it (the mouse is moved over it, as a person would, and
+    /// put back after), so the run can be watched. Off: the palette is driven while it stays hidden. Recording never moves the mouse. On by default.</summary>
+    [JsonPropertyName("showDrivenUi")] public bool ShowDrivenUi { get; set; } = true;
+
     /// <summary>Where the Retrace ribbon tab goes: "" / "afterHome" (right of Home), "first", "last" or "after:&lt;tab id or title&gt;".</summary>
     [JsonPropertyName("ribbonTabPosition")] public string RibbonTabPosition { get; set; } = "";
+
+    /// <summary>Keyboard shortcut that adds a checkpoint while recording, e.g. "Ctrl+Shift+K" or "F8". "" or "None" = off. An invalid value falls back to the default.</summary>
+    [JsonPropertyName("checkpointKey")] public string CheckpointKey { get; set; } = KeyChord.Default;
 
     /// <summary>The root folder this instance was loaded from (not stored). Tests point it at a temp folder.</summary>
     [JsonIgnore] public string RootDir { get; set; } = Paths.Root;
@@ -56,6 +63,9 @@ public sealed class RetraceSettings
     [JsonIgnore] public string Docs => Pick(DocsFolder, DefaultDocs);
     [JsonIgnore] public string Source => Resolve(Clean(SourceFolder));
     [JsonIgnore] public string GuideIndex => Path.Combine(Docs, "guide", "index.md");
+
+    /// <summary>The checkpoint shortcut as parsed: null = off. An invalid setting gives the default and a <paramref name="warning"/>.</summary>
+    public KeyChord? CheckpointChord(out string warning) => KeyChord.Resolve(CheckpointKey, out warning);
 
     /// <summary>The editor the owner configured, else <see cref="DefaultEditor()"/>.</summary>
     [JsonIgnore] public string Editor { get { var v = Clean(EditorPath); return v.Length == 0 ? DefaultEditor() : Environment.ExpandEnvironmentVariables(v); } }

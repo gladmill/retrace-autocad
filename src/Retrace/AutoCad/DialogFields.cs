@@ -19,6 +19,7 @@ static class DialogReader
     const uint LB_GETCURSEL = 0x0188, LB_GETTEXT = 0x0189, LB_GETTEXTLEN = 0x018A, TBM_GETPOS = 0x0400;
     const uint SMTO_ABORTIFHUNG = 2, TimeoutMs = 100;
     const int GWL_STYLE = -16;
+    const uint WS_VISIBLE = 0x10000000;
     const long ES_PASSWORD = 0x20, ES_READONLY = 0x800, WS_GROUP = 0x00020000, WS_DISABLED = 0x08000000, CBS_DROPDOWNLIST = 3, LBS_MULTIPLESEL = 0x8, LBS_EXTENDEDSEL = 0x800;
 
     delegate bool EnumProc(IntPtr h, IntPtr lp);
@@ -57,7 +58,10 @@ static class DialogReader
     public static List<DialogField> ReadWin32(IntPtr dialog) => Scan(dialog).Fields;
 
     /// <summary>The one enumeration that reading and filling share. Never throws (an empty scan on failure).</summary>
-    internal static Win32Scan Scan(IntPtr dialog)
+    /// <param name="hiddenToo">also while <paramref name="dialog"/> itself is hidden (an auto-hidden palette): a control counts when its own
+    /// WS_VISIBLE is set, not only when it is on screen</param>
+    /// <param name="disabledToo">also list disabled push buttons (for describing what is near the cursor; never for pressing)</param>
+    internal static Win32Scan Scan(IntPtr dialog, bool hiddenToo = false, bool disabledToo = false)
     {
         var scan = new Win32Scan();
         try
@@ -68,7 +72,7 @@ static class DialogReader
             var ctls = new List<Ctl>();
             foreach (var h in handles)
             {
-                if (!IsWindowVisible(h)) continue;
+                if (hiddenToo ? ((uint)GetWindowLong(h, GWL_STYLE) & WS_VISIBLE) == 0 : !IsWindowVisible(h)) continue;
                 GetWindowRect(h, out var r);
                 var p = GetParent(h);
                 ctls.Add(new Ctl
@@ -85,7 +89,13 @@ static class DialogReader
             var raw = new List<RawControl>();
             var rects = new List<Box>();
             var rawHandles = new List<IntPtr>();
-            void Add(Ctl c, RawControl r) { raw.Add(r); rects.Add(c.Rect); rawHandles.Add(c.H); }
+            void Add(Ctl c, RawControl r)
+            {
+                // a WinForms control has a name that stays the same between runs, and maybe an accessible name: the label it was given
+                if (WinFormsControls.NamesOf(c.H) is var (name, accessible) && name.Length > 0)
+                    r = r with { Name = name, Label = accessible.Length > 0 ? DialogFieldsCore.CleanLabel(accessible) : r.Label };
+                raw.Add(r); rects.Add(c.Rect); rawHandles.Add(c.H);
+            }
             foreach (var c in ctls)
             {
                 string? kind = null, value = null;
@@ -104,6 +114,16 @@ static class DialogReader
                             var st = Num(c.H, BM_GETCHECK);
                             var own = DialogFieldsCore.CleanLabel(Text(c.H));
                             Add(c, new RawControl(c.Id, own.Length > 0 ? own : (DialogFieldsCore.FindLabel(c.Rect, statics) ?? $"#{c.Id}"), "check", st == 1 ? "on" : st == 2 ? "mixed" : "off"));
+                            break;
+                        }
+                        case 0xB when WinFormsControls.KindOf(c.H) is ("check" or "radio") and var wk:
+                        {
+                            // WinForms draws its check boxes and radios itself (owner-drawn, like its buttons): ask WinForms what it is
+                            var own = DialogFieldsCore.CleanLabel(Text(c.H));
+                            var on = WinFormsControls.IsChecked(c.H) ? "on" : "off";
+                            Add(c, wk == "check"
+                                ? new RawControl(c.Id, own.Length > 0 ? own : (DialogFieldsCore.FindLabel(c.Rect, statics) ?? $"#{c.Id}"), "check", on)
+                                : new RawControl(c.Id, own.Length > 0 ? own : $"#{c.Id}", "radio1", on));
                             break;
                         }
                         case 4 or 9:
@@ -141,7 +161,7 @@ static class DialogReader
                 scan.Handles.Add(idx.Select(i => rawHandles[i]).ToList());
             }
             foreach (var c in ctls)
-                if (c.Seg == "button" && ((c.Style & 0xF) is 0 or 1 or 0xB) && (c.Style & WS_DISABLED) == 0)
+                if (c.Seg == "button" && ((c.Style & 0xF) is 0 or 1 or 0xB) && (disabledToo || (c.Style & WS_DISABLED) == 0) && WinFormsControls.KindOf(c.H) is null or "button")
                     scan.Buttons.Add((c.H, c.Id, Text(c.H)));
             return scan;
         }
@@ -155,6 +175,27 @@ static class DialogReader
         const string wf = "windowsforms10.";
         if (l.StartsWith(wf)) { var rest = l[wf.Length..]; var dot = rest.IndexOf('.'); return dot < 0 ? rest : rest[..dot]; }
         return l;
+    }
+
+    /// <summary>Which of the push buttons of <paramref name="page"/> with the same text <paramref name="button"/> is, counted in window order (1 = the
+    /// first); 1 for a WPF button or one not found.</summary>
+    internal static int ButtonIndex(IntPtr page, IntPtr button)
+    {
+        var all = Scan(page).Buttons;
+        var at = all.FindIndex(b => b.H == button);
+        if (at < 0) return 1;
+        var text = PaletteFill.ButtonLabel(all[at].Text);
+        return all.Take(at + 1).Count(b => PaletteFill.ButtonLabel(b.Text) == text);
+    }
+
+    /// <summary>The text of <paramref name="h"/> if it is an enabled push button (BUTTON class, push or owner-drawn style), else null.</summary>
+    internal static string? PushButtonText(IntPtr h)
+    {
+        if (Segment(ClassOf(h)) != "button") return null;
+        var style = (uint)GetWindowLong(h, GWL_STYLE);
+        if ((style & 0xF) is not (0 or 1 or 0xB) || (style & WS_DISABLED) != 0 || WinFormsControls.KindOf(h) is not (null or "button")) return null;
+        var t = DialogFieldsCore.CleanLabel(Text(h));
+        return t.Length > 0 ? t : "(button)";
     }
 
     internal static string ClassOf(IntPtr h) { var sb = new StringBuilder(128); GetClassName(h, sb, sb.Capacity); return sb.ToString(); }

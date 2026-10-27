@@ -12,8 +12,8 @@ public static class OwnCommands
     /// <summary>Id of the plugin's ribbon tab.</summary>
     public const string TabId = "RETRACE_TAB";
 
-    /// <summary>Leading `-` (command-line form), `_` (language-independent) and `.` (built-in) are ignored: `-RETRACEMARK` is ours too.</summary>
-    public static bool IsOwnCommand(string? name) => name != null && name.TrimStart('-', '_', '.').StartsWith(Prefix, StringComparison.OrdinalIgnoreCase);
+    /// <summary>Leading `-` (command-line form), `'` (transparent), `_` (language-independent) and `.` (built-in) are ignored: `-RETRACEMARK` and `'_RETRACESTATUS` are ours too.</summary>
+    public static bool IsOwnCommand(string? name) => name != null && name.TrimStart('-', '\'', '_', '.').StartsWith(Prefix, StringComparison.OrdinalIgnoreCase);
 
     public static bool IsOwnTab(string? tabId) => string.Equals(tabId, TabId, StringComparison.OrdinalIgnoreCase);
 }

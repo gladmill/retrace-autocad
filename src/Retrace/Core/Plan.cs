@@ -11,17 +11,19 @@ public sealed record Answer(string Kind, string Status, JsonElement? Value, stri
 
 public sealed class Step
 {
-    public string Kind = "";            // ribbon | command | lisp | dialog | mark | tab
+    public string Kind = "";            // ribbon | command | lisp | dialog | palette | mark | tab
     public string Title = "";           // human readable one-liner
     public string? ItemId, Macro, Tab, Panel, Path;
     public string? Command;             // command started by this step (global name)
     public string? Lisp;
-    public string? DialogTitle;
+    public string? DialogTitle;         // dialog: its title; palette: the palette (its tab in the palette set; Panel = the set)
+    public string? Button;              // palette: the button clicked, null when only values changed
+    public int ButtonIndex = 1;         // palette: which of the palette's buttons with that text (1 = the first)
     public string? Note;
     public DrawingDigest? State;        // mark: the drawing state recorded at the checkpoint (null in older sessions)
     public long T;
     public bool HadDialog;
-    /// <summary>dialog: the fields the person changed while it was open; null = the session has no `dialog_values` event for it.</summary>
+    /// <summary>dialog / palette: the fields the person changed while it was open; null = the session has no `dialog_values` event for it.</summary>
     public List<FieldChange>? Values;
     /// <summary>dialog: how many fields the recorder could read.</summary>
     public int ValuesRead;
@@ -96,6 +98,7 @@ public static class Plan
         bool inLisp = false;
         string? lastModalTitle = null;
         Step? modalStep = null;
+        Step? palette = null;   // the last palette step: a click right after its values joins it
         Step? modalOwner = null; var hadDialogBefore = false;   // the command that was running at the current modal_enter and its HadDialog before it (restored if that dialog is a security prompt)
         var modalByN = new Dictionary<long, Step>();   // event n of modal_enter / modal_title -> its dialog step
         foreach (var e in events)
@@ -124,6 +127,13 @@ public static class Plan
                 {
                     var cmd = Str(e, "command") ?? "?";
                     if (depth++ > 0) break; // nested / transparent: part of the running step
+                    // a palette button that runs a command (SendStringToExecute): the command and its answers belong to the palette step
+                    if (Str(e, "origin") == "palette" && palette is { Command: null, Button: not null } && steps.Count > 0 && ReferenceEquals(steps[^1], palette))
+                    {
+                        palette.Command = cmd;
+                        cur = palette;
+                        break;
+                    }
                     // older recorders tagged commands of macro-less (built-in) buttons "typed/other": a command within 1 s is the click's
                     if (cur is { Kind: "ribbon", Command: null } && (Str(e, "origin") == "ribbon" || (cur.Macro == null && t - cur.T <= 1000))) { cur.Command = cmd; break; }
                     cur = new Step { Kind = "command", T = t, Command = cmd, Title = $"Type command {cmd}" };
@@ -188,6 +198,32 @@ public static class Plan
                                 ds.Values.Add(new FieldChange(Str(f, "key") ?? "", Str(f, "label") ?? "", Str(f, "kind") ?? "", Str(f, "before") ?? "", Str(f, "after") ?? ""));
                     }
                     break;
+                case "palette_values":
+                case "palette_click":
+                {
+                    string? name = Str(e, "palette"), set = Str(e, "set");
+                    bool join = type == "palette_click" && palette != null && steps.Count > 0 && ReferenceEquals(steps[^1], palette)
+                                && palette.Button == null && palette.DialogTitle == name && palette.Panel == set;
+                    if (!join) { palette = new Step { Kind = "palette", T = t, DialogTitle = name, Panel = set }; steps.Add(palette); }
+                    if (type == "palette_click")
+                    {
+                        palette!.Button = Str(e, "button");
+                        palette.ButtonIndex = e.TryGetProperty("index", out var bi) && bi.ValueKind == JsonValueKind.Number && bi.TryGetInt32(out var bn) ? bn : 1;
+                    }
+                    else
+                    {
+                        palette!.ValuesSource = Str(e, "source");
+                        palette.ValuesRead = e.TryGetProperty("read", out var prv) && prv.ValueKind == JsonValueKind.Number && prv.TryGetInt32(out var pri) ? pri : 0;
+                        palette.Values ??= new List<FieldChange>();
+                        if (e.TryGetProperty("fields", out var pfa) && pfa.ValueKind == JsonValueKind.Array)
+                            foreach (var f in pfa.EnumerateArray())
+                                palette.Values.Add(new FieldChange(Str(f, "key") ?? "", Str(f, "label") ?? "", Str(f, "kind") ?? "", Str(f, "before") ?? "", Str(f, "after") ?? ""));
+                    }
+                    var changes = palette.Values?.Count ?? 0;
+                    palette.Title = $"Palette \"{name}\": " + (changes > 0 ? $"{changes} value(s)" : "") + (changes > 0 && palette.Button != null ? ", then " : "")
+                                    + (palette.Button != null ? $"click {palette.Button}" : changes == 0 ? "no changes" : "");
+                    break;
+                }
                 case "mark":
                 {
                     var note = Str(e, "note") ?? "";
