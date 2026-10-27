@@ -10,6 +10,9 @@ namespace Retrace.AutoCad;
 /// </summary>
 sealed class ShotService
 {
+    /// <summary>Pixels of a capture: 32-bit BGRA, top-down.</summary>
+    public sealed record Picture(byte[] Pixels, int Width, int Height);
+
     readonly ShotScheduler _sched = new();
     readonly List<Task> _tasks = new();
     string _folder = "";
@@ -87,6 +90,30 @@ sealed class ShotService
         if (!_enabled || n <= 0 || hwnd == IntPtr.Zero || !Win.IsWindowVisible(hwnd)) return;
         try { Grab(n, "dialog-after", hwnd, "dialog-after", announce: _afterTaken.Add(n)); }
         catch (Exception ex) { Log.Error($"shot {n} dialog-after", ex); }
+    }
+
+    /// <summary>A picture of a screen rectangle (device pixels), taken now; null if it is empty or the capture fails. UI thread.</summary>
+    public static Picture? CaptureRect(int left, int top, int right, int bottom)
+    {
+        var r = new Win.RECT { Left = left, Top = top, Right = right, Bottom = bottom };
+        if (r.Width <= 0 || r.Height <= 0) return null;
+        try { return new Picture(Win.CopyScreen(r), r.Width, r.Height); }
+        catch (Exception ex) { Log.Error("capture rect", ex); return null; }
+    }
+
+    /// <summary>Writes a picture taken earlier as the `shot` of event <paramref name="n"/> (what: "palette").</summary>
+    public void Write(int n, string kind, Picture p, string what)
+    {
+        if (!_enabled || n <= 0) return;
+        var path = Path.Combine(_folder, ShotNaming.FileName(n, kind));
+        var rel = ShotNaming.RelativePathFor(_sessionPath, n, kind);
+        var onShot = _onShot;
+        var t = Task.Run(() =>
+        {
+            try { Directory.CreateDirectory(Path.GetDirectoryName(path)!); Png.Write(path, p.Width, p.Height, p.Pixels); onShot(n, rel, what); }
+            catch (Exception ex) { Log.Error($"shot {n} write", ex); }
+        });
+        lock (_tasks) { _tasks.RemoveAll(x => x.IsCompleted); _tasks.Add(t); }
     }
 
     void Grab(int n, string kind, IntPtr hwnd, string what, bool announce = true)

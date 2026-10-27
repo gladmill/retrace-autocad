@@ -46,6 +46,7 @@ public sealed class Recorder
     readonly ShotService _shots = new();
     System.Windows.Threading.DispatcherTimer? _shotTimer;
     readonly DialogWatch _dlg = new();   // field values of the open modal dialogs
+    readonly PaletteWatch _pal = new();  // field values and button clicks in palette sets
     int _modalOpen;   // EnterModal minus LeaveModal: a dialog picture is only taken while one is open
 
     // checkpoint names: where the last thing was done (a dialog, a ribbon button, a typed command) and how many checkpoints so far
@@ -56,15 +57,31 @@ public sealed class Recorder
     long _lastRibbonT = -100000;
     string? _lastRibbonId, _lastRibbonMacro;
     bool _lastRibbonConsumed = true;
+    // the same for a button clicked in a palette set: a command that starts after it, with no other click or key press in between, is the
+    // button's (SendStringToExecute), also after an awaited call; _lastPaletteTick is the input count at the click
+    long _lastPaletteT = -100000, _lastPaletteTick;
+    string? _lastPaletteButton;
+    bool _lastPaletteConsumed = true;
+
+    /// <summary>The checkpoint shortcut was pressed during a command: the checkpoint is taken when that command ends (see Commands.MarkFromKey).</summary>
+    internal bool MarkPending { get; set; }
+    /// <summary>What was at the cursor when the pending checkpoint was asked for.</summary>
+    internal Checkpoints.CheckpointContext? PendingAt { get; set; }
 
     // Captured when a command starts. Prompt handlers must not call into the Editor/Document: with mouse picks that made
     // AutoCAD re-issue the prompt in a loop (LINE took no points, the cursor flickered until Esc; seen in R25.1).
     bool _inOwnCmd;
+    int _ownModal;   // dialogs Retrace's own commands opened (Settings, the test picker) that are open now: not part of the test
     Matrix3d _ucs = Matrix3d.Identity;
     string? _cmdDoc;
     string? _lastTabId;
 
     public bool IsRecording => _w != null;
+    /// <summary>The text of the prompt the user is answering now (without its leading line break), or null when none is open.</summary>
+    internal string? OpenPrompt => _openPrompts > 0 && !string.IsNullOrWhiteSpace(_lastPromptMsg) ? _lastPromptMsg.TrimStart('\n', '\r') : null;
+    string? _lastPromptMsg;
+    /// <summary>A modal dialog is open (EnterModal seen, or a dialog is being watched).</summary>
+    internal bool ModalOpen => _modalOpen > 0 || _dlg.Top != IntPtr.Zero;
     public SessionWriter? Writer => _w;
 
     // ---- start / stop ------------------------------------------------------------------------
@@ -118,6 +135,7 @@ public sealed class Recorder
     {
         var w = _w;
         if (w == null) return null;
+        Log.Safe("Stop palette", () => EmitPalette(_pal.Flush(w.ElapsedMs, drop: true)));
         // the pictures still queued (the last command's result) are taken now, and their `shot` events must land before session_end
         Log.Safe("Stop shots", () => { _shots.Pump(w.ElapsedMs, force: true); _shots.Drain(); });
         Log.Safe("Stop", () => w.Event("session_end", CurDoc()));
@@ -156,10 +174,12 @@ public sealed class Recorder
         switch (type)
         {
             case "ribbon": _lastCtx = new Checkpoints.CheckpointContext("ribbon", F("panel") ?? F("tab"), F("text") ?? F("id")); break;
-            case "cmd_start" when F("origin") != "ribbon": _lastCtx = new Checkpoints.CheckpointContext("command", null, F("command")); break;
+            case "cmd_start" when F("origin") is not ("ribbon" or "palette"): _lastCtx = new Checkpoints.CheckpointContext("command", null, F("command")); break;
             case "lisp_start": _lastCtx = new Checkpoints.CheckpointContext("command", null, "lisp"); break;
             case "modal_title": _lastCtx = new Checkpoints.CheckpointContext("dialog", F("title"), null); break;
             case "dialog_values": _lastCtx = new Checkpoints.CheckpointContext("dialog", F("title") ?? _lastCtx?.Container, F("closedWith")); break;
+            case "palette_values": _lastCtx = new Checkpoints.CheckpointContext("palette", F("palette"), null); break;
+            case "palette_click": _lastCtx = new Checkpoints.CheckpointContext("palette", F("palette"), F("button")); break;
         }
     }
 
@@ -169,11 +189,15 @@ public sealed class Recorder
     void BeginShots()
     {
         var w = _w!;
-        _modalOpen = 0;
+        _modalOpen = 0; _ownModal = 0; MarkPending = false; _lastPaletteConsumed = true;
+        CheckpointKey.Reload();
         var settings = RetraceSettings.Load();
         var enabled = settings.Screenshots;
         _dlg.Clear();
         _dlg.Enabled = settings.DialogValues;
+        _pal.Clear();
+        _pal.Enabled = settings.DialogValues;
+        _pal.Pictures = settings.Screenshots;
         _dlg.Clock = () => _w?.ElapsedMs ?? 0;
         _dlg.Confirmed = (n, h) => _shots.DialogAfter(n, h);
         _shots.Begin(w.Path, enabled, MainWindowHandle(), () => _modalOpen > 0, (n, file, what) =>
@@ -192,7 +216,7 @@ public sealed class Recorder
     {
         if (_shotTimer != null) return;
         var t = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(120) };
-        t.Tick += (_, _) => Log.Safe("shot timer", () => { var w = _w; if (w != null) { _shots.Pump(w.ElapsedMs); _dlg.Tick(w.ElapsedMs); } });
+        t.Tick += (_, _) => Log.Safe("shot timer", () => { var w = _w; if (w != null) { _shots.Pump(w.ElapsedMs); _dlg.Tick(w.ElapsedMs); _pal.Tick(w.ElapsedMs); } });
         _shotTimer = t;
         t.Start();
     }
@@ -244,6 +268,7 @@ public sealed class Recorder
             _shotTimer?.Stop();
             _shotTimer = null;
             _dlg.Clear();   // also removes the dialog message hook
+            _pal.Clear();
         });
     }
 
@@ -391,8 +416,8 @@ public sealed class Recorder
     void OnCmdStart(object? s, CommandEventArgs e) => Log.Safe("CommandWillStart", () =>
     {
         var name = e.GlobalCommandName;
+        if (IsOurs(name)) { _inOwnCmd = true; return; }   // leaves _openPrompts alone: an own command typed transparently ('RETRACESTATUS) runs inside the user's prompt
         _openPrompts = 0;
-        if (IsOurs(name)) { _inOwnCmd = true; return; }
         _cmdDoc = DocName(s as Document);
         _claimedTick = _inputTick; // the click/Enter that started the command answers no prompt
         try { if (s is Document d) _ucs = d.Editor.CurrentUserCoordinateSystem; } catch { _ucs = Matrix3d.Identity; }
@@ -400,9 +425,18 @@ public sealed class Recorder
         Emit("cmd_start", DocName(s as Document), ("command", name), ("origin", origin), ("via", via));
     });
 
-    void OnCmdEnded(object? s, CommandEventArgs e) => Log.Safe("CommandEnded", () => { _openPrompts = 0; if (IsOurs(e.GlobalCommandName)) _inOwnCmd = false; else Emit("cmd_end", DocName(s as Document), ("command", e.GlobalCommandName)); });
-    void OnCmdCancelled(object? s, CommandEventArgs e) => Log.Safe("CommandCancelled", () => { _openPrompts = 0; if (IsOurs(e.GlobalCommandName)) _inOwnCmd = false; else Emit("cmd_cancel", DocName(s as Document), ("command", e.GlobalCommandName)); });
-    void OnCmdFailed(object? s, CommandEventArgs e) => Log.Safe("CommandFailed", () => { _openPrompts = 0; if (IsOurs(e.GlobalCommandName)) _inOwnCmd = false; else Emit("cmd_fail", DocName(s as Document), ("command", e.GlobalCommandName)); });
+    void OnCmdEnded(object? s, CommandEventArgs e) => Log.Safe("CommandEnded", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _openPrompts = 0; Emit("cmd_end", DocName(s as Document), ("command", e.GlobalCommandName)); TakePendingMark(); } });
+    void OnCmdCancelled(object? s, CommandEventArgs e) => Log.Safe("CommandCancelled", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _openPrompts = 0; Emit("cmd_cancel", DocName(s as Document), ("command", e.GlobalCommandName)); TakePendingMark(); } });
+    void OnCmdFailed(object? s, CommandEventArgs e) => Log.Safe("CommandFailed", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _openPrompts = 0; Emit("cmd_fail", DocName(s as Document), ("command", e.GlobalCommandName)); TakePendingMark(); } });
+
+    /// <summary>A command ended: a checkpoint asked for during it is taken now, once AutoCAD has finished ending it (MarkFromKey waits again if
+    /// another command is still running).</summary>
+    void TakePendingMark()
+    {
+        if (!MarkPending || _w == null) return;
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background,
+            () => Log.Safe("pending checkpoint", () => { if (MarkPending) Commands.Instance.MarkFromKey(PendingAt); }));   // two ends in a row queue two calls
+    }
     void OnUnknown(object? s, UnknownCommandEventArgs e) => Log.Safe("UnknownCommand", () => Emit("cmd_unknown", DocName(s as Document), ("command", e.GlobalCommandName)));
     void OnLispStart(object? s, LispWillStartEventArgs e) => Log.Safe("LispWillStart", () => { _cmdDoc = DocName(s as Document); Emit("lisp_start", _cmdDoc, ("firstLine", e.FirstLine)); });
     void OnLispEnded(object? s, EventArgs e) => Log.Safe("LispEnded", () => Emit("lisp_end", DocName(s as Document)));
@@ -419,6 +453,11 @@ public sealed class Recorder
         {
             _lastRibbonConsumed = true;
             return ("ribbon", _lastRibbonId);
+        }
+        if (!_lastPaletteConsumed && now - _lastPaletteT <= 30000 && _inputTick <= _lastPaletteTick + 1)
+        {
+            _lastPaletteConsumed = true;
+            return ("palette", _lastPaletteButton);
         }
         return ("typed/other", null);
     }
@@ -441,6 +480,7 @@ public sealed class Recorder
     void OnEnterModal(object? s, EventArgs e) => Log.Safe("EnterModal", () =>
     {
         _modalOpen++;
+        if (_inOwnCmd || _ownModal > 0) { _ownModal++; return; }
         var fg = Native.Foreground();
         var nEnter = Emit("modal_enter", CurDoc(), ("title", fg?.Title), ("windowClass", fg?.Class));
         var watch = nEnter > 0 ? _dlg.Push(nEnter) : null;
@@ -476,6 +516,7 @@ public sealed class Recorder
     void OnLeaveModal(object? s, EventArgs e) => Log.Safe("LeaveModal", () =>
     {
         if (_modalOpen > 0) _modalOpen--;
+        if (_ownModal > 0) { _ownModal--; return; }
         Log.Safe("dialog values", () =>
         {
             var r = _w == null ? null : _dlg.Close(_w.ElapsedMs);
@@ -535,12 +576,42 @@ public sealed class Recorder
     void OnPreTranslate(object? s, PreTranslateMessageEventArgs e)
     {
         var m = e.Message.message;
-        if (m is 0x0100 or 0x0201 or 0x0204 or 0x0207) // WM_KEYDOWN, WM_L/R/MBUTTONDOWN
+        if (CheckpointKey.TryHandle(m, e.Message.wParam, e.Message.lParam)) { e.Handled = true; return; }   // the shortcut is not user input
+        if (m is 0x0100 or 0x0201 && _pal.Enabled) PaletteInput(e.Message.hwnd, (uint)m, e.Message.wParam, e.Message.lParam);
+        // WM_KEYDOWN, WM_L/R/MBUTTONDOWN. Shift, Ctrl and Alt alone answer nothing (pressed for the checkpoint shortcut, they made an
+        // AutoCAD Electrical mouse-move point look typed)
+        if (m is 0x0201 or 0x0204 or 0x0207 || (m == 0x0100 && (long)e.Message.wParam is not (0x10 or 0x11 or 0x12 or (>= 0xA0 and <= 0xA5))))
         {
             _inputTick++;
             _lastInputMs = _w?.ElapsedMs ?? 0;
             _lastInputMouse = m != 0x0100;
         }
+    }
+
+    /// <summary>A click or key press: records the values changed in a palette the user just left, and a button clicked in a palette.</summary>
+    void PaletteInput(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam)
+    {
+        var w = _w;
+        if (w == null) return;
+        try
+        {
+            var (changed, at, button, index, picture) = _pal.OnInput(hwnd, message, wParam, lParam, w.ElapsedMs);
+            EmitPalette(changed, withPicture: button == null);   // values and the click are one step: the click carries the picture
+            if (at == null || button == null) return;
+            int n = index > 1 ? Emit("palette_click", CurDoc(), ("palette", at.Palette), ("set", at.Set), ("button", button), ("index", index))
+                              : Emit("palette_click", CurDoc(), ("palette", at.Palette), ("set", at.Set), ("button", button));
+            if (picture != null) _shots.Write(n, "palette-closeup", picture, "palette");
+            _lastPaletteT = w.ElapsedMs; _lastPaletteTick = _inputTick; _lastPaletteButton = button; _lastPaletteConsumed = false;
+        }
+        catch (Exception ex) { Log.Error("palette input", ex); }
+    }
+
+    void EmitPalette(PaletteWatch.Values? v, bool withPicture = true)
+    {
+        if (v == null) return;
+        var fields = v.Changes.Select(c => new Dictionary<string, object?> { ["key"] = c.Key, ["label"] = c.Label, ["kind"] = c.Kind, ["before"] = c.Before, ["after"] = c.After }).ToList();
+        var n = Emit("palette_values", CurDoc(), ("palette", v.Where.Palette), ("set", v.Where.Set), ("source", v.Source), ("fields", fields), ("read", v.Read));
+        if (withPicture && v.Picture != null) _shots.Write(n, "palette-closeup", v.Picture, "palette");
     }
 
     /// <summary>true if a click/key press within 500 ms led to this result and no earlier result claimed it. Sets <see cref="_claimedBy"/>.</summary>
@@ -561,6 +632,7 @@ public sealed class Recorder
         {
             // Only the message: reading o.Keywords here made AutoCAD reject mouse picks and re-ask in a loop (seen in R25.1).
             _promptMsg[kind] = o?.Message;
+            _lastPromptMsg = o?.Message;
             _promptKeywords[kind] = KeywordsOf(o?.Message);
             _promptSeq[kind] = ++_seq;
             _openPrompts++;
@@ -584,6 +656,7 @@ public sealed class Recorder
         Log.Safe("Prompting selection", () =>
         {
             _promptMsg["selection"] = o?.MessageForAdding;
+            _lastPromptMsg = o?.MessageForAdding;
             _promptKeywords["selection"] = KeywordsOf(o?.MessageForAdding);
             _openPrompts++;
         });
@@ -662,12 +735,16 @@ public sealed class Recorder
 
     /// <summary>Writes a checkpoint. Its automatic name (see <see cref="Checkpoints.AutoName"/>) is stored as `autoName`, and as the `note`
     /// unless <paramref name="note"/> gives one. Returns the name used, or null when the event could not be written (nothing counted).</summary>
-    public string? Mark(string? note, DrawingDigest? state)
+    /// <param name="at">what the checkpoint shortcut found at the cursor (<see cref="CursorContext"/>): names the checkpoint before the last action does</param>
+    public string? Mark(string? note, DrawingDigest? state, Checkpoints.CheckpointContext? at = null)
     {
-        var auto = Checkpoints.AutoName(_marks + 1, _lastCtx);
+        // values set in a palette just before the checkpoint (the shortcut pressed while still in it) come first
+        if (_w is { } w) Log.Safe("mark palette", () => EmitPalette(_pal.Flush(w.ElapsedMs, drop: false)));
+        MarkPending = false;   // any checkpoint (the ribbon button too) answers a pending shortcut press
+        var auto = Checkpoints.AutoName(_marks + 1, at ?? _lastCtx);
         var name = Checkpoints.Clean(note);
         if (name.Length == 0) name = auto;
-        if (Emit("mark", CurDoc(), ("note", name), ("autoName", auto), ("state", state)) == 0) return null;
+        if (Emit("mark", CurDoc(), ("note", name), ("autoName", auto), ("state", state), ("near", at?.Description)) == 0) return null;
         _marks++;
         return name;
     }

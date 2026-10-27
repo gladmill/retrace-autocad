@@ -10,12 +10,15 @@ static class GuidePalette
     static PaletteSet? _set;
     static GuideControl? _control;
 
+    /// <summary>The palette set's title. The recorder never reads this palette (AutoCad/PaletteWatch).</summary>
+    public const string SetTitle = "Retrace Guide";
+
     public static void Show()
     {
         if (_set == null)
         {
             _control = new GuideControl();
-            _set = new PaletteSet("Retrace Guide", PaletteGuid)
+            _set = new PaletteSet(SetTitle, PaletteGuid)
             {
                 Style = PaletteSetStyles.ShowPropertiesMenu | PaletteSetStyles.ShowAutoHideButton | PaletteSetStyles.ShowCloseButton,
                 DockEnabled = DockSides.Left | DockSides.Right | DockSides.None,

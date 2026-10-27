@@ -29,7 +29,7 @@ public sealed class ShotNamer
     static readonly System.Text.RegularExpressions.Regex RawName = Rx.Create(@"^\d+-(.+)\.png$", System.Text.RegularExpressions.RegexOptions.CultureInvariant | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
     static readonly Dictionary<string, string> RawKinds = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["ribbon"] = "click", ["cmd-start"] = "command", ["cmd-end"] = "end", ["cmd-cancel"] = "cancelled", ["mark"] = "check",
+        ["ribbon"] = "click", ["cmd-start"] = "command", ["cmd-end"] = "end", ["cmd-cancel"] = "cancelled", ["mark"] = "check", ["palette"] = "click",
     };
 
     /// <summary>The script is about to write step <paramref name="n"/>.</summary>
@@ -54,6 +54,7 @@ public sealed class ShotNamer
         {
             "dialog-after" => "dialog-after",
             "dialog" => "dialog-before",
+            "palette" => "palette",
             _ => raw.Success && RawKinds.TryGetValue(raw.Groups[1].Value, out var k) ? k : role,
         };
         if (kind.StartsWith("answer:", StringComparison.Ordinal)) kind = kind[7..] + "-" + ++_answers;

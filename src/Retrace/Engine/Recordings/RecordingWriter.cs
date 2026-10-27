@@ -193,6 +193,16 @@ public sealed class RecordingWriter(RecordingAnalysis a, string outRoot)
                     Pics(st.Shots, "Dialog " + title);
                     break;
                 }
+                case "palette":
+                {
+                    n++;
+                    var name = string.IsNullOrWhiteSpace(st.DialogTitle) ? "(untitled)" : st.DialogTitle;
+                    sb.Append($"{n}. Palette **\"{Md.Cell(name)}\"**{(string.IsNullOrWhiteSpace(st.Text) ? "" : $": click **{Md.Cell(st.Text)}**")}\n");
+                    foreach (var v in st.Values)
+                        if (StepWording.ChangeText(v, Md.Cell, Md.Code, bold: true) is { } t) sb.Append("   - ").Append(t).Append('\n');
+                    Pics(st.Shots, "Palette " + name);
+                    break;
+                }
                 case "mark":
                     n++;
                     sb.Append($"{n}. **Expected:** {(string.IsNullOrWhiteSpace(st.Note) ? "(checkpoint, no note)" : Md.Cell(st.Note))}\n");

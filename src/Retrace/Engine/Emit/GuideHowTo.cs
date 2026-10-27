@@ -106,6 +106,7 @@ public sealed partial class GuideWriter
             case "command": what = KeyPart(st.Command); break;
             case "lisp": what = KeyPart(st.Lisp); break;
             case "dialog": what = KeyPart(StepWording.DialogTitle(st)); break;
+            case "palette": what = KeyPart(st.Text ?? st.DialogTitle); break;
             case "mark": what = KeyPart(Checkpoints.WithoutNumber(st.Note), 24); break;   // "checkpoint2_cmd_line" -> "cmd_line": no position in the key
             case "doc": what = KeyPart(st.Note, 30); break;
             default: return null;

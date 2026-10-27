@@ -15,7 +15,8 @@ namespace Retrace.Engine.Recordings;
 /// <param name="After">what was done just before, in words ("OK in Draw grid", "Draw › Grid on the ribbon"), or null at the start</param>
 /// <param name="State">what the drawing held ("12 POINT", "the drawing is empty"), or null when the recorder could not read it</param>
 /// <param name="Picture">full path of its screenshot, or null</param>
-public sealed record CheckpointInfo(long N, int Index, int Step, string Name, string AutoName, string? After, string? State, string? Picture)
+/// <param name="Near">what the checkpoint shortcut found at the cursor (mark `near`), or null</param>
+public sealed record CheckpointInfo(long N, int Index, int Step, string Name, string AutoName, string? After, string? State, string? Picture, string? Near = null)
 {
     public bool Renamed => !string.Equals(Name, AutoName, StringComparison.Ordinal);
 }
@@ -27,7 +28,7 @@ public static class Checkpoints
 
     /// <summary>The automatic name: `checkpoint&lt;index&gt;`, then where the last thing was done and with which control, as lowercase words
     /// joined by `_`: after a dialog `checkpoint1_draw_grid_button_ok` (dialog title, the button that closed it), after a ribbon click
-    /// `checkpoint2_draw_button_grid` (panel, button), after a typed command `checkpoint3_cmd_drawgrid`; `checkpoint1` before anything was done.</summary>
+    /// `checkpoint2_draw_button_grid` (panel, button), after a palette `checkpoint3_box_button_draw_box` (palette, button), after a typed command `checkpoint4_cmd_drawgrid`; `checkpoint1` before anything was done.</summary>
     public static string AutoName(int index, CheckpointContext? last)
     {
         var parts = new List<string> { "checkpoint" + index };
@@ -41,6 +42,14 @@ public static class Checkpoints
                 case "ribbon":
                     parts.Add(Token(last.Container));
                     parts.Add("button_" + Token(last.Control));
+                    break;
+                case "palette":
+                    parts.Add(Token(last.Container));
+                    parts.Add(string.IsNullOrEmpty(last.Control) ? "palette" : "button_" + Token(last.Control));
+                    break;
+                case "control":   // the checkpoint shortcut, with the cursor on a control: where, and the control
+                    parts.Add(Token(last.Container));
+                    if (!string.IsNullOrEmpty(last.Control)) parts.Add(Token(last.Control));
                     break;
                 case "command":
                     parts.Add("cmd_" + Token(last.Control));
@@ -80,16 +89,19 @@ public static class Checkpoints
     }
 
     /// <summary>Where the last action before a checkpoint happened, for its name and for the review window.</summary>
-    /// <param name="Kind">dialog | ribbon | command</param>
-    /// <param name="Container">dialog title, ribbon panel (else tab)</param>
-    /// <param name="Control">dialog: "ok" / "cancel" (how it was closed) or null; ribbon: the button's text; command: its name</param>
-    public sealed record CheckpointContext(string Kind, string? Container, string? Control)
+    /// <param name="Kind">dialog | ribbon | palette | command | control (the control at the cursor when the shortcut was pressed)</param>
+    /// <param name="Container">dialog title, ribbon panel (else tab), palette name</param>
+    /// <param name="Control">dialog: "ok" / "cancel" (how it was closed) or null; ribbon or palette: the button's text (palette: null when only values changed); command: its name</param>
+    /// <param name="Description">"control" only: what was at the cursor, in a sentence (stored in the mark's `near`)</param>
+    public sealed record CheckpointContext(string Kind, string? Container, string? Control, string? Description = null)
     {
         /// <summary>In words, for the review window: "OK in Draw grid", "Draw › Grid on the ribbon", "DRAWGRID typed".</summary>
         public string Describe() => Kind switch
         {
             "dialog" => (Control is { Length: > 0 } c ? (c == "ok" ? "OK" : c == "cancel" ? "Cancel" : c) + " in " : "the dialog ") + (Container ?? "(untitled dialog)"),
             "ribbon" => string.Join(" › ", new[] { Container, Control }.Where(x => !string.IsNullOrWhiteSpace(x))) + " on the ribbon",
+            "palette" => (Control is { Length: > 0 } b ? b + " in the " : "the ") + (Container ?? "(untitled)") + " palette",
+            "control" => Description ?? (Control is { Length: > 0 } k ? $"{k} in {Container}" : Container ?? "?"),
             _ => (Control ?? "?").ToUpperInvariant() + " typed",
         };
     }
@@ -103,6 +115,7 @@ public static class Checkpoints
         {
             "ribbon" => new CheckpointContext("ribbon", FirstText(st.Panel, st.Tab), FirstText(st.Text, st.ItemId)),
             "command" or "lisp" => new CheckpointContext("command", null, st.Kind == "lisp" ? "lisp" : st.Command),
+            "palette" => new CheckpointContext("palette", st.DialogTitle, st.Text),
             _ => null,
         };
     }
@@ -150,7 +163,7 @@ public static class Checkpoints
             var name = string.IsNullOrWhiteSpace(st.Note) ? auto : Clean(st.Note);
             var pic = st.Shots.Select(x => x.Abs).FirstOrDefault(File.Exists);
             var state = st.State == null ? null : StepWording.StateText(st.State);
-            list.Add(new CheckpointInfo(n, index, step, name, auto, last?.Describe(), state, pic));
+            list.Add(new CheckpointInfo(n, index, step, name, auto, last?.Describe(), state, pic, st.Description));
         }
         return list;
     }

@@ -47,6 +47,9 @@ public static class StepWording
             case "dialog":
                 line = DialogLine(st);
                 break;
+            case "palette":
+                line = PaletteLine(st);
+                break;
             case "mark":
                 line = Check(st, ctx.Script);
                 break;
@@ -57,10 +60,16 @@ public static class StepWording
                 return null;
         }
         sb.Append($"{n}. {line}\n");
+        if (st.Kind == "mark" && !string.IsNullOrWhiteSpace(st.Description)) sb.Append("   - ").Append(Md.Cell(st.Description)).Append('\n');
         var alt = Alt(line);
         if (st.Kind == "dialog") DialogBody(sb, st, ctx, "   ");
+        else if (st.Kind == "palette")
+        {
+            foreach (var l in ChangeLines(st)) sb.Append("   - ").Append(l).Append('\n');
+            Shots(sb, st.Shots, alt, ctx, "   ", "click");
+        }
         else Shots(sb, st.Shots, alt, ctx, "   ", st.Kind switch { "ribbon" => "click", "mark" => "check", _ => "command" });
-        if (st.Kind is "ribbon" or "command" or "lisp")
+        if (st.Kind is "ribbon" or "command" or "lisp" || (st.Kind == "palette" && st.Command != null))
         {
             int d = 0;
             foreach (var a in st.Answers)
@@ -76,6 +85,16 @@ public static class StepWording
             Shots(sb, st.EndShots, alt, ctx, "   ", "end");
         }
         return sb.ToString().TrimEnd('\n') + "\n";
+    }
+
+    /// <summary>"In the **Box** palette (Samples), make these changes, then click **Draw box**:"; the changes follow as sub-items.</summary>
+    static string PaletteLine(RecordingStep st)
+    {
+        var where = $"In the **{Md.Cell(string.IsNullOrWhiteSpace(st.DialogTitle) ? "(untitled)" : st.DialogTitle)}** palette"
+                    + (string.IsNullOrWhiteSpace(st.Panel) || st.Panel == st.DialogTitle ? "" : $" ({Md.Cell(st.Panel)})");
+        var click = string.IsNullOrWhiteSpace(st.Text) ? null : $"click **{Md.Cell(st.Text)}**";
+        if (ChangeLines(st).Count == 0) return click == null ? where + ", leave the values as they are" : $"{where}, {click}";
+        return click == null ? where + ", make these changes:" : $"{where}, make these changes, then {click}:";
     }
 
     static string DialogLine(RecordingStep st) =>
@@ -103,7 +122,7 @@ public static class StepWording
     }
 
     /// <summary>One change in words: "Set **Rows** to `5` (was `3`)", "Clear **Name** (was `x`)", "Tick **Snap**", "Untick **Snap**",
-    /// "Choose **Metric**"; null when it says nothing (a radio that became "off").</summary>
+    /// "Choose **Metric**", "Choose `beauty` in **Category**"; null when it says nothing (a radio that became "off").</summary>
     public static string? ChangeText(RecordingDialogValue v, Func<string?, string> text, Func<string?, string> code, bool bold)
     {
         string B(string s) => bold ? $"**{text(s)}**" : text(s);
@@ -116,6 +135,8 @@ public static class StepWording
             case "radio":
                 var chosen = v.After is "on" ? v.Label : v.After is "off" or "" ? null : v.After;   // "on"/"off": one radio on its own; else the text of the checked radio in a group
                 return chosen == null ? null : $"Choose {B(chosen)}";
+            case "list" or "combo" when v.After.Length > 0:
+                return $"Choose {code(v.After)} in {B(v.Label)}" + (v.Before.Length > 0 ? $" (was {code(v.Before)})" : "");
             default:
                 return v.After.Length == 0
                     ? $"Clear {B(v.Label)}" + (v.Before.Length > 0 ? $" (was {code(v.Before)})" : "")

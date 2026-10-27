@@ -24,6 +24,9 @@ in the interactive session (`schtasks /create ... /it`, `/run`, then `/delete`).
 | `acad-ready.ps1` | Task-only: writes `ready`, `busy` or `none: <reason>` to `C:\retrace-vm\out\ready.txt`. |
 | `start-acad.ps1` / `.cmd` | Starts AutoCAD in the interactive session. Returns when it is ready (runs `wait-acad.ps1`). AutoCAD's first start may need a person for its sign-in and start-up screens. |
 | `wincancel.ps1` | Posts IDCANCEL to a top-level window by title. |
+| `ui-act.sh "<action>" ...` / `ui-act.ps1` | Runs on your Mac or Linux box: drives AutoCAD's UI in the interactive session for palette and checkpoint tests (real mouse clicks and hovering, keys, the checkpoint shortcut, posted clicks, UI Automation, window lists) and prints what it did. The actions are listed at the top of `ui-act.ps1`. |
+| `burst.ps1 [-Count 14]` | Task-only: a screenshot every 1.5 s to `C:\retrace-vm\out\burst-NN.png`; start it, then a replay, to see the screen while steps run. |
+| `marks.sh <test folder>` | Runs on your Mac or Linux box: the checkpoints of a recording on the VM, with what the checkpoint shortcut found at the cursor. |
 
 Run the task-only scripts (`esc.ps1`, `shot.ps1`) like this:
 
@@ -40,5 +43,8 @@ Lessons learned:
   command half-answered. `esc.ps1` gets AutoCAD out of a prompt; `shot.ps1` shows what is on screen.
 * Avoid typing AutoLISP through this chain: quotes break on the way, and an unterminated string leaves AutoCAD waiting for input.
   Read state with a COM query file instead.
-* Simulated mouse clicks (`SetCursorPos`/`mouse_event`) may not reach a VM's desktop; posted window messages do.
+* Real input from an interactive one-shot task (`SetCursorPos` + `mouse_event`, `keybd_event`, SendKeys) reaches the desktop (VM with a
+  logged-on user, 2026-10-27). Posted window messages reach WinForms buttons but do not press WPF buttons.
+* To take the foreground a hidden task taps Alt: that shows the ribbon's key tips (they eat the next letters: press Esc) and rolls up an
+  open auto roll-up palette. `ui-act.ps1`'s `chordraw`, `raw` and `rawmouse` skip it.
 * `SetVariable` over COM needs the variable's type, e.g. `[int16]0` for `DYNMODE` and `FILEDIA`.

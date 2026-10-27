@@ -25,12 +25,16 @@ sealed class SettingsWindow : Window
     readonly List<Row> _rows = new();
     readonly CheckBox _shots = new() { Content = "Take screenshots while recording (saved in the test folder, used by steps.md)", Margin = new Thickness(0, 10, 0, 0) };
     readonly CheckBox _autoFill = new() { Content = "RETRACERUN fills dialogs with the recorded values and closes them (else you do it)", Margin = new Thickness(0, 6, 0, 0) };
-    readonly CheckBox _dialogValues = new() { Content = "Record which values you change in dialogs (shown in the test script)", Margin = new Thickness(0, 6, 0, 0) };
+    readonly CheckBox _dialogValues = new() { Content = "Record which values you change in dialogs and palettes (shown in the test script)", Margin = new Thickness(0, 6, 0, 0) };
+    readonly CheckBox _showUi = new() { Content = "Run test opens rolled-up and auto-hidden palettes while it drives them", Margin = new Thickness(0, 6, 0, 0), ToolTip = "Moves the mouse over the palette (and back after) so you can watch the step. Off: the palette is filled while it stays hidden." };
     readonly CheckBox _review = new() { Content = "After Stop, show the checkpoints so you can rename them", Margin = new Thickness(0, 6, 0, 0), ToolTip = "Opens the checkpoints window when a recording with checkpoints stops. RETRACECHECKPOINTS opens it any time." };
     readonly CheckBox _docx = new() { Content = "Also write Word (.docx)", Margin = new Thickness(0, 6, 0, 0), ToolTip = "steps.docx next to steps.md, made when a recording is stopped." };
     readonly CheckBox _xlsx = new() { Content = "Also write Excel (.xlsx)", Margin = new Thickness(0, 6, 0, 0), ToolTip = "steps.xlsx next to steps.md: one row per step with a PASS / FAIL column." };
     readonly ComboBox _tabPos = new() { MinWidth = 320, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(8, 0, 0, 0) };
     readonly List<string> _tabPosValues = new();
+    readonly TextBox _key = new() { Width = 180, IsReadOnly = true, IsReadOnlyCaretVisible = false, Padding = new Thickness(3), Margin = new Thickness(8, 0, 0, 0), ToolTip = "Click here, then press the keys. Backspace or Delete turns the shortcut off." };
+    readonly TextBlock _keyMsg = new() { Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+    string _keyValue = KeyChord.Default;   // "None" = off; always valid
     public RetraceSettings Result { get; private set; }
     public bool Saved { get; private set; }
 
@@ -71,6 +75,8 @@ sealed class SettingsWindow : Window
         root.Children.Add(_autoFill);
         _review.IsChecked = current.ReviewCheckpoints;
         root.Children.Add(_review);
+        _showUi.IsChecked = current.ShowDrivenUi;
+        root.Children.Add(_showUi);
         _docx.IsChecked = current.ExportDocx;
         root.Children.Add(_docx);
         _xlsx.IsChecked = current.ExportXlsx;
@@ -81,6 +87,16 @@ sealed class SettingsWindow : Window
         FillTabPositions(current.RibbonTabPosition);
         posRow.Children.Add(_tabPos);
         root.Children.Add(posRow);
+
+        var keyRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
+        keyRow.Children.Add(new TextBlock { Text = "Checkpoint shortcut", VerticalAlignment = VerticalAlignment.Center });
+        SetKey(KeyChord.IsOff(current.CheckpointKey) ? "None" : current.CheckpointKey);
+        _key.PreviewKeyDown += OnKeyCapture;
+        keyRow.Children.Add(_key);
+        var keyDefault = Btn("Default"); keyDefault.Click += (_, _) => SetKey(KeyChord.Default);
+        keyRow.Children.Add(keyDefault);
+        keyRow.Children.Add(_keyMsg);
+        root.Children.Add(keyRow);
 
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
         var reset = Btn("Reset to defaults"); reset.Click += (_, _) => ResetAll();
@@ -104,6 +120,34 @@ sealed class SettingsWindow : Window
         var i = _tabPosValues.FindIndex(v => string.Equals(v, cur, StringComparison.OrdinalIgnoreCase));
         if (i < 0) { Add("Right of " + cur.Substring(RibbonTabPosition.AfterPrefix.Length) + " (not in this workspace)", cur); i = _tabPosValues.Count - 1; }
         _tabPos.SelectedIndex = i;
+    }
+
+    /// <summary>Shows a valid setting value ("None" or a chord) and clears the message.</summary>
+    void SetKey(string value)
+    {
+        value = KeyChord.IsOff(value) ? "None" : KeyChord.TryParse(value, out var c, out _) ? c.Format() : KeyChord.Default;
+        _keyValue = value;
+        _key.Text = value;
+        _keyMsg.Text = value == "None" ? "off" : "";
+        _keyMsg.Foreground = Brushes.DimGray;
+    }
+
+    /// <summary>The box takes the next key chord: modifiers held plus the key. A lone modifier waits; Backspace / Delete turns it off.</summary>
+    void OnKeyCapture(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        e.Handled = true;
+        var key = e.Key == System.Windows.Input.Key.System ? e.SystemKey : e.Key;
+        if (key is System.Windows.Input.Key.LeftCtrl or System.Windows.Input.Key.RightCtrl or System.Windows.Input.Key.LeftShift or System.Windows.Input.Key.RightShift
+            or System.Windows.Input.Key.LeftAlt or System.Windows.Input.Key.RightAlt or System.Windows.Input.Key.LWin or System.Windows.Input.Key.RWin
+            or System.Windows.Input.Key.ImeProcessed or System.Windows.Input.Key.None) return;
+        var mods = System.Windows.Input.Keyboard.Modifiers;
+        if (mods == System.Windows.Input.ModifierKeys.None && key is System.Windows.Input.Key.Back or System.Windows.Input.Key.Delete) { SetKey("None"); return; }
+        if (key == System.Windows.Input.Key.Tab && mods == System.Windows.Input.ModifierKeys.None) { e.Handled = false; return; }   // let Tab leave the box
+        var name = key is >= System.Windows.Input.Key.D0 and <= System.Windows.Input.Key.D9 ? ((int)key - (int)System.Windows.Input.Key.D0).ToString() : key.ToString();   // A-Z and F1-F24 print as they are
+        var text = (mods.HasFlag(System.Windows.Input.ModifierKeys.Control) ? "Ctrl+" : "") + (mods.HasFlag(System.Windows.Input.ModifierKeys.Shift) ? "Shift+" : "")
+                 + (mods.HasFlag(System.Windows.Input.ModifierKeys.Alt) ? "Alt+" : "") + name;
+        if (KeyChord.TryParse(text, out var chord, out var error)) SetKey(chord.Format());
+        else { _keyMsg.Text = error; _keyMsg.Foreground = Brushes.Firebrick; }
     }
 
     static Button Btn(string text) => new() { Content = text, Padding = new Thickness(10, 3, 10, 3), Margin = new Thickness(4, 0, 0, 0), MinWidth = 64 };
@@ -188,9 +232,11 @@ sealed class SettingsWindow : Window
         _dialogValues.IsChecked = true;
         _autoFill.IsChecked = true;
         _review.IsChecked = true;
+        _showUi.IsChecked = true;
         _docx.IsChecked = false;
         _xlsx.IsChecked = false;
         _tabPos.SelectedIndex = 0;
+        SetKey(KeyChord.Default);
     }
 
     void Save()
@@ -205,10 +251,12 @@ sealed class SettingsWindow : Window
         s.DialogValues = _dialogValues.IsChecked == true;
         s.AutoFillDialogs = _autoFill.IsChecked == true;
         s.ReviewCheckpoints = _review.IsChecked == true;
+        s.ShowDrivenUi = _showUi.IsChecked == true;
         s.ExportDocx = _docx.IsChecked == true;
         s.ExportXlsx = _xlsx.IsChecked == true;
         var pos = _tabPos.SelectedIndex >= 0 ? _tabPosValues[_tabPos.SelectedIndex] : RibbonTabPosition.AfterHome;
         s.RibbonTabPosition = pos == RibbonTabPosition.AfterHome ? "" : pos;
+        s.CheckpointKey = _keyValue;
         Saved = true;
         Close();
     }

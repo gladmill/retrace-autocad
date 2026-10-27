@@ -276,7 +276,7 @@ public class DialogValuesTests : IDisposable
         Assert.Contains("     - Tick **Snap**\n", md);
         Assert.Contains("     - Untick **Ortho**\n", md);
         Assert.Contains("     - Choose **Imperial**\n", md);
-        Assert.Contains("     - Set **Style** to `B` (was `A`)\n", md);
+        Assert.Contains("     - Choose `B` in **Style** (was `A`)\n", md);
         Assert.Contains("     - Set **Quality** to `7` (was `1`)\n", md);
         Assert.Equal(1, Retrace.Core.ScriptRef.DialogStepNumber(md, 1));
     }

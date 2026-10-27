@@ -62,11 +62,14 @@ static class DialogFill
             switch (live.Kind)
             {
                 case "edit":
+                    if (WinFormsControls.TrySetText(h, c.After)) return null;
                     return SendText(h, WM_SETTEXT, 0, c.After, out _) ? null : "the edit box did not answer";
                 case "check":
                 {
                     int want = c.After == "on" ? 1 : c.After == "off" ? 0 : -1;
                     if (want < 0) return $"cannot set a check box to \"{c.After}\"";
+                    // WinForms draws most check boxes itself (BS_OWNERDRAW): BM_GETCHECK does not tell, so set Checked; others get a real click
+                    if (((uint)GetWindowLong(h, GWL_STYLE) & 0xF) == 0xB && WinFormsControls.TrySetChecked(h, want == 1)) return null;
                     if (Send(h, BM_GETCHECK) == want) return null;
                     Send(h, BM_CLICK);
                     if (Send(h, BM_GETCHECK) != want) Send(h, BM_SETCHECK, want);   // a plain (non-auto) check box does not toggle by itself
@@ -78,6 +81,7 @@ static class DialogFill
                     foreach (var r in hs)
                     {
                         if (!FillMatcher.ValueMatches("radio", want, Text(r))) continue;
+                        if (((uint)GetWindowLong(r, GWL_STYLE) & 0xF) == 0xB && WinFormsControls.TrySetChecked(r, true)) return null;
                         if (Send(r, BM_GETCHECK) != 1) Send(r, BM_CLICK);
                         return null;
                     }
@@ -187,7 +191,7 @@ static class DialogFill
     internal static FieldFillResult Verify(FieldChange c, string? current, FieldFillResult applied)
     {
         if (current == null) return FieldFillResult.Fail(c.Label, "the field is gone after setting it");
-        return FillMatcher.ValueMatches(c.Kind, FillMatcher.Expected(c), current) ? applied : FieldFillResult.Fail(c.Label, $"value is \"{current}\" after setting");
+        return FillMatcher.Satisfied(c, current) ? applied : FieldFillResult.Fail(c.Label, $"value is \"{current}\" after setting");
     }
 
     static string? ApplyUia(AutomationElement el, DialogField live, FieldChange c)

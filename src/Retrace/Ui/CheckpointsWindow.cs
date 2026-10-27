@@ -205,6 +205,7 @@ sealed class CheckpointsWindow : Window
         auto.Inlines.Add(new System.Windows.Documents.Run(c.AutoName) { FontFamily = new FontFamily("Consolas") });
         right.Children.Add(auto);
         if (c.After != null) right.Children.Add(Line("Taken after: " + c.After));
+        if (c.Near != null) right.Children.Add(Line(c.Near));
         right.Children.Add(Line(c.State != null ? "Checks that " + c.State : "The drawing could not be read at this checkpoint, so it is not checked."));
 
         var reset = new Button { Content = "Use the automatic name", Padding = new Thickness(8, 2, 8, 2), Margin = new Thickness(0, 8, 0, 0), HorizontalAlignment = HorizontalAlignment.Left };
