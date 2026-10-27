@@ -195,6 +195,31 @@ public class DialogValuesTests : IDisposable
     }
 
     [Fact]
+    public void A_changed_dialog_shows_its_after_picture_even_when_the_before_picture_is_missing()
+    {
+        Directory.CreateDirectory(Path.Combine(_dir, "s", "screenshots"));
+        File.WriteAllBytes(Path.Combine(_dir, "s", "screenshots", "003-dialog-after.png"), new byte[] { 1 });
+        string[] Session(string values) => new[]
+        {
+            """{"t":100,"n":1,"type":"cmd_start","command":"DRAWGRID","origin":"typed/other"}""",
+            """{"t":110,"n":2,"type":"modal_enter","title":"AutoCAD"}""",
+            """{"t":200,"n":3,"type":"modal_title","title":"Draw grid"}""",
+            """{"t":1700,"n":5,"type":"shot","for":3,"file":"screenshots/003-dialog-after.png","what":"dialog-after"}""",
+            values,
+            """{"t":1910,"n":7,"type":"modal_leave"}""",
+            """{"t":1920,"n":8,"type":"cmd_end","command":"DRAWGRID"}""",
+        };
+        var md = Script(Session("""{"t":1900,"n":6,"type":"dialog_values","for":3,"title":"Draw grid","source":"win32","fields":[{"key":"id:1","label":"Rows","kind":"edit","before":"3","after":"5"}],"read":4,"closedWith":"ok"}"""));
+        Assert.Contains("After (what it should look like before you press OK):", md);
+        Assert.Contains("![Draw grid with the changes](screenshots/003-dialog-after.png)", md);
+        Assert.DoesNotContain("Before:", md);
+
+        // no change made: the after picture stays out
+        md = Script(Session("""{"t":1900,"n":6,"type":"dialog_values","for":3,"title":"Draw grid","source":"win32","fields":[],"read":4,"closedWith":"ok"}"""));
+        Assert.DoesNotContain("003-dialog-after", md);
+    }
+
+    [Fact]
     public void A_dialog_closed_with_Cancel_says_so_and_lists_no_changes()
     {
         var md = Script(

@@ -55,6 +55,39 @@ public static class Exporter
         finally { try { if (File.Exists(tmp)) File.Delete(tmp); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { } }
     }
 
+    // ---- which Word / Excel files Retrace wrote --------------------------------------------------------------------------
+    // Next to steps.docx / steps.xlsx, a hidden ".steps.xlsx.retrace" holds the size and time of the file as Retrace wrote it, or "kept"
+    // once Retrace kept a file someone changed. Saving checkpoint names rewrites steps.md, so its time can't tell an edited file apart.
+
+    static string StampPath(string file) => Path.Combine(Path.GetDirectoryName(file) ?? "", "." + Path.GetFileName(file) + ".retrace");
+    static string Fingerprint(string file) { var i = new FileInfo(file); return $"{i.Length} {i.LastWriteTimeUtc.Ticks}"; }
+
+    static void WriteStamp(string file, string text)
+    {
+        var stamp = StampPath(file);
+        try
+        {
+            if (File.Exists(stamp)) File.SetAttributes(stamp, FileAttributes.Normal);
+            File.WriteAllText(stamp, text);
+            if (OperatingSystem.IsWindows()) File.SetAttributes(stamp, FileAttributes.Hidden);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }   // no stamp: the next save falls back to file times
+    }
+
+    /// <summary>Marks <paramref name="file"/> as written by Retrace just now.</summary>
+    public static void MarkWritten(string file) { if (File.Exists(file)) WriteStamp(file, Fingerprint(file)); }
+
+    /// <summary>Marks <paramref name="file"/> as someone's: later saves keep it too.</summary>
+    public static void MarkKept(string file) => WriteStamp(file, "kept");
+
+    /// <summary>true: <paramref name="file"/> is unchanged since Retrace wrote it; false: changed since, or kept before; null: no stamp (older version).</summary>
+    public static bool? WrittenByRetrace(string file)
+    {
+        var stamp = StampPath(file);
+        try { return File.Exists(stamp) ? File.ReadAllText(stamp).Trim() == Fingerprint(file) : null; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
+    }
+
     /// <summary>Writes the chosen files next to <paramref name="stepsMd"/>, recording what it did in <paramref name="r"/> (Docx / Xlsx paths, notes, Error).
     /// Returns false on failure. <paramref name="replace"/> is the move onto the real name (a seam for tests).</summary>
     public static bool Export(string stepsMd, bool docx, bool xlsx, EngineResult r, Action<string, string>? replace = null)
@@ -72,6 +105,7 @@ public static class Exporter
             try
             {
                 string path = WriteAtomic(target, ext == ".docx" ? t => ExportDocx.Write(doc, t) : t => ExportXlsx.Write(doc, folder, t), out var fell, replace);
+                if (!fell) MarkWritten(path);
                 if (fell) r.Warn($"{Path.GetFileName(target)} is open in {(ext == ".docx" ? "Word" : "Excel")}; wrote {Path.GetFileName(path)} instead (close the old one to get the usual name)");
                 r.Info($"{label + ":",-9} {path}");
                 if (ext == ".docx") r.Docx = path; else r.Xlsx = path;

@@ -54,8 +54,12 @@ The guide palette needs the Microsoft Edge WebView2 Runtime (part of Windows 11 
 ## Quick start
 
 1. **Record.** Ribbon Retrace > Record (`RETRACERECORD`), give the test a name, then work in the drawing as the tester would.
-2. **Checkpoint.** After each result worth checking: Checkpoint (`RETRACEMARK`), type what you expect. Retrace stores a snapshot of the drawing with it.
+2. **Checkpoint.** After each result worth checking, click Checkpoint (`RETRACEMARK`). Nothing to type: Retrace stores a snapshot of the drawing and a
+   screenshot, and names the checkpoint after the last thing you did, as `checkpoint<n>` plus the dialog title or ribbon panel and the control
+   (`checkpoint1_draw_grid_button_ok`, `checkpoint2_draw_button_grid`, `checkpoint3_cmd_drawgrid`).
 3. **Stop** (`RETRACESTOP`). Retrace closes the recording and writes `steps.md` in the test folder (plus `steps.docx` / `steps.xlsx` if you turned those on).
+   If the test has checkpoints, the Checkpoints window opens: each one with its screenshot, what it checks and its name. Type better names and Save;
+   the steps, Word and Excel files are written again. Renaming never changes what is checked. Reopen it any time with Name checkpoints (`RETRACECHECKPOINTS`).
    Steps (`RETRACESTEPS`) opens the newest one.
 4. **Run the test.** Run test (`RETRACERUN`) asks for a `recording.jsonl`, opens a new drawing, replays the test and shows a verdict.
    Dialogs are filled in from the recorded values when possible, otherwise Retrace waits for you.
@@ -71,7 +75,9 @@ All are on the Retrace ribbon tab (panels Record, Test, Guide, Open, Tools) exce
 | Command | What it does |
 |---|---|
 | `RETRACERECORD` | Start recording. Asks for a test name (spaces allowed; Enter alone gives `test`). Takes screenshots and records dialog values if those settings are on. |
-| `RETRACEMARK` | Add a checkpoint: a note of what you expect (Enter = no note) and a snapshot of the drawing. |
+| `RETRACEMARK` | Add a checkpoint at once, without a prompt: a snapshot of the drawing and a screenshot, named automatically (see Quick start). |
+| `-RETRACEMARK` | The same, but asks for the name on the command line (Enter = the automatic name). Not on the ribbon. |
+| `RETRACECHECKPOINTS` | The Checkpoints window for the newest test: rename its checkpoints. Also opens after `RETRACESTOP`, and from Open test > Checkpoints. |
 | `RETRACESTOP` | Stop recording, take the screenshots still queued, write `steps.md` (and docx / xlsx) in the background. |
 | `RETRACESTATUS` | Recording state, version, root, settings, docs and tests folders, Word / Excel export state. |
 | `RETRACESTEPS` | Open the steps of the newest test. |
@@ -127,6 +133,7 @@ Recordings hold drawing names, typed text, coordinates and object handles. Treat
 | `screenshots` | `true` | Take screenshots while recording. |
 | `dialogValues` | `true` | Record which dialog fields you change. |
 | `autoFillDialogs` | `true` | `RETRACERUN` fills dialogs from the recorded values and closes them. |
+| `reviewCheckpoints` | `true` | Open the Checkpoints window after `RETRACESTOP` when the test has checkpoints. |
 | `exportDocx` | `false` | Also write `steps.docx` when a recording stops. |
 | `exportXlsx` | `false` | Also write `steps.xlsx` when a recording stops. |
 | `ribbonTabPosition` | empty (= `afterHome`) | `afterHome`, `first`, `last` or `after:<tab id or title>`, for example `after:ID_TabInsert`. |

@@ -7,7 +7,7 @@ using Markdig.Syntax.Inlines;
 namespace Retrace.Engine.Recordings;
 
 /// <summary>One numbered step of a test script, as the Excel sheet shows it.</summary>
-public sealed record StepRow(int Number, string Action, string Details, string Check, string? Picture);
+public sealed record StepRow(int Number, string Action, string Details, string Check, IReadOnlyList<string> Pictures);
 
 /// <summary>A parsed "steps.md": the Markdig tree plus the pieces the Excel export needs.</summary>
 public sealed class StepsDoc
@@ -66,23 +66,23 @@ public sealed class StepsDoc
     {
         string action = "";
         var details = new List<string>();
-        string? picture = null;
+        var pictures = new List<string>();
         foreach (var b in item)
         {
             if (b is ParagraphBlock p)
             {
-                picture ??= Images(p.Inline).FirstOrDefault();
+                AddPictures(pictures, p.Inline);
                 var t = PlainText(p.Inline);
                 if (t.Length == 0 || (action.Length > 0 && IsPictureCaption(t))) continue;
                 if (action.Length == 0) action = t; else details.Add(t);
             }
-            else if (b is ListBlock l) CollectList(l, 0, details, ref picture);
+            else if (b is ListBlock l) CollectList(l, 0, details, pictures);
         }
         var check = action.StartsWith("Check:", StringComparison.OrdinalIgnoreCase) ? action["Check:".Length..].Trim() : "";
-        return new StepRow(number, action, string.Join("\n", details), check, picture);
+        return new StepRow(number, action, string.Join("\n", details), check, pictures);
     }
 
-    void CollectList(ListBlock list, int depth, List<string> lines, ref string? picture)
+    void CollectList(ListBlock list, int depth, List<string> lines, List<string> pictures)
     {
         foreach (var item in list.OfType<ListItemBlock>())
         {
@@ -91,15 +91,20 @@ public sealed class StepsDoc
             {
                 if (b is ParagraphBlock p)
                 {
-                    picture ??= Images(p.Inline).FirstOrDefault();
+                    AddPictures(pictures, p.Inline);
                     var t = PlainText(p.Inline);
                     if (t.Length == 0 || IsPictureCaption(t)) continue;
                     lines.Add(new string(' ', depth * 2) + t);
                     first = false;
                 }
-                else if (b is ListBlock l) CollectList(l, first ? depth : depth + 1, lines, ref picture);
+                else if (b is ListBlock l) CollectList(l, first ? depth : depth + 1, lines, pictures);
             }
         }
+    }
+
+    static void AddPictures(List<string> into, ContainerInline? c)
+    {
+        foreach (var url in Images(c)) if (!into.Contains(url)) into.Add(url);
     }
 
     /// <summary>The captions over a dialog's before/after pictures ("Before:", "After (what it should look like ...):"): they say nothing

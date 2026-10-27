@@ -96,7 +96,14 @@ public sealed class ShotScheduler
         return take;
     }
 
-    public void Clear() => _pending.Clear();
+    /// <summary>Forget everything: queued requests, the last picture per target and the drop count. A new recording starts its clock at 0,
+    /// so a stale `_last` from the previous recording would put every request inside the gap and drop it.</summary>
+    public void Clear()
+    {
+        _pending.Clear();
+        _last.Clear();
+        Dropped = 0;
+    }
 }
 
 /// <summary>Pixel work that needs no Windows API: shrinking a picture so its longest side is at most a limit.</summary>

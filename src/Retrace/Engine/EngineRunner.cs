@@ -45,6 +45,41 @@ public static class EngineRunner
         if (docx || xlsx) Exporter.Export(script, docx, xlsx, r);
     });
 
+    /// <summary>Renames checkpoints in a recording (event n -> name; empty = its automatic name), then writes its steps.md again, and steps.docx /
+    /// steps.xlsx when <paramref name="docx"/> / <paramref name="xlsx"/> ask for them or they exist. A Word or Excel file changed after Retrace
+    /// wrote it (a tester may have filled in results) is kept and named in a warning. Fails only when the names could not be saved; when
+    /// writing the steps or files fails afterwards, the names are saved and the result carries a warning.</summary>
+    public static EngineResult RenameCheckpoints(string recording, IReadOnlyDictionary<long, string> names, bool docx = false, bool xlsx = false) => Guard(r =>
+    {
+        if (!File.Exists(recording)) { r.Fail($"not found: {recording}"); return; }
+        int changed;
+        try { changed = Checkpoints.Rename(recording, names); }
+        catch (InvalidDataException ex) { r.Fail(ex.Message); return; }
+        r.Info($"renamed:  {changed} checkpoint(s)");
+        var dir = Path.GetDirectoryName(recording) ?? "";
+        var md = Path.Combine(dir, TestFolders.StepsFile);
+        bool Want(string file, bool setting)
+        {
+            var path = Path.Combine(dir, file);
+            if (!File.Exists(path)) return setting;
+            // Without a stamp (written by an older version), a file newer than steps.md was edited.
+            var own = Exporter.WrittenByRetrace(path)
+                      ?? !(File.Exists(md) && File.GetLastWriteTimeUtc(path) > File.GetLastWriteTimeUtc(md).AddMinutes(2));
+            if (own) return true;
+            Exporter.MarkKept(path);
+            r.Warn($"{file} was changed after Retrace wrote it, so it was kept (results filled in?). Open test makes a new one.");
+            return false;
+        }
+        bool d = Want("steps.docx", docx), x = Want("steps.xlsx", xlsx);
+        EngineResult steps;
+        try { steps = WriteSteps(recording, d, x); }
+        catch (Exception ex) { r.Warn($"the names are saved, but the steps were not written again: {ex.Message}"); return; }
+        r.Script = steps.Script; r.Docx = steps.Docx; r.Xlsx = steps.Xlsx;
+        foreach (var m in steps.Messages) r.Info(m);
+        foreach (var w in steps.Warnings) r.Warn(w);
+        if (steps.Error != null) r.Warn($"the names are saved, but the steps were not written again: {steps.Error}");
+    });
+
     /// <summary>Word and / or Excel version of an existing script. <paramref name="path"/> is a recording.jsonl, a test folder or a steps.md
     /// (a recording without a script gets one first). Neither flag set means both.</summary>
     public static EngineResult Export(string path, bool docx, bool xlsx, Action<string, string>? replace = null) => Guard(r =>

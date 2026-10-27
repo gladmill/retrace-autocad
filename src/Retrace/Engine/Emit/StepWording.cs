@@ -139,13 +139,14 @@ public static class StepWording
         var after = dlg.Shots.Where(s => s.What == "dialog-after").Take(1).ToList();
         var changed = dlg.ClosedWith != "cancel" && ChangeLines(dlg).Count > 0;
         ctx.ShotRole = "dialog-before";
-        var pair = changed && after.Count > 0 && before.Any(s => ctx.ShotHref(s) != null) && after.Any(s => ctx.ShotHref(s) != null);
+        var showAfter = changed && after.Any(s => ctx.ShotHref(s) != null);
+        var pair = showAfter && before.Any(s => ctx.ShotHref(s) != null);
         if (pair) sb.Append($"\n{indent}Before:\n");
         Shots(sb, before, pair ? Alt($"{title} as it opens") : Alt(DialogLine(dlg)), ctx, indent, "dialog-before");
         if (before.Count == 0 && ctx.DialogPicture(dlg) is { } pic)
             sb.Append($"\n{indent}![{Md.Cell(pic.Alt)}]({pic.Href})\n\n");
         DialogValueLines(sb, dlg, indent);
-        if (!pair) return;
+        if (!showAfter) return;   // the after picture is shown even when the before picture is missing
         sb.Append($"\n{indent}After (what it should look like before you press OK):\n");
         Shots(sb, after, Alt($"{title} with the changes"), ctx, indent, "dialog-after");
     }

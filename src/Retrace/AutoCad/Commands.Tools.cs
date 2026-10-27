@@ -32,6 +32,7 @@ public sealed partial class Commands
         if (_testIdleHooked) { AcApp.Idle -= OnTestIdle; _testIdleHooked = false; }
         _pending = null;
         CloseOpenTest();
+        CloseCheckpoints();
         EngineJobs.Cancel();
     }
 
@@ -168,6 +169,9 @@ public sealed partial class Commands
                 var af = ed.GetKeywords(new PromptKeywordOptions($"\nRETRACERUN fills dialogs itself [Yes/No] <{(s.AutoFillDialogs ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
                 if (af.Status == PromptStatus.Cancel) return;
                 n.AutoFillDialogs = af.Status == PromptStatus.OK ? af.StringResult == "Yes" : s.AutoFillDialogs;
+                var rc = ed.GetKeywords(new PromptKeywordOptions($"\nShow the checkpoints to rename after Stop [Yes/No] <{(s.ReviewCheckpoints ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
+                if (rc.Status == PromptStatus.Cancel) return;
+                n.ReviewCheckpoints = rc.Status == PromptStatus.OK ? rc.StringResult == "Yes" : s.ReviewCheckpoints;
                 var xd = ed.GetKeywords(new PromptKeywordOptions($"\nAlso write a Word file (steps.docx) [exportDocx] [Yes/No] <{(s.ExportDocx ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
                 if (xd.Status == PromptStatus.Cancel) return;
                 n.ExportDocx = xd.Status == PromptStatus.OK ? xd.StringResult == "Yes" : s.ExportDocx;
@@ -219,6 +223,7 @@ public sealed partial class Commands
                $"  Screenshots      : {(s.Screenshots ? "on" : "off")} (while recording)\n" +
                $"  Dialog values    : {(s.DialogValues ? "on" : "off")} (changed fields of dialogs, while recording)\n" +
                $"  Fill dialogs     : {(s.AutoFillDialogs ? "on" : "off")} (RETRACERUN fills a dialog with the recorded values and closes it)\n" +
+               $"  Review checks    : {(s.ReviewCheckpoints ? "on" : "off")} (after Stop, the checkpoints window opens to rename them)\n" +
                $"  Word export      : {(s.ExportDocx ? "on" : "off")} (steps.docx next to steps.md)\n" +
                $"  Excel export     : {(s.ExportXlsx ? "on" : "off")} (steps.xlsx next to steps.md)\n" +
                $"  Ribbon tab       : {RibbonTabPosition.Normalize(s.RibbonTabPosition)} (afterHome, first, last, after:<tab id or title>)\n";
@@ -305,7 +310,7 @@ public sealed partial class Commands
 
     /// <summary>Runs the engine in the background (EngineJobs.WriteSteps). Never throws; the session is kept whatever happens.
     /// openWhenDone: show the script when it is written (RETRACESTEPS for a session without one).</summary>
-    void BuildScript(string sessionPath, bool openWhenDone)
+    void BuildScript(string sessionPath, bool openWhenDone, bool reviewWhenDone = false)
     {
         try
         {
@@ -314,14 +319,14 @@ public sealed partial class Commands
             var md = TestFolders.ScriptPath(sessionPath);
             var disp = Dispatcher.CurrentDispatcher;
             var wait = EngineJobs.IsRunning;
-            if (!EngineJobs.WriteSteps(sessionPath, docx, xlsx, r => disp.BeginInvoke(() => ScriptDone(r, sessionPath, md, openWhenDone)), out var runErr))
+            if (!EngineJobs.WriteSteps(sessionPath, docx, xlsx, r => disp.BeginInvoke(() => ScriptDone(r, sessionPath, md, openWhenDone, reviewWhenDone)), out var runErr))
             { Print($"Steps not written: {runErr} Run RETRACESTEPS in a moment."); return; }
             Print(wait ? "Another Retrace job is running; the steps are queued and written right after it..." : "Writing the steps in the background...");
         }
         catch (Exception ex) { Log.Error("BuildScript", ex); Print("Steps not written: " + ex.Message); }
     }
 
-    void ScriptDone(EngineResult r, string sessionPath, string md, bool openWhenDone)
+    void ScriptDone(EngineResult r, string sessionPath, string md, bool openWhenDone, bool reviewWhenDone = false)
     {
         try
         {
@@ -333,6 +338,7 @@ public sealed partial class Commands
                 foreach (var w in r.Warnings) Print("  warning: " + w);
                 if (!r.Success) Print($"  Word / Excel export failed: {r.Error}");
                 if (openWhenDone) OpenScriptFile(r.Script);
+                if (reviewWhenDone) ReviewAfterStop(sessionPath);
             }
             else if (r.Cancelled) Print("Steps cancelled. The recording is kept: " + sessionPath);
             else Print($"Steps FAILED: {r.Error}. The recording is kept: {sessionPath}");

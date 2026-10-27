@@ -15,6 +15,7 @@ The **tests folder** (setting `testsFolder`, default `C:\temp\retrace\tests`) ho
     steps.md                            the test as steps for a person; written at RETRACESTOP, rewritten from scratch each time, do not edit
     steps.docx                          optional (setting exportDocx): Word version of steps.md; replaced each time
     steps.xlsx                          optional (setting exportXlsx): one row per step with a PASS / FAIL column, plus an Info sheet
+    .steps.docx.retrace, .steps.xlsx.retrace   hidden: the size and time of the file as Retrace wrote it, or "kept" (below)
     screenshots\                        PNGs; every `shot` event's `file` is relative to recording.jsonl ("screenshots/step-02-click.png")
       unused\                           pictures steps.md does not show (kept, out of the way)
     results\
@@ -25,6 +26,7 @@ The **tests folder** (setting `testsFolder`, default `C:\temp\retrace\tests`) ho
 - The folder name is the header `started` (local clock), then `_`, then the name. The name is the header `name` (letters, digits, `-` and `_`; every other character becomes `-`). A folder that exists already gets `_2`, `_3`. Folders sort by date.
 - Readers look for `<tests folder>\*\recording.jsonl` one level down. Folders whose name starts with `.` are skipped. "Newest" means the latest header `started`, else the file time. Any other file name is not a recording.
 - If steps.docx or steps.xlsx is open in Word or Excel when it is rewritten, the new file is called `steps (new).docx` / `steps (new).xlsx` and a note says so.
+- Saving checkpoint names rewrites steps.md and the Word / Excel files, except a Word or Excel file changed since Retrace wrote it (a tester may have filled in results): that one is kept, marked `kept` in its `.retrace` file so later saves keep it too, and named in a warning. Without a `.retrace` file (written by an older version), a file more than 2 minutes newer than steps.md counts as changed.
 
 ## What writing the steps does to a test folder
 
@@ -36,7 +38,7 @@ The **tests folder** (setting `testsFolder`, default `C:\temp\retrace\tests`) ho
   (parsed with Markdig; `StepsDoc.cs`, `ExportDocx.cs`, `ExportXlsx.cs`, `Exporter.cs`; DocumentFormat.OpenXml). In the docx: headings 1-3, paragraphs with bold / italic / inline code,
   nested bullet and numbered lists (the numbers are text), tables, pictures embedded from the relative `screenshots/...png` links (scaled down to at most 16 cm wide, aspect kept; a missing picture
   becomes the text `[picture not found: ...]`), `[ ]` / `[x]` as a ballot box. In the xlsx, sheet `Steps`: `Step | Action | Details | Check | Screenshot | Result | Notes` (Details = the step's sub-items, one per line; Check = the expected text of a
-  checkpoint step; Screenshot = relative hyperlink to the step's first picture; Result = list PASS,FAIL; header bold and frozen, text wrapped), sheet `Info`: test name, recorded line, start-with line, step count, folder.
+  checkpoint step; Screenshot = the file name of every picture of the step, one per line, in script order (a cell holds one hyperlink: it opens the first); Result = list PASS,FAIL; header bold and frozen, text wrapped), sheet `Info`: test name, recorded line, start-with line, step count, folder.
   Both are written to a temp file and moved over the target.
 - It renames each picture the script shows to `step-NN-<what>.png` (NN = the script's step number, two digits, three from 100 steps; a clash gets `-2`, `-3`):
   `click` (ribbon click), `command` (command start), `dialog-before`, `dialog-after`, `pick-K` / `enter-K` / `answer-K` (the K-th answer picture of the step, by how the
@@ -79,7 +81,7 @@ Every event has `t` (ms since the recording started), `n` (the event's number: 1
 | `modal_leave` | | `Application.LeaveModal` |
 | `doc_active`, `doc_created`, `doc_closing` | | `DocumentActivated`, `DocumentCreated`, `DocumentToBeDestroyed` |
 | `state` | `state` (a drawing digest) | `RETRACERECORD`: written right after the header, the drawing as it was when recording started. Readers treat it as session metadata, not a step |
-| `mark` | `note` (may be empty: Enter at the prompt still makes a checkpoint), `state` (a drawing digest, left out if the drawing could not be read) | `RETRACEMARK` |
+| `mark` | `note` (the checkpoint's name: the automatic one, or what the person typed in the Checkpoints window or at `-RETRACEMARK`; empty in older recordings), `autoName` (the automatic name, `checkpoint<n>` plus where the last action happened: `_<dialog title>_button_<ok\|cancel>`, `_<ribbon panel>_button_<button text>` or `_cmd_<command>`, in lowercase words joined by `_`; missing in older recordings), `state` (a drawing digest, left out if the drawing could not be read) | `RETRACEMARK`, `-RETRACEMARK` |
 | `shot` | `for` (the `n` of the event the picture belongs to), `file` (path of the PNG relative to the recording file, forward slashes: `screenshots/012-ribbon.png` as recorded, `screenshots/step-02-click.png` after the steps are written, `screenshots/unused/004-prompt.png` for a picture the steps do not show), `what` (`window` = AutoCAD's main window, `dialog` = the dialog in front, shortly after it opened; `dialog-after` = the same dialog at the moment OK or Enter was pressed, file `NNN-dialog-after.png`, one per dialog, only while dialog values are on) | a screenshot taken after the event, see below. Written some 100 to 300 ms after the event it belongs to, so it sits later in the file |
 | `session_end` | | `RETRACESTOP` |
 
@@ -100,7 +102,10 @@ named `<NNN>-<kind>.png` where NNN is the `n` of the event zero-padded to three 
 Pictures are queued by the event handler and taken later (timer / `Application.Idle`), never inside an AutoCAD event handler. At most one picture per target (main window, dialog) per 250 ms; a request
 of the same kind inside that gap is dropped as a duplicate, one of another kind waits; a request older than 1.5 s is dropped. So an event can lack a picture. A window picture is scaled
 down to at most 1400 px on its longest side. A dialog that closed before the picture was due is not shot. Failures go to `retrace.log` in the root folder and never stop the recording.
-`RETRACESTOP` takes the pictures still queued before it writes `session_end`.
+The throttle state is reset when a recording starts (each recording's clock starts at 0). `RETRACESTOP` takes the pictures still queued before it writes `session_end`.
+
+The `dialog-after` picture is taken when OK is clicked or Enter is pressed. In a WPF dialog (no child windows) it is taken on Enter only; a mouse click on OK is not recognised yet.
+The script shows the after picture when values changed, also if the "before" picture is missing.
 
 ### Dialog values (`dialog_values`)
 
@@ -267,3 +272,11 @@ and `SendStringToExecute` with `\n` replays typed and picked points, keywords an
 - `RibbonItem.Id` of CUIX buttons equal to the CUIX element id in `sourcemap.json` (the join falls back to the macro's command).
 - `PromptEntityResult.PickedPoint` is recorded as AutoCAD reports it, without a UCS transform; `PromptPointResult.Value` is treated as UCS and converted to WCS.
 - `(handent "..")` expressions at object prompts.
+
+## Renaming checkpoints
+
+The Checkpoints window (`RETRACECHECKPOINTS`, and after `RETRACESTOP`) changes only the `note` of `mark` lines in `recording.jsonl`: the file is
+written to `recording.jsonl.tmp` and moved over the original, and every other line stays byte for byte. An empty name means the `autoName`. Then
+`steps.md` is written again (and `steps.docx` / `steps.xlsx`, when the settings ask for them or they already exist). Results of earlier runs keep the
+old name. A checkpoint of an older recording without `autoName` is shown with a name worked out the same way, and written only when renamed.
+In the guide's how-to pages a checkpoint's block key holds its name, so a renamed checkpoint gets a new block and the old one becomes a removed note.

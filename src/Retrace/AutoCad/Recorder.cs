@@ -48,6 +48,10 @@ public sealed class Recorder
     readonly DialogWatch _dlg = new();   // field values of the open modal dialogs
     int _modalOpen;   // EnterModal minus LeaveModal: a dialog picture is only taken while one is open
 
+    // checkpoint names: where the last thing was done (a dialog, a ribbon button, a typed command) and how many checkpoints so far
+    Checkpoints.CheckpointContext? _lastCtx;
+    int _marks;
+
     // origin attribution: the last ribbon click that has not been matched to a command yet
     long _lastRibbonT = -100000;
     string? _lastRibbonId, _lastRibbonMacro;
@@ -80,6 +84,8 @@ public sealed class Recorder
         BeginShots();
         _promptMsg.Clear();
         _openPrompts = 0;
+        _lastCtx = null;
+        _marks = 0;
         _lastRibbonConsumed = true;
         // initial drawing state, right after the header; read here (command/idle context), never in an event handler
         Log.Safe("initial state", () =>
@@ -135,11 +141,26 @@ public sealed class Recorder
         try
         {
             var n = w.Event(type, doc, f);
+            NoteContext(type, f);
             var input = type == "prompt" && f.Any(x => x.Item1 == "input" && x.Item2 is true);
             _shots.Request(ShotRules.For(type, n, input, w.ElapsedMs));
             return n;
         }
         catch (Exception ex) { Log.Error("Emit " + type, ex); return 0; }
+    }
+
+    /// <summary>Remembers where the last action happened, for the next checkpoint's automatic name. Data only.</summary>
+    void NoteContext(string type, (string, object?)[] f)
+    {
+        string? F(string k) => f.FirstOrDefault(x => x.Item1 == k).Item2 as string;
+        switch (type)
+        {
+            case "ribbon": _lastCtx = new Checkpoints.CheckpointContext("ribbon", F("panel") ?? F("tab"), F("text") ?? F("id")); break;
+            case "cmd_start" when F("origin") != "ribbon": _lastCtx = new Checkpoints.CheckpointContext("command", null, F("command")); break;
+            case "lisp_start": _lastCtx = new Checkpoints.CheckpointContext("command", null, "lisp"); break;
+            case "modal_title": _lastCtx = new Checkpoints.CheckpointContext("dialog", F("title"), null); break;
+            case "dialog_values": _lastCtx = new Checkpoints.CheckpointContext("dialog", F("title") ?? _lastCtx?.Container, F("closedWith")); break;
+        }
     }
 
     // ---- screenshots -------------------------------------------------------------------------------------------------
@@ -639,6 +660,15 @@ public sealed class Recorder
 
     // ---- marks -------------------------------------------------------------------------------
 
-    /// <summary>A checkpoint: the note (may be empty) and the drawing state at this moment (null if it could not be read).</summary>
-    public void Mark(string note, DrawingDigest? state) => Emit("mark", CurDoc(), ("note", note), ("state", state));
+    /// <summary>Writes a checkpoint. Its automatic name (see <see cref="Checkpoints.AutoName"/>) is stored as `autoName`, and as the `note`
+    /// unless <paramref name="note"/> gives one. Returns the name used, or null when the event could not be written (nothing counted).</summary>
+    public string? Mark(string? note, DrawingDigest? state)
+    {
+        var auto = Checkpoints.AutoName(_marks + 1, _lastCtx);
+        var name = Checkpoints.Clean(note);
+        if (name.Length == 0) name = auto;
+        if (Emit("mark", CurDoc(), ("note", name), ("autoName", auto), ("state", state)) == 0) return null;
+        _marks++;
+        return name;
+    }
 }

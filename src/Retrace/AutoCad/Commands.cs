@@ -67,7 +67,7 @@ public sealed partial class Commands
             var r = ed.GetString(o);
             if (r.Status == PromptStatus.Cancel) return;
             var path = Recorder.Instance.Start(r.Status == PromptStatus.OK ? r.StringResult : null);
-            ed.WriteMessage($"\nRetrace recording started: {path}\nUse RETRACEMARK for checkpoints, RETRACESTOP to finish.\n");
+            ed.WriteMessage($"\nRetrace recording started: {path}\nClick Checkpoint (RETRACEMARK) at each result worth checking; RETRACESTOP to finish.\n");
         }
         catch (Exception ex) { Log.Error("RETRACERECORD", ex); ed.WriteMessage($"\nRETRACERECORD failed: {ex.Message}\n"); }
     }
@@ -79,24 +79,37 @@ public sealed partial class Commands
         {
             var r = Recorder.Instance.Stop();
             ed?.WriteMessage(r == null ? "\nNot recording.\n" : $"\nRetrace recording stopped: {r.Value.Events} events, {r.Value.Ms / 1000.0:0.#} s\n  {r.Value.Path}\n");
-            if (r != null) BuildScript(r.Value.Path, openWhenDone: false);
+            if (r != null) BuildScript(r.Value.Path, openWhenDone: false, reviewWhenDone: true);
         }
         catch (Exception ex) { Log.Error("RETRACESTOP", ex); }
     }
 
-    public void Mark()
+    /// <summary>RETRACEMARK: a checkpoint at once, with no prompt, so it does not interrupt the test. It is named automatically
+    /// (checkpoint2_draw_grid_button_ok); the names are reviewed and changed after the recording stops.</summary>
+    public void Mark() => MarkCore(ask: false);
+
+    /// <summary>-RETRACEMARK: the same, but asks for the name on the command line (Enter = the automatic name). For scripts.</summary>
+    public void MarkAsk() => MarkCore(ask: true);
+
+    void MarkCore(bool ask)
     {
         var ed = Ed; if (ed == null) return;
         try
         {
             if (!Recorder.Instance.IsRecording) { ed.WriteMessage("\nNot recording. Use RETRACERECORD.\n"); return; }
-            var r = ed.GetString(new PromptStringOptions("\nNote / expected result (Enter = checkpoint without note): ") { AllowSpaces = true });
-            if (r.Status != PromptStatus.OK && r.Status != PromptStatus.None) return; // Esc: no checkpoint
-            // read the drawing here, in the command, after the prompt returned (never inside a prompt event handler)
+            string? note = null;
+            if (ask)
+            {
+                var r = ed.GetString(new PromptStringOptions($"\nCheckpoint name (Enter = automatic): ") { AllowSpaces = true });
+                if (r.Status != PromptStatus.OK && r.Status != PromptStatus.None) return; // Esc: no checkpoint
+                note = r.Status == PromptStatus.OK ? r.StringResult : null;
+            }
+            // read the drawing here, in the command (never inside a prompt event handler)
             var doc = AcApp.DocumentManager.MdiActiveDocument;
             var state = doc == null ? null : DrawingState.Read(doc);
-            Recorder.Instance.Mark(r.Status == PromptStatus.OK ? (r.StringResult ?? "").Trim() : "", state);
-            ed.WriteMessage(state == null ? "\nCheckpoint saved (drawing state could not be read).\n" : $"\nCheckpoint saved: {state.Summary()}\n");
+            var name = Recorder.Instance.Mark(note, state);
+            if (name == null) { ed.WriteMessage("\nCheckpoint NOT saved: the recording could not be written (see retrace.log).\n"); return; }
+            ed.WriteMessage(state == null ? $"\nCheckpoint saved: {name} (drawing state could not be read).\n" : $"\nCheckpoint saved: {name} ({state.Summary()}). You can rename it when you stop.\n");
         }
         catch (Exception ex) { Log.Error("RETRACEMARK", ex); }
     }

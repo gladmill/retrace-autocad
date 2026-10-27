@@ -37,6 +37,9 @@ public sealed class RetraceSettings
     /// <summary>Also write `steps.xlsx` (Excel) next to steps.md when a recording is stopped. Off by default.</summary>
     [JsonPropertyName("exportXlsx")] public bool ExportXlsx { get; set; }
 
+    /// <summary>After RETRACESTOP, open the window that shows the checkpoints with their pictures, to rename them. On by default.</summary>
+    [JsonPropertyName("reviewCheckpoints")] public bool ReviewCheckpoints { get; set; } = true;
+
     /// <summary>Where the Retrace ribbon tab goes: "" / "afterHome" (right of Home), "first", "last" or "after:&lt;tab id or title&gt;".</summary>
     [JsonPropertyName("ribbonTabPosition")] public string RibbonTabPosition { get; set; } = "";
 

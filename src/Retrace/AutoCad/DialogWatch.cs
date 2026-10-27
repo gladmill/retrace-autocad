@@ -145,7 +145,7 @@ sealed class DialogWatch
         if (id == 2) return "cancel";
         var sb = new System.Text.StringBuilder(64);
         GetWindowText(hwnd, sb, 64);
-        return sb.ToString().Replace("&", "").Trim().ToLowerInvariant() switch { "ok" => "ok", "cancel" => "cancel", _ => null };
+        return Retrace.Core.DialogButtons.Role(sb.ToString());
     }
 
     Entry? Innermost()

@@ -61,6 +61,8 @@ public sealed class RetraceApp : IExtensionApplication
     [CommandMethod("RETRACERECORD")] public static void Record() => Run("RETRACERECORD", Commands.Instance.Start);
     [CommandMethod("RETRACESTOP")] public static void Stop() => Run("RETRACESTOP", Commands.Instance.Stop);
     [CommandMethod("RETRACEMARK")] public static void Mark() => Run("RETRACEMARK", Commands.Instance.Mark);
+    [CommandMethod("-RETRACEMARK")] public static void MarkAsk() => Run("-RETRACEMARK", Commands.Instance.MarkAsk);
+    [CommandMethod("RETRACECHECKPOINTS")] public static void Checkpoints() => Run("RETRACECHECKPOINTS", Commands.Instance.ReviewCheckpoints);
     [CommandMethod("RETRACESTATUS")] public static void Status() => Run("RETRACESTATUS", Commands.Instance.Status);
     [CommandMethod("RETRACEREPLAY")] public static void Replay() => Run("RETRACEREPLAY", Commands.Instance.Replay);
     [CommandMethod("RETRACESCR")] public static void Scr() => Run("RETRACESCR", Commands.Instance.Export);

@@ -112,6 +112,24 @@ public class RecordingShotTests
     static ShotRequest W(int n, string kind, long due) => new(n, kind, ShotTarget.Window, due);
 
     [Fact]
+    public void Clear_forgets_the_last_pictures_so_a_new_recording_is_not_throttled()
+    {
+        var s = new ShotScheduler();
+        s.Enqueue(W(1, "cmd-end", 192000));
+        Assert.Single(s.TakeReady(192000));
+        s.Enqueue(W(2, "cmd-end", 192000));
+        s.TakeReady(192100);                       // one dropped as duplicate
+        Assert.True(s.Dropped > 0);
+        s.Clear();
+        Assert.Equal(0, s.Dropped);
+        s.Enqueue(W(1, "ribbon", 7016));
+        s.Enqueue(new ShotRequest(2, "dialog", ShotTarget.Dialog, 7016));
+        var taken = new List<int>();
+        for (long t = 7016; t < 7016 + 1200 && taken.Count < 2; t += 120) taken.AddRange(s.TakeReady(t).Select(r => r.N));
+        Assert.Equal(new[] { 1, 2 }, taken);
+    }
+
+    [Fact]
     public void Nothing_is_taken_before_it_is_due()
     {
         var s = new ShotScheduler();
