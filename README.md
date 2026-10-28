@@ -6,10 +6,13 @@ checkpoints. Retrace then writes the test as step-by-step instructions (Markdown
 tells you pass or fail. It can also read your customization folder (`.cuix`, C#, VB.NET, C++, `.rc`, XAML, `.dcl`) and
 write Markdown docs: ribbons, commands, dialogs, a source map, and an editable user guide with how-tos built from your recordings.
 
-Status: pre-1.0 (0.1.0). AutoCAD 2026 (R25.1), Windows x64. Written against the `AutoCAD.NET` 25.1.0 packages.
+Status: pre-1.0 (0.2.0). AutoCAD 2026 (R25.1), Windows x64. Written against the `AutoCAD.NET` 25.1.0 packages.
 Verified in AutoCAD only in part: see [Limitations](#limitations).
 
 ## Install
+
+**Without building:** download `Retrace-<version>.zip` from the [Releases](https://github.com/gladmill/retrace-autocad/releases) page, unzip it,
+copy the `Retrace.bundle` folder to `%APPDATA%\Autodesk\ApplicationPlugins\` and trust it as shown under "Installing a copy by hand" below.
 
 You need the [.NET 10 SDK](https://dotnet.microsoft.com/download) or newer (`global.json` asks for it) on Windows, macOS or Linux; in Visual Studio,
 version 2026. AutoCAD is not needed to build: the AutoCAD reference assemblies come from Autodesk's `AutoCAD.NET` NuGet package, and
