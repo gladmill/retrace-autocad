@@ -108,7 +108,7 @@ public sealed class DocsWriter(ModelIndex ix, OutputSink sink)
         {
             sb.Append($"## {c.File} (menu group {c.MenuGroup})\n\n");
             if (c.Workspaces.Count > 0) sb.Append($"Workspaces: {string.Join(", ", c.Workspaces)}\n\n");
-            if (c.PartialMenus.Count > 0) sb.Append($"Partial menus referenced (not scanned unless present): {string.Join(", ", c.PartialMenus)}\n\n");
+            if (c.PartialMenus.Count > 0) sb.Append($"Partial menus referenced (read too when the setting loadedCustomization is on): {string.Join(", ", c.PartialMenus)}\n\n");
             sb.Append(TabTable(doc, c.Tabs));
         }
         if (M.CodeTabs.Count > 0)
@@ -134,7 +134,7 @@ public sealed class DocsWriter(ModelIndex ix, OutputSink sink)
         var doc = ix.TabDoc[tab];
         var sb = new StringBuilder();
         sb.Append($"# Ribbon tab: {tab.Title}\n\n");
-        sb.Append($"![{tab.Title} ribbon wireframe]({Md.Rel(doc, ix.TabAsset[tab])})\n\n");
+        sb.Append($"![{tab.Title} {ix.TabPictureName(tab)}]({Md.Rel(doc, ix.TabAsset[tab])})\n\n");
         sb.Append(Md.Table(new[] { "Field", "Value" }, new List<string?[]>
         {
             new[] { "Id", Md.Code(tab.Id) },

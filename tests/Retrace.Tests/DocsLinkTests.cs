@@ -55,6 +55,7 @@ public class DocsLinkTests : IDisposable
         Directory.CreateDirectory(Captures);
         File.WriteAllBytes(Path.Combine(Captures, "Plugin__FormSettings.png"), Png);
         File.WriteAllText(Path.Combine(Captures, "Plugin__FormSettings.json"), "{\"formId\":\"winform.Plugin.FormSettings\"}");
+        RibbonCaptureTests.WriteGardenCapture(Captures);   // the Garden tab as captured in AutoCAD: its SVG and a button picture
         var m = EmitTests.SampleModel();
         Linker.AddRibbonHandlers(m);
         Linker.Link(m);

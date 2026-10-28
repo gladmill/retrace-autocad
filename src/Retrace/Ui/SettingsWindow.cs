@@ -26,6 +26,8 @@ sealed class SettingsWindow : Window
     readonly CheckBox _shots = new() { Content = "Take screenshots while recording (saved in the test folder, used by steps.md)", Margin = new Thickness(0, 10, 0, 0) };
     readonly CheckBox _autoFill = new() { Content = "RETRACERUN fills dialogs with the recorded values and closes them (else you do it)", Margin = new Thickness(0, 6, 0, 0) };
     readonly CheckBox _dialogValues = new() { Content = "Record which values you change in dialogs and palettes (shown in the test script)", Margin = new Thickness(0, 6, 0, 0) };
+    readonly CheckBox _loadedCuix = new() { Content = "Docs also cover the customization files AutoCAD has loaded (.cuix, partials, enterprise)", Margin = new Thickness(0, 6, 0, 0), ToolTip = "Besides the .cuix / .cui files in the source folder: the main customization file, its partials and the enterprise file, as loaded when RETRACEDOCS runs." };
+    readonly CheckBox _uiPrompts = new() { Content = "Ask for names, files and folders in a window (Browse, recent places), not on the command line", Margin = new Thickness(0, 6, 0, 0), ToolTip = "The window stays on top of AutoCAD. Scripts, LISP and FILEDIA 0 still get the command line." };
     readonly CheckBox _showUi = new() { Content = "Run test opens rolled-up and auto-hidden palettes while it drives them", Margin = new Thickness(0, 6, 0, 0), ToolTip = "Moves the mouse over the palette (and back after) so you can watch the step. Off: the palette is filled while it stays hidden." };
     readonly CheckBox _review = new() { Content = "After Stop, show the checkpoints so you can rename them", Margin = new Thickness(0, 6, 0, 0), ToolTip = "Opens the checkpoints window when a recording with checkpoints stops. RETRACECHECKPOINTS opens it any time." };
     readonly CheckBox _docx = new() { Content = "Also write Word (.docx)", Margin = new Thickness(0, 6, 0, 0), ToolTip = "steps.docx next to steps.md, made when a recording is stopped." };
@@ -77,6 +79,10 @@ sealed class SettingsWindow : Window
         root.Children.Add(_review);
         _showUi.IsChecked = current.ShowDrivenUi;
         root.Children.Add(_showUi);
+        _uiPrompts.IsChecked = current.UiPrompts;
+        root.Children.Add(_uiPrompts);
+        _loadedCuix.IsChecked = current.LoadedCustomization;
+        root.Children.Add(_loadedCuix);
         _docx.IsChecked = current.ExportDocx;
         root.Children.Add(_docx);
         _xlsx.IsChecked = current.ExportXlsx;
@@ -233,6 +239,8 @@ sealed class SettingsWindow : Window
         _autoFill.IsChecked = true;
         _review.IsChecked = true;
         _showUi.IsChecked = true;
+        _uiPrompts.IsChecked = false;
+        _loadedCuix.IsChecked = true;
         _docx.IsChecked = false;
         _xlsx.IsChecked = false;
         _tabPos.SelectedIndex = 0;
@@ -252,6 +260,8 @@ sealed class SettingsWindow : Window
         s.AutoFillDialogs = _autoFill.IsChecked == true;
         s.ReviewCheckpoints = _review.IsChecked == true;
         s.ShowDrivenUi = _showUi.IsChecked == true;
+        s.PromptStyle = _uiPrompts.IsChecked == true ? PromptStyles.Ui : PromptStyles.CommandLine;
+        s.LoadedCustomization = _loadedCuix.IsChecked == true;
         s.ExportDocx = _docx.IsChecked == true;
         s.ExportXlsx = _xlsx.IsChecked == true;
         var pos = _tabPos.SelectedIndex >= 0 ? _tabPosValues[_tabPos.SelectedIndex] : RibbonTabPosition.AfterHome;

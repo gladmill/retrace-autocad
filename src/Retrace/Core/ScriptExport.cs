@@ -27,7 +27,13 @@ public static class ScriptExport
                     break;
                 case "palette":
                     sb.AppendLine($"; MANUAL: {s.Title} - not scriptable, do it in the palette by hand and continue");
+                    // it opened a drawing: a script cannot go on there (see "open")
+                    if (s.Drawing != null) { sb.AppendLine("; The rest of the recording happened in the drawing it opened and is not exported."); return sb.ToString(); }
                     break;
+                case "open":
+                    // a script keeps running in the drawing it started in, so it cannot go on in the one it opens: the export ends here
+                    sb.AppendLine($"; MANUAL: open the drawing {s.Drawing}. The rest of the recording happened in that drawing and is not exported.");
+                    return sb.ToString();
                 case "ribbon" or "command" or "lisp":
                 {
                     sb.AppendLine($"; {s.Title}");

@@ -30,6 +30,22 @@ static class Native
 
     delegate bool EnumProc(IntPtr h, IntPtr l);
     [DllImport("user32.dll")] static extern bool EnumThreadWindows(uint thread, EnumProc f, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, EnumProc f, IntPtr l);
+    [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr h);
+
+    /// <summary>A progress window: a standard dialog (#32770) with no visible, enabled push button, such as AutoCAD Electrical's "Updating..."
+    /// while it switches projects. It closes by itself; nothing in it can be answered.</summary>
+    public static bool IsProgressWindow(IntPtr h)
+    {
+        if (!Exists(h) || ClassOf(h) != "#32770") return false;
+        bool button = false;
+        EnumChildWindows(h, (c, _) =>
+        {
+            if (ClassOf(c) == "Button" && IsWindowVisible(c) && IsWindowEnabled(c)) { button = true; return false; }
+            return true;
+        }, IntPtr.Zero);
+        return !button;
+    }
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
 

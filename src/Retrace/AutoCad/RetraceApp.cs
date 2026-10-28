@@ -78,6 +78,7 @@ public sealed class RetraceApp : IExtensionApplication
     [CommandMethod("RETRACEOPEN")] public static void OpenTestWindow() => Run("RETRACEOPEN", Commands.Instance.OpenTest);
     [CommandMethod("RETRACEFOLDER")] public static void Folder() => Run("RETRACEFOLDER", Commands.Instance.Folder);
     [CommandMethod("RETRACECAPTUREDCL", CommandFlags.Session)] public static void CaptureDcl() => Run("RETRACECAPTUREDCL", DclCapture.Run);
+    [CommandMethod("RETRACECAPTURERIBBON")] public static void CaptureRibbon() => Run("RETRACECAPTURERIBBON", RibbonCapture.Run);
 
     /// <summary>RETRACECLOSEALL: closes every open drawing without saving, after one confirmation. Runs in the application context
     /// (CommandFlags.Session), which closing the active drawing needs. </summary>

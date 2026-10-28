@@ -2,6 +2,7 @@
 # per line from C:\retrace-vm\act.txt, writes what it did to C:\retrace-vm\out\act.txt. Window targets are found by exact window text in
 # AutoCAD's process; "text@class*" also matches the class. Actions:
 #   mouse x,y         real click at a screen point (brings AutoCAD to the front first)      rawmouse x,y   the same, without that
+#   rawrclick x,y     real right-click at a screen point, as is
 #   move x,y          rest the mouse there (hover: opens a rolled-up / auto-hidden palette)
 #   click <text>      posted click in the middle of a window (WinForms buttons react; WPF buttons do not)
 #   clickat <text>,x,y   posted click at a client point     wpfclick <palette>,x,y   posted click in a palette's WPF host
@@ -92,6 +93,7 @@ foreach ($line in (Get-Content 'C:\retrace-vm\act.txt')) {
       Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait($arg); $log.Add("keys '$arg' (foreground $ok)") }
     'mouse' { $x, $y = $arg -split ','; $ok = Front; [A]::SetCursorPos([int]$x, [int]$y) | Out-Null; Start-Sleep -Milliseconds 200; [A]::mouse_event(2,0,0,0,[UIntPtr]::Zero); [A]::mouse_event(4,0,0,0,[UIntPtr]::Zero); $log.Add("mouse click at $x,$y") }
     'rawmouse' { $x, $y = $arg -split ','; [A]::SetCursorPos([int]$x, [int]$y) | Out-Null; Start-Sleep -Milliseconds 200; [A]::mouse_event(2,0,0,0,[UIntPtr]::Zero); [A]::mouse_event(4,0,0,0,[UIntPtr]::Zero); $log.Add("raw mouse at $x,$y") }
+    'rawrclick' { $x, $y = $arg -split ','; [A]::SetCursorPos([int]$x, [int]$y) | Out-Null; Start-Sleep -Milliseconds 200; [A]::mouse_event(8,0,0,0,[UIntPtr]::Zero); [A]::mouse_event(16,0,0,0,[UIntPtr]::Zero); $log.Add("raw right click at $x,$y") }
     'move' { $x, $y = $arg -split ','; [A]::SetCursorPos([int]$x, [int]$y) | Out-Null; $log.Add("moved") }
     'raw' { Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait($arg); $log.Add("raw '$arg'") }
     'state' { foreach ($h in [A]::All([uint32]$acad.Id)) { $t = [A]::Txt($h); if ($t -in @('Parts Finder','Search','Search ','Insert','SearchButton') -or [A]::Cls($h) -like '*LISTBOX*' -or [A]::Cls($h) -like '*Afx:*') { $r = New-Object A+RECT; [A]::GetWindowRect($h, [ref]$r) | Out-Null; $log.Add(("0x{0:X} [{1}] '{2}' vis={3} rect={4},{5},{6},{7}" -f $h.ToInt64(), [A]::Cls($h), $t, [A]::IsWindowVisible($h), $r.L, $r.T, $r.R, $r.B)) } } }

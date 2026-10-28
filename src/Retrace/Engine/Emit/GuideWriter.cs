@@ -155,7 +155,7 @@ public sealed partial class GuideWriter(ModelIndex ix, EngineOptions opt, IReadO
         head.Append("**How to reach it:** ").Append(string.Join(" → ", ix.ReachTab(tab))).Append("\n\n");
         var asset = ix.TabAsset[tab];
         if (File.Exists(Path.Combine(opt.Output, asset.Replace('/', Path.DirectorySeparatorChar))))
-            head.Append($"![{Md.Cell(tab.Title)} ribbon wireframe]({Md.Rel(doc, asset)})\n\n");
+            head.Append($"![{Md.Cell(tab.Title)} {ix.TabPictureName(tab)}]({Md.Rel(doc, asset)})\n\n");
         head.Append($"Reference page: [{Md.Cell(tab.Title)}]({Md.Rel(doc, refDoc)})\n");
         blocks.Add(new("page", head.ToString(), $"_What is the {StubName(tab.Title)} tab for? {OwnerNote}_"));
 
@@ -209,6 +209,7 @@ public sealed partial class GuideWriter(ModelIndex ix, EngineOptions opt, IReadO
             sb.Append($"- **Code entry point:** {string.Join(", ", methods.Select(Md.Code))}{(where != null ? " at " + Md.Code(where) : "")}\n");
         }
         if (!string.IsNullOrWhiteSpace(item.Tooltip)) sb.Append($"- **Tooltip:** {Md.Cell(item.Tooltip)}\n");
+        if (ButtonPicture(h, anchor) is { } pic) sb.Append($"\n![{Md.Cell(label)} in the {Md.Cell(h.Panel.Title)} panel]({Md.Rel(doc, pic)})\n");
 
         var forms = entries.SelectMany(e => e.Flow).Where(s => s.UiFormId != null && ix.FormsById.ContainsKey(s.UiFormId))
             .Select(s => ix.FormsById[s.UiFormId!]).Distinct().ToList();
@@ -231,6 +232,23 @@ public sealed partial class GuideWriter(ModelIndex ix, EngineOptions opt, IReadO
         refs.AddRange(entries.Select(e => $"[command {Md.Cell(e.Name)}]({ix.CommandLink(doc, e)})"));
         sb.Append(string.Join(", ", refs)).Append('\n');
         return sb.ToString();
+    }
+
+    /// <summary>The button's panel as captured in AutoCAD with the button outlined (written under guide/images/ribbon), or null.</summary>
+    private string? ButtonPicture(RibbonHit h, string anchor)
+    {
+        if (ix.Captures.For(h.Tab) is not { } cap) return null;
+        string? svg;
+        try { svg = ix.Captures.ButtonSvg(cap, h.Panel, h.Item); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { M.Warnings.Add($"ribbon capture of {h.Tab.Title}: {ex.Message}"); return null; }
+        if (svg == null) return null;
+        // one folder per tab, named as its reference picture (unique among the tabs)
+        var tabName = ix.TabAsset[h.Tab][(DocsLayout.RefImages.Length + "/ribbon/".Length)..^".svg".Length];
+        var rel = $"{DocsLayout.GuideRibbonImages}/{tabName}/{anchor}.svg";
+        var dest = Path.Combine(opt.Output, rel.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+        if (!File.Exists(dest) || File.ReadAllText(dest) != svg) File.WriteAllText(dest, svg, Utf8);
+        return rel;
     }
 
     private static string? Trunc(string? s, int n) => s == null ? null : s.Length <= n ? s : s[..(n - 1)] + "…";

@@ -2,6 +2,8 @@
 using System.Text.Json;
 using Retrace.Engine.Emit;
 
+using Retrace.Engine.Util;
+
 namespace Retrace.Engine.Recordings;
 
 public sealed record JoinResult(SourceMapEntry Entry, string MatchedBy);
@@ -73,15 +75,7 @@ public sealed class SourceMapIndex
     }
 
     /// <summary>The recorded tab id ("ACAD.ID_TabHome", or "cuix name.ID_...") equals the item's tab id, with or without its prefix.</summary>
-    static bool TabIdMatches(string itemId, string? recorded)
-    {
-        if (string.IsNullOrWhiteSpace(recorded)) return false;
-        var want = TabIdOf(itemId);
-        var r = recorded.Trim();
-        if (string.Equals(r, want, StringComparison.OrdinalIgnoreCase)) return true;
-        var dot = r.LastIndexOf('.');
-        return dot > 0 && string.Equals(r[(dot + 1)..], want, StringComparison.OrdinalIgnoreCase);
-    }
+    static bool TabIdMatches(string itemId, string? recorded) => LiveIds.Matches(recorded, TabIdOf(itemId));
 
     static bool Eq(string? a, string? b) => a != null && b != null && string.Equals(a.Trim(), b.Trim(), StringComparison.OrdinalIgnoreCase);
 

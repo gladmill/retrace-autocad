@@ -192,6 +192,10 @@ public sealed class RecordingStep
     public string? ClosedWith { get; set; }
     /// <summary>command / ribbon / lisp: dialogs opened while it ran (see <see cref="OpenedIn"/>).</summary>
     public List<RecordingStep> InnerDialogs { get; } = new();
+    /// <summary>palette: what was done in a native palette (AutoCAD's own, such as the Project Manager); null for .NET palettes.</summary>
+    public NativeAction? Native { get; set; }
+    /// <summary>palette (native): the drawing its double-click opened (full path), or null.</summary>
+    public string? OpensDrawing { get; set; }
     // mark / doc
     public string? Note { get; set; }
     /// <summary>mark: what the checkpoint shortcut found at the cursor (`near`), or null.</summary>
@@ -325,10 +329,14 @@ public static class RecordingReader
         RecordingStep? modal = null;
         RecordingStep? palette = null;   // the last palette step: a click right after its values joins it
         var modalByN = new Dictionary<long, RecordingStep>();   // event n of modal_enter / modal_title -> its dialog step
+        var nativeByN = new Dictionary<long, RecordingStep>();  // event n of native_select -> its step (a native_value names the entry later)
+        var nativeDialogs = new HashSet<RecordingStep>();   // dialog steps opened right after a native palette action
         string? firstDoc = null, lastDoc = null;
         var targets = new Dictionary<long, List<RecordingShot>>();
+        var startup = DrawingOpen.StartupEvents(s.Events.Select(x => x.Raw));   // LISP AutoCAD ran by itself while a drawing opened: not steps
         foreach (var e in s.Events)
         {
+            if (e.N is { } en && startup.Contains(en)) continue;
             RecordingAnswer? added = null;
             switch (e.Type)
             {
@@ -410,9 +418,12 @@ public static class RecordingReader
                     break;
                 }
                 case "modal_enter":
+                    // a window a native palette action opened: dropped at its dialog_values if it closed by itself (NativeAction.ModalMs)
+                    bool afterNative = palette is { Native: not null } && s.Steps.Count > 0 && ReferenceEquals(s.Steps[^1], palette) && e.T - palette.T <= NativeAction.ModalMs;
                     modal = new RecordingStep { Kind = "dialog", T = e.T, DialogTitle = e.Str("title"), WindowClass = e.Str("windowClass"), OpenedByPrevious = cur != null };
                     s.Steps.Add(modal);
                     if (e.N is { } enterN) modalByN[enterN] = modal;
+                    if (afterNative) nativeDialogs.Add(modal);
                     if (cur != null && (depth > 0 || inLisp)) { modal.OpenedIn = cur; cur.InnerDialogs.Add(modal); }
                     DropSecurityPrompt(s, ref modal, modalByN);
                     break;
@@ -424,6 +435,13 @@ public static class RecordingReader
                 case "dialog_values":
                     if (e.Raw.TryGetProperty("for", out var forV) && forV.ValueKind == JsonValueKind.Number && forV.TryGetInt64(out var forN) && modalByN.TryGetValue(forN, out var vd))
                     {
+                        if (nativeDialogs.Contains(vd) && NativeAction.ClosedByItself(e.Raw))   // "Updating...": not a step
+                        {
+                            s.Steps.Remove(vd);
+                            vd.OpenedIn?.InnerDialogs.Remove(vd);
+                            if (ReferenceEquals(modal, vd)) modal = null;
+                            break;
+                        }
                         vd.ClosedWith = e.Str("closedWith");
                         vd.ValuesRead = e.Raw.TryGetProperty("read", out var rd) && rd.ValueKind == JsonValueKind.Number && rd.TryGetInt32(out var rn) ? rn : 0;
                         vd.Values.Clear();
@@ -433,6 +451,30 @@ public static class RecordingReader
                                 string S(string k) => f.ValueKind == JsonValueKind.Object && f.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
                                 vd.Values.Add(new RecordingDialogValue(S("label"), S("kind"), S("before"), S("after")));
                             }
+                    }
+                    break;
+                case "native_click":
+                case "native_select":
+                {
+                    if (NativeAction.From(e.Raw) is not { } na) break;
+                    var name = e.Str("palette");
+                    // a double-click arrives as a click, then the double-click, on the same item: one step
+                    if (na.Action == "dblclick" && palette is { Native: { Control: "tree", Action: "click" } prev } && s.Steps.Count > 0 && ReferenceEquals(s.Steps[^1], palette)
+                        && prev.Path.SequenceEqual(na.Path) && palette.DialogTitle == name && e.T - palette.T <= 2000)
+                    {
+                        palette.Native = na; palette.Text = na.Target;
+                        break;
+                    }
+                    palette = new RecordingStep { Kind = "palette", T = e.T, N = e.N, DialogTitle = name, Panel = e.Str("set"), Native = na, Text = na.Target };
+                    s.Steps.Add(palette);
+                    if (e.N is { } nn) nativeByN[nn] = palette;
+                    break;
+                }
+                case "native_value":
+                    if (e.Raw.TryGetProperty("for", out var nf) && nf.ValueKind == JsonValueKind.Number && nativeByN.TryGetValue(nf.GetInt64(), out var nsv) && nsv.Native != null && e.Str("value") is { } nval)
+                    {
+                        nsv.Native = nsv.Native with { Value = nval };
+                        nsv.Text = nsv.Native.Target;
                     }
                     break;
                 case "palette_values":
@@ -460,7 +502,16 @@ public static class RecordingReader
                     if (s.InitialState == null && e.Raw.TryGetProperty("state", out var st0)) s.InitialState = RecordingState.From(st0);
                     break;
                 case "doc_created":
-                    s.Steps.Add(new RecordingStep { Kind = "doc", T = e.T, Note = $"New/opened drawing {e.Doc}" });
+                    // opened while no command ran (a palette such as AutoCAD Electrical's Project Manager, Explorer): replay opens this file
+                    var opened = depth == 0 && !inLisp ? DrawingOpen.PathOf(e.Raw) : null;
+                    // opened by double-clicking it in a native palette (the Project Manager): that step says so
+                    if (opened != null && palette is { Native.Action: "dblclick", OpensDrawing: null } && s.Steps.Count > 0 && ReferenceEquals(s.Steps[^1], palette) && e.T - palette.T <= DrawingOpen.StartupMs)
+                    {
+                        palette.OpensDrawing = opened;
+                        lastDoc = e.Doc;
+                        break;
+                    }
+                    s.Steps.Add(new RecordingStep { Kind = "doc", T = e.T, Note = opened != null ? $"Open drawing {opened}" : $"New/opened drawing {e.Doc}", Text = opened != null ? e.Doc : null });
                     lastDoc = e.Doc;
                     break;
                 case "doc_active":

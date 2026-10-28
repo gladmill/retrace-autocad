@@ -63,8 +63,7 @@ public sealed partial class Commands
         var ed = Ed; if (ed == null) return;
         try
         {
-            var o = new PromptStringOptions("\nTest name <test>: ") { AllowSpaces = true };
-            var r = ed.GetString(o);
+            var r = Ask.String(ed, "\nTest name <test>: ");
             if (r.Status == PromptStatus.Cancel) return;
             var path = Recorder.Instance.Start(r.Status == PromptStatus.OK ? r.StringResult : null);
             ed.WriteMessage($"\nRetrace recording started: {path}\nClick Checkpoint (RETRACEMARK) at each result worth checking; RETRACESTOP to finish.\n");
@@ -119,13 +118,14 @@ public sealed partial class Commands
     void MarkCore(bool ask)
     {
         var ed = Ed; if (ed == null) return;
+        using var cl = Ask.CommandLineOnly();   // -RETRACEMARK is for scripts and the command line
         try
         {
             if (!Recorder.Instance.IsRecording) { ed.WriteMessage("\nNot recording. Use RETRACERECORD.\n"); return; }
             string? note = null;
             if (ask)
             {
-                var r = ed.GetString(new PromptStringOptions($"\nCheckpoint name (Enter = automatic): ") { AllowSpaces = true });
+                var r = Ask.String(ed, "\nCheckpoint name (Enter = automatic): ");
                 if (r.Status != PromptStatus.OK && r.Status != PromptStatus.None) return; // Esc: no checkpoint
                 note = r.Status == PromptStatus.OK ? r.StringResult : null;
             }
@@ -162,14 +162,16 @@ public sealed partial class Commands
     static string? AskSession(Editor ed)
     {
         var tests = RetraceSettings.Load().Tests;
-        var r = ed.GetString(new PromptStringOptions("\nRecording (Enter = browse, 'last' = newest test): ") { AllowSpaces = true });
+        var r = Ask.String(ed, "\nRecording (Enter = browse, 'last' = newest test): ", Ask.Of.File, "recording", RecordingFilter, browseFrom: Directory.Exists(tests) ? tests : null);
         if (r.Status != PromptStatus.OK && r.Status != PromptStatus.None) return null;
         var s = r.StringResult?.Trim().Trim('"') ?? "";
         if (s.Equals("last", StringComparison.OrdinalIgnoreCase)) return TestFolders.Newest(tests);
         if (s.Length > 0) return s;
-        var dlg = new Microsoft.Win32.OpenFileDialog { Title = "Choose recording.jsonl in a test folder", Filter = "Retrace recordings (*.jsonl)|*.jsonl", InitialDirectory = Directory.Exists(tests) ? tests : null };
+        var dlg = new Microsoft.Win32.OpenFileDialog { Title = "Choose recording.jsonl in a test folder", Filter = RecordingFilter, InitialDirectory = Directory.Exists(tests) ? tests : null };
         return dlg.ShowDialog() == true ? dlg.FileName : null;
     }
+
+    const string RecordingFilter = "Retrace recordings (*.jsonl)|*.jsonl";
 
     public void Replay()
     {
@@ -180,7 +182,7 @@ public sealed partial class Commands
             if (path == null || !File.Exists(path)) { ed.WriteMessage("\nNo recording chosen.\n"); return; }
             var k = new PromptKeywordOptions("\nReplay mode [Auto/Step] <Step>: ", "Auto Step") { AllowNone = true };
             k.Keywords.Default = "Step";
-            var kr = ed.GetKeywords(k);
+            var kr = Ask.Keywords(ed, k);
             if (kr.Status != PromptStatus.OK && kr.Status != PromptStatus.None) return;
             var mode = kr.Status == PromptStatus.OK && kr.StringResult == "Auto" ? ReplayMode.Auto : ReplayMode.Step;
             var events = Plan.ReadEvents(path);

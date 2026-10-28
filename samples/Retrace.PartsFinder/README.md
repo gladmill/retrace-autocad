@@ -1,7 +1,7 @@
 # Retrace.PartsFinder
 
 A test add-in for Retrace: a palette set the way many plugins keep their UI, with what makes palettes hard to record and replay.
-It is not part of the release bundle: `NETLOAD` it, or copy it next to `Retrace.dll` for a VM test.
+It is not part of the release bundle: `NETLOAD` it, or on a VM install it with `tools/vm/install-samples.sh`, which loads it at every AutoCAD start.
 
 Build: `dotnet build -c Release` (AutoCAD 2026, net8.0-windows, `AutoCAD.NET` 25.1.0). The palette calls https://dummyjson.com (a public
 test API), so the machine needs internet access.

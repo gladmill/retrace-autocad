@@ -72,7 +72,7 @@ Every event has `t` (ms since the recording started), `n` (the event's number: 1
 | `cmd_start` | `command` (global name), `origin`, `via` | `Document.CommandWillStart` |
 | `cmd_end`, `cmd_cancel`, `cmd_fail` | `command` | `CommandEnded`, `CommandCancelled`, `CommandFailed` |
 | `cmd_unknown` | `command` | `UnknownCommand` |
-| `lisp_start` | `firstLine` | `LispWillStart` |
+| `lisp_start` | `firstLine`, `startup` (true: LISP AutoCAD runs while a drawing opens, such as acaddoc.lsp or S::STARTUP, with no click or key since it opened; not a step) | `LispWillStart` |
 | `lisp_end`, `lisp_cancel` | | `LispEnded`, `LispCancelled` |
 | `prompt` | `kind`, `seq`, `input`, `by` (`mouse` or `keys`, with `input: true`), `message`, `keywords` (parsed from the message), `status`, `value`, `keyword` | `Editor.PromptingFor*` / `PromptedFor*` |
 | `modal_enter` | `title`, `windowClass` of the foreground window at that instant | `Application.EnterModal` |
@@ -81,9 +81,11 @@ Every event has `t` (ms since the recording started), `n` (the event's number: 1
 | `modal_leave` | | `Application.LeaveModal` |
 | `palette_values` | `palette` (the palette's name: its tab in the set), `set` (the palette set's title), `source` (`win32` or `wpf`), `fields` (as in `dialog_values`), `read` | the user changed fields in a palette set and then clicked a push button in it (written just before that `palette_click`), moved to another palette, or did something outside it; also before a checkpoint and at Stop. Only with setting `dialogValues` on. See "Palette sets" |
 | `palette_click` | `palette`, `set`, `button` (the push button's text), `index` (only when several enabled buttons of the palette have that text: which one, 1 = the first) | a click on a push button in a palette set, or Space on a focused WinForms push button (read before the button acts) |
-| `doc_active`, `doc_created`, `doc_closing` | | `DocumentActivated`, `DocumentCreated`, `DocumentToBeDestroyed` |
+| `native_click` | `palette`, `set`, `control` (`tree` or `button`), `action` (tree: `click`, `dblclick`, `rclick`; button: `click`), `path` (tree: the item's texts from the top level down), `index` (which control of that kind in the palette, 1 = the first), `id` (the control's id), `label` (button: its tool tip, when it has one) | a click in one of AutoCAD's native palettes (no .NET content, such as AutoCAD Electrical's Project Manager) on a tree item (not its +/- button) or an enabled push button. A double-click is a `click`, then a `dblclick` on the same item. See "Native palettes" |
+| `native_select` | `palette`, `set`, `control` (`combo`), `index`, `id`, `value` (the entry now shown) | the person clicked a drop-down list in a native palette, and its list has closed showing another entry |
+| `doc_active`, `doc_created`, `doc_closing` | `doc_created`: `path` (full path of a drawing opened from a file) | `DocumentActivated`, `DocumentCreated`, `DocumentToBeDestroyed` |
 | `state` | `state` (a drawing digest) | `RETRACERECORD`: written right after the header, the drawing as it was when recording started. Readers treat it as session metadata, not a step |
-| `mark` | `note` (the checkpoint's name: the automatic one, or what the person typed in the Checkpoints window or at `-RETRACEMARK`; empty in older recordings), `autoName` (the automatic name, `checkpoint<n>` plus where the last action happened: `_<dialog title>_button_<ok\|cancel>`, `_<ribbon panel>_button_<button text>`, `_<palette>_button_<button text>` (`_<palette>_palette` when only values changed) or `_cmd_<command>`, in lowercase words joined by `_`; with the checkpoint shortcut and the cursor on a palette control or a ribbon item, `_<palette or panel>_<control>` instead; missing in older recordings), `state` (a drawing digest, left out if the drawing could not be read), `near` (the shortcut only: what was at the cursor, in a sentence: the control under it or nearest it, its value, and up to three controls near it; left out when the cursor was not on a palette or the ribbon) | `RETRACEMARK`, `-RETRACEMARK`, the checkpoint shortcut (setting `checkpointKey`) |
+| `mark` | `note` (the checkpoint's name: the automatic one, or what the person typed in the Checkpoints window or at `-RETRACEMARK`; empty in older recordings), `autoName` (the automatic name, `checkpoint<n>` plus where the last action happened: `_<dialog title>_button_<ok\|cancel>`, `_<ribbon panel>_button_<button text>`, `_<palette>_button_<button text>` (`_<palette>_palette` when only values changed) or `_cmd_<command>` (`_open_<file name>` after a drawing opened outside a command), in lowercase words joined by `_`; with the checkpoint shortcut and the cursor on a palette control or a ribbon item, `_<palette or panel>_<control>` instead; missing in older recordings), `state` (a drawing digest, left out if the drawing could not be read), `near` (the shortcut only: what was at the cursor, in a sentence: the control under it or nearest it, its value, and up to three controls near it; left out when the cursor was not on a palette or the ribbon) | `RETRACEMARK`, `-RETRACEMARK`, the checkpoint shortcut (setting `checkpointKey`) |
 | `shot` | `for` (the `n` of the event the picture belongs to), `file` (path of the PNG relative to the recording file, forward slashes: `screenshots/012-ribbon.png` as recorded, `screenshots/step-02-click.png` after the steps are written, `screenshots/unused/004-prompt.png` for a picture the steps do not show), `what` (`window` = AutoCAD's main window, `dialog` = the dialog in front, shortly after it opened; `dialog-after` = the same dialog at the moment OK or Enter was pressed, file `NNN-dialog-after.png`, one per dialog, only while dialog values are on) | a screenshot taken after the event, see below. Written some 100 to 300 ms after the event it belongs to, so it sits later in the file |
 | `session_end` | | `RETRACESTOP` |
 
@@ -153,6 +155,40 @@ then writes the changed fields (`palette_values`, nothing if none changed) and t
   left open from an earlier run keeps what that run did. A field that rewrites what is typed (upper case, a format) never shows the
   recorded text and needs a person. A missing palette, field or button after that: a person does the step and clicks Next; unattended
   (`RETRACEREPLAY ... Auto`) the run stops as `INCOMPLETE`.
+
+### Native palettes (`native_click`, `native_select`)
+
+AutoCAD's own palettes have no .NET content, so `palette_values` / `palette_click` never see them; standard Windows controls in them are
+recorded instead (`AutoCad/NativePalette.cs`): tree items (`SysTreeView32`) by their path of texts, push buttons by id and position (named
+by their tool tip), drop-down lists (`ComboBox`) by the entry picked. Readers make each a palette step (`Engine/Recordings/NativeAction.cs`);
+a `click` then a `dblclick` on the same item within 2 s is one double-click step, and a drawing opened right after a double-click (a
+`doc_created` with `path`) belongs to that step instead of being an "Open drawing" step. A command that starts after the click (origin
+`palette`) is part of the step; after a right-click it is the command picked from the context menu. A modal window that opens within 3 s
+and closes by itself (its `dialog_values` read nothing and saw no OK or Cancel, such as AutoCAD Electrical's "Updating...") is not a step;
+one the person answers is. A drop-down list is watched from the person's click in it while it has the focus; a pick is written at the
+click on the entry in its list (`entry`), and an owner-drawn list that holds no text (Electrical's project list) gets the entry's name
+in a later `native_value` (`for`, `value`), read from the palette tree's bold item once the switch is done.
+
+Replay finds the palette by name and set, the control by id (when unique) or position, then acts in process, from the dispatcher right
+after its tick (what the action opens then runs while the replay goes on; an unattended replay waits up to two minutes for a dialog with no
+push button, a progress window): a tree item is found by its
+path (expanding its parents), selected, and given the mouse messages sent to the tree at the item, with the mouse moved there (AutoCAD
+Electrical opens a drawing only so; posted messages did not open it); a right-click only selects the item and then types the command
+picked from the menu; a button gets `BM_CLICK` (a disabled one is retried, as palette buttons are); a drop-down list is opened and the entry clicked in its list
+(by text, or by position for a list without text, then checked against the palette's bold item; Electrical ignores `CB_SETCURSEL` with
+change notifications). A command the action starts with nothing to answer is not waited for (Electrical's `AEMTRELOAD`). After a double-click that opened a drawing the replay waits up to 20 s for it, goes on in it, and opens it itself
+if the click did not (a warning in the result). Not recorded: keys in a native palette, the context menu itself, other control kinds, and
+native palettes that draw their own controls.
+
+### Drawings opened outside a command (`doc_created` with `path`)
+
+AutoCAD Electrical's Project Manager (a native palette, so its tree clicks are not recorded), Explorer or a plugin can open a drawing
+without a command. Readers make an "Open drawing" step of a `doc_created` that has a `path` and came while no command or LISP ran;
+inside a command (OPEN, NEW) the command's step covers it. A replay opens that file (an already open copy only if it has no unsaved
+changes) and goes on in it, once its start-up has been quiet for a second. The LISP AutoCAD runs while a drawing opens is not a step:
+`lisp_start` with `startup: true`, everything up to its `lisp_end`. Recordings made before `startup` existed count LISP within 10 s of
+the open, before the person acted, as start-up (`Engine/Recordings/DrawingOpen.cs`). Switching between open drawings (`doc_active`) is
+not replayed.
 
 ### `origin` on `cmd_start`
 
