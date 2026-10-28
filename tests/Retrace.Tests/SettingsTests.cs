@@ -60,7 +60,7 @@ public class SettingsTests
             Assert.True(s.Save(out var err), err);
             using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Paths.SettingsFile(root)));
             Assert.Equal(
-                new[] { "autoFillDialogs", "capturesFolder", "checkpointKey", "dialogValues", "docsFolder", "editorPath", "exportDocx", "exportXlsx", "loadedCustomization", "promptStyle", "reviewCheckpoints", "ribbonTabPosition", "screenshots", "showDrivenUi", "sourceFolder", "testsFolder" },
+                new[] { "autoFillDialogs", "captureAllWorkspaces", "captureRibbon", "capturesFolder", "checkpointKey", "dialogValues", "docsFolder", "editorPath", "exportDocx", "exportXlsx", "loadedCustomization", "promptStyle", "reviewCheckpoints", "ribbonTabPosition", "screenshots", "showDrivenUi", "sourceFolder", "testsFolder" },
                 doc.RootElement.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray());
             var back = RetraceSettings.Load(root);
             Assert.Equal(root, back.RootDir);

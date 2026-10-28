@@ -54,6 +54,15 @@ public sealed class RetraceSettings
     /// enterprise files, with the partials they name), besides the .cuix / .cui files in the source folder. On by default.</summary>
     [JsonPropertyName("loadedCustomization")] public bool LoadedCustomization { get; set; } = true;
 
+    /// <summary>Build Docs first shows every ribbon tab (shown, hidden, contextual) and captures it, so the docs show the ribbon as AutoCAD
+    /// draws it instead of wireframes. Off: the last captures in the captures folder are used, wireframes for the rest. On by default.</summary>
+    [JsonPropertyName("captureRibbon")] public bool CaptureRibbon { get; set; } = true;
+
+    /// <summary>With <see cref="CaptureRibbon"/>: also switch to each other workspace (WSCURRENT) for the tabs only it loads (3D Modeling's
+    /// Solid, Mesh...), then back. Off by default: going back reloads the workspace as saved, so unsaved workspace changes (palettes,
+    /// toolbars) are lost. Never with WSAUTOSAVE on.</summary>
+    [JsonPropertyName("captureAllWorkspaces")] public bool CaptureAllWorkspaces { get; set; }
+
     /// <summary>How Retrace's own commands ask for names, files, folders and choices: "commandLine" (the default) on the command line, "ui" in
     /// a window on top of AutoCAD with a Browse button and recent places. Scripts, LISP and FILEDIA 0 always get the command line.</summary>
     [JsonPropertyName("promptStyle")] public string PromptStyle { get; set; } = PromptStyles.CommandLine;

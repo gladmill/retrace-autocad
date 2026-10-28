@@ -31,13 +31,20 @@ public sealed class RibbonCapture
     readonly RibbonTab? _restore;
     readonly Editor _ed;
     readonly DispatcherTimer _timer;
-    readonly List<string> _done = new(), _failed = new();
+    readonly List<string> _done = new();
+    readonly Dictionary<string, string> _failed = new(StringComparer.OrdinalIgnoreCase);   // tab id (or title) -> why; dropped once captured
+    readonly Action<string>? _then;   // Build Docs: goes on once the capture is done, with its summary
     DateTime _shownAt;
     RibbonTab? _job;
+    bool _madeVisible;   // the job's tab was hidden (not in this workspace): hidden again after its picture
+    readonly Queue<string> _workspaces = new();   // Build Docs: workspaces still to switch to (their own tabs, such as the 3D ones)
+    readonly HashSet<string> _captured = new(StringComparer.OrdinalIgnoreCase);   // tab ids done, so another workspace only adds new ones
+    string? _workspace;   // the workspace to go back to; null = none was switched
+    DateTime _switchedAt = DateTime.MinValue;
 
-    RibbonCapture(RibbonControl ribbon, IEnumerable<RibbonTab> tabs, string outDir, Editor ed)
+    RibbonCapture(RibbonControl ribbon, IEnumerable<RibbonTab> tabs, string outDir, Editor ed, Action<string>? then = null)
     {
-        _ribbon = ribbon; _queue = new Queue<RibbonTab>(tabs); _out = outDir; _ed = ed; _restore = ribbon.ActiveTab;
+        _ribbon = ribbon; _queue = new Queue<RibbonTab>(tabs); _out = outDir; _ed = ed; _restore = ribbon.ActiveTab; _then = then;
         _timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(150) };
         _timer.Tick += (_, _) => Log.Safe("ribbon capture", Tick);
     }
@@ -46,18 +53,20 @@ public sealed class RibbonCapture
     {
         var doc = AcApp.DocumentManager.MdiActiveDocument ?? throw new InvalidOperationException("open a drawing first");
         var ed = doc.Editor;
-        if (AppDomain.CurrentDomain.GetData(RunningKey) != null) { ed.WriteMessage("\nRETRACECAPTURERIBBON: a capture is already running.\n"); return; }
+        if (Running) { ed.WriteMessage("\nRETRACECAPTURERIBBON: a capture is already running.\n"); return; }
         var ribbon = ComponentManager.Ribbon;
         if (ribbon == null) { ed.WriteMessage("\nRETRACECAPTURERIBBON: there is no ribbon (RIBBON shows it).\n"); return; }
-        var tabs = ribbon.Tabs.Where(t => t.IsVisible && !t.IsContextualTab && !OwnCommands.IsOwnTab(t.Id)).ToList();
-        if (tabs.Count == 0) { ed.WriteMessage("\nRETRACECAPTURERIBBON: the ribbon has no tabs to capture.\n"); return; }
-
-        var o = new PromptKeywordOptions("\nCapture which ribbon tabs [All/Current] <All>: ", "All Current") { AllowNone = true };
+        var o = new PromptKeywordOptions("\nCapture which ribbon tabs [All/Shown/Current] <All>: ", "All Shown Current") { AllowNone = true };
         var k = Ask.Keywords(ed, o);
         if (k.Status == PromptStatus.Cancel) return;
-        if (k.Status == PromptStatus.OK && k.StringResult == "Current")
-            tabs = ribbon.ActiveTab is { } active && tabs.Contains(active) ? new() { active } : new();
-        if (tabs.Count == 0) { ed.WriteMessage("\nRETRACECAPTURERIBBON: the active tab cannot be captured (contextual, or Retrace's own).\n"); return; }
+        var which = k.Status == PromptStatus.OK ? k.StringResult : "All";
+        var tabs = Capturable(ribbon, hidden: which == "All");
+        if (which == "Current") tabs = ribbon.ActiveTab is { } active && tabs.Contains(active) ? new() { active } : new();
+        if (tabs.Count == 0)
+        {
+            ed.WriteMessage(which == "Current" ? "\nRETRACECAPTURERIBBON: the active tab cannot be captured (Retrace's own).\n" : "\nRETRACECAPTURERIBBON: the ribbon has no tabs to capture.\n");
+            return;
+        }
         var def = RetraceSettings.Load().Captures;
         var p = Ask.String(ed, $"\nOutput folder <{def}>: ", Ask.Of.Folder, "folder:captures", initial: def);
         if (p.Status == PromptStatus.Cancel) return;
@@ -69,13 +78,75 @@ public sealed class RibbonCapture
         new RibbonCapture(ribbon, tabs, outDir, ed)._timer.Start();
     }
 
+    /// <summary>The tabs to capture: those the ribbon shows, and with <paramref name="hidden"/> also its hidden ones (tabs of other workspaces)
+    /// and its contextual ones (Text Editor, Array...), which are shown one at a time for their picture. Never Retrace's own tab.</summary>
+    static List<RibbonTab> Capturable(RibbonControl ribbon, bool hidden) =>
+        ribbon.Tabs.Where(t => !OwnCommands.IsOwnTab(t.Id) && (hidden || (t.IsVisible && !t.IsContextualTab))).ToList();
+
+    /// <summary>Whether a ribbon capture runs now (this command's or Build Docs').</summary>
+    public static bool Running => AppDomain.CurrentDomain.GetData(RunningKey) != null;
+
+    /// <summary>Build Docs: captures every tab (shown, hidden, contextual) to <paramref name="outDir"/>, then, with <paramref name="workspaces"/>,
+    /// the tabs only those other workspaces load; then calls <paramref name="then"/> with a one-line summary. Null when started, else why not.</summary>
+    public static string? StartForDocs(string outDir, Editor ed, Action<string> then, out int count, IReadOnlyList<string>? workspaces = null)
+    {
+        count = 0;
+        var ribbon = ComponentManager.Ribbon;
+        if (ribbon == null) return "there is no ribbon (RIBBON shows it)";
+        if (Running) return "a ribbon capture is running already";
+        var tabs = Capturable(ribbon, hidden: true);
+        if (tabs.Count == 0) return "the ribbon has no tabs to capture";
+        Directory.CreateDirectory(outDir);
+        AppDomain.CurrentDomain.SetData(RunningKey, true);
+        count = tabs.Count;
+        var c = new RibbonCapture(ribbon, tabs, outDir, ed, then);
+        // then the other workspaces: AutoCAD loads a workspace's own tabs (3D Modeling's Solid, Surface, Mesh...) only when it is current
+        string? current = null;
+        try { current = AcApp.GetSystemVariable("WSCURRENT") as string; } catch (Exception ex) { Log.Error("ribbon capture WSCURRENT", ex); }
+        if (current != null)
+            foreach (var w in (workspaces ?? []).Distinct(StringComparer.OrdinalIgnoreCase).Where(w => !string.Equals(w, current, StringComparison.OrdinalIgnoreCase)))
+                c._workspaces.Enqueue(w);
+        if (c._workspaces.Count > 0) c._workspace = current;
+        c._timer.Start();
+        return null;
+    }
+
+    /// <summary>The queue is done: the next workspace, if any. Its tabs not captured yet are queued once its ribbon has been built.
+    /// False when there is none left.</summary>
+    bool NextWorkspace()
+    {
+        if (_switchedAt != DateTime.MinValue)
+        {
+            if ((DateTime.Now - _switchedAt).TotalMilliseconds < 3000) return true;   // let it build its ribbon
+            _switchedAt = DateTime.MinValue;
+            foreach (var t in Capturable(_ribbon, hidden: true).Where(t => t.Id == null || !_captured.Contains(t.Id))) _queue.Enqueue(t);
+            return true;
+        }
+        while (_workspaces.Count > 0)
+        {
+            var w = _workspaces.Dequeue();
+            try { AcApp.SetSystemVariable("WSCURRENT", w); _switchedAt = DateTime.Now; return true; }
+            catch (Exception ex) { Log.Info($"ribbon capture: cannot switch to workspace {w}: {ex.Message}"); }
+        }
+        return false;
+    }
+
     void Tick()
     {
         if (_job == null)
         {
+            if (_queue.Count == 0 && NextWorkspace()) return;
             if (_queue.Count == 0) { Finish(); return; }
             _job = _queue.Dequeue();
-            _ribbon.ActiveTab = _job;
+            try { Show(_job); }
+            catch (Exception ex)
+            {
+                Log.Error("ribbon capture show " + _job.Title, ex);
+                Fail(_job, ex.Message);
+                var shown = _job; Log.Safe("ribbon capture hide", () => Hide(shown));   // a hidden tab made visible must not stay so
+                _job = null;
+                return;
+            }
             _shownAt = DateTime.Now;
             return;
         }
@@ -85,19 +156,65 @@ public sealed class RibbonCapture
         try
         {
             var problem = Capture(tab);
-            if (problem == null) _done.Add(tab.Title ?? tab.Id ?? "?");
-            else { _failed.Add($"{tab.Title}: {problem}"); Log.Info($"ribbon capture {tab.Title}: {problem}"); }
+            if (problem == null)
+            {
+                _done.Add(tab.Title ?? tab.Id ?? "?");
+                if (tab.Id != null) _captured.Add(tab.Id);
+                _failed.Remove(Key(tab));
+            }
+            else { Fail(tab, problem); Log.Info($"ribbon capture {tab.Title}: {problem}"); }
         }
-        catch (Exception ex) { Log.Error("ribbon capture " + tab.Title, ex); _failed.Add($"{tab.Title}: {ex.Message}"); }
+        catch (Exception ex) { Log.Error("ribbon capture " + tab.Title, ex); Fail(tab, ex.Message); }
+        finally { Log.Safe("ribbon capture hide", () => Hide(tab)); }
     }
+
+    static string Key(RibbonTab t) => t.Id ?? t.Title ?? "?";
+    void Fail(RibbonTab t, string why) => _failed[Key(t)] = $"{t.Title}: {why}";
+
+    /// <summary>Makes the tab the active one: a contextual tab through ShowContextualTab, a hidden one by making it visible for the moment.
+    /// AutoCAD fills a hidden tab's panels when it is shown (seen in R25.1: 0 panels before, 7 after).</summary>
+    void Show(RibbonTab tab)
+    {
+        _madeVisible = false;
+        if (tab.IsContextualTab) _ribbon.ShowContextualTab(tab, false, true);
+        else
+        {
+            if (!tab.IsVisible) { tab.IsVisible = true; _madeVisible = true; }
+            _ribbon.ActiveTab = tab;
+        }
+    }
+
+    void Hide(RibbonTab tab)
+    {
+        if (tab.IsContextualTab) _ribbon.HideContextualTab(tab);
+        else if (_madeVisible) tab.IsVisible = false;
+        _madeVisible = false;
+    }
+
+    DateTime _restoredAt = DateTime.MinValue;
 
     void Finish()
     {
+        // back to the first workspace; its ribbon is rebuilt after that, so the tab is restored on a later tick
+        if (_workspace != null && _restoredAt == DateTime.MinValue)
+        {
+            try { AcApp.SetSystemVariable("WSCURRENT", _workspace); } catch (Exception ex) { Log.Error("ribbon capture restore workspace", ex); }
+            _restoredAt = DateTime.Now;
+            return;
+        }
+        if (_restoredAt != DateTime.MinValue && (DateTime.Now - _restoredAt).TotalMilliseconds < 3000) return;
         _timer.Stop();
         AppDomain.CurrentDomain.SetData(RunningKey, null);
-        try { if (_restore != null) _ribbon.ActiveTab = _restore; } catch (Exception ex) { Log.Error("ribbon capture restore", ex); }
-        var msg = $"\nRETRACECAPTURERIBBON: {_done.Count} tab(s) captured to {_out}" + (_failed.Count > 0 ? $"; not captured: {string.Join("; ", _failed)}" : "") + "\n";
-        try { (AcApp.DocumentManager.MdiActiveDocument?.Editor ?? _ed).WriteMessage(msg); } catch (Exception ex) { Log.Info(msg.Trim() + $" ({ex.Message})"); }
+        try
+        {
+            // the same tab, or the one with its id after the rebuild
+            var back = _restore != null && _ribbon.Tabs.Contains(_restore) ? _restore : _ribbon.Tabs.FirstOrDefault(t => _restore?.Id != null && t.Id == _restore.Id);
+            if (back != null) _ribbon.ActiveTab = back;
+        }
+        catch (Exception ex) { Log.Error("ribbon capture restore", ex); }
+        var msg = $"{_done.Count} ribbon tab(s) captured to {_out}" + (_failed.Count > 0 ? $"; not captured: {string.Join("; ", _failed.Values)}" : "");
+        if (_then != null) { Log.Safe("ribbon capture then", () => _then(msg)); return; }
+        try { (AcApp.DocumentManager.MdiActiveDocument?.Editor ?? _ed).WriteMessage($"\nRETRACECAPTURERIBBON: {msg}\n"); } catch (Exception ex) { Log.Info(msg + $" ({ex.Message})"); }
     }
 
     /// <summary>One element per panel / item: the outermost visible element whose DataContext it is. Rectangles in device pixels,

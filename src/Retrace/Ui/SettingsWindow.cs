@@ -26,6 +26,8 @@ sealed class SettingsWindow : Window
     readonly CheckBox _shots = new() { Content = "Take screenshots while recording (saved in the test folder, used by steps.md)", Margin = new Thickness(0, 10, 0, 0) };
     readonly CheckBox _autoFill = new() { Content = "RETRACERUN fills dialogs with the recorded values and closes them (else you do it)", Margin = new Thickness(0, 6, 0, 0) };
     readonly CheckBox _dialogValues = new() { Content = "Record which values you change in dialogs and palettes (shown in the test script)", Margin = new Thickness(0, 6, 0, 0) };
+    readonly CheckBox _captureRibbon = new() { Content = "Build Docs captures every ribbon tab first (pictures, not wireframes)", Margin = new Thickness(0, 6, 0, 0), ToolTip = "Shows each tab, hidden and contextual ones too, for a moment and saves what AutoCAD draws in the captures folder. Takes a few minutes; leave AutoCAD as it is meanwhile." };
+    readonly CheckBox _allWorkspaces = new() { Content = "...and switch through the other workspaces for their own tabs (unsaved workspace changes are lost)", Margin = new Thickness(18, 4, 0, 0), ToolTip = "3D Modeling's Solid, Mesh... are only loaded in their workspace. Going back reloads your workspace as saved. Not done while WSAUTOSAVE is on." };
     readonly CheckBox _loadedCuix = new() { Content = "Docs also cover the customization files AutoCAD has loaded (.cuix, partials, enterprise)", Margin = new Thickness(0, 6, 0, 0), ToolTip = "Besides the .cuix / .cui files in the source folder: the main customization file, its partials and the enterprise file, as loaded when RETRACEDOCS runs." };
     readonly CheckBox _uiPrompts = new() { Content = "Ask for names, files and folders in a window (Browse, recent places), not on the command line", Margin = new Thickness(0, 6, 0, 0), ToolTip = "The window stays on top of AutoCAD. Scripts, LISP and FILEDIA 0 still get the command line." };
     readonly CheckBox _showUi = new() { Content = "Run test opens rolled-up and auto-hidden palettes while it drives them", Margin = new Thickness(0, 6, 0, 0), ToolTip = "Moves the mouse over the palette (and back after) so you can watch the step. Off: the palette is filled while it stays hidden." };
@@ -83,6 +85,10 @@ sealed class SettingsWindow : Window
         root.Children.Add(_uiPrompts);
         _loadedCuix.IsChecked = current.LoadedCustomization;
         root.Children.Add(_loadedCuix);
+        _captureRibbon.IsChecked = current.CaptureRibbon;
+        root.Children.Add(_captureRibbon);
+        _allWorkspaces.IsChecked = current.CaptureAllWorkspaces;
+        root.Children.Add(_allWorkspaces);
         _docx.IsChecked = current.ExportDocx;
         root.Children.Add(_docx);
         _xlsx.IsChecked = current.ExportXlsx;
@@ -241,6 +247,8 @@ sealed class SettingsWindow : Window
         _showUi.IsChecked = true;
         _uiPrompts.IsChecked = false;
         _loadedCuix.IsChecked = true;
+        _captureRibbon.IsChecked = true;
+        _allWorkspaces.IsChecked = false;
         _docx.IsChecked = false;
         _xlsx.IsChecked = false;
         _tabPos.SelectedIndex = 0;
@@ -262,6 +270,8 @@ sealed class SettingsWindow : Window
         s.ShowDrivenUi = _showUi.IsChecked == true;
         s.PromptStyle = _uiPrompts.IsChecked == true ? PromptStyles.Ui : PromptStyles.CommandLine;
         s.LoadedCustomization = _loadedCuix.IsChecked == true;
+        s.CaptureRibbon = _captureRibbon.IsChecked == true;
+        s.CaptureAllWorkspaces = _allWorkspaces.IsChecked == true;
         s.ExportDocx = _docx.IsChecked == true;
         s.ExportXlsx = _xlsx.IsChecked == true;
         var pos = _tabPos.SelectedIndex >= 0 ? _tabPosValues[_tabPos.SelectedIndex] : RibbonTabPosition.AfterHome;

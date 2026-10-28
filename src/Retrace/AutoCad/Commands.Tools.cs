@@ -202,6 +202,12 @@ public sealed partial class Commands
                 var lc = Ask.Keywords(ed, new PromptKeywordOptions($"\nDocs also cover the CUIX files AutoCAD has loaded [Yes/No] <{(s.LoadedCustomization ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
                 if (lc.Status == PromptStatus.Cancel) return;
                 n.LoadedCustomization = lc.Status == PromptStatus.OK ? lc.StringResult == "Yes" : s.LoadedCustomization;
+                var cr = Ask.Keywords(ed, new PromptKeywordOptions($"\nBuild Docs captures every ribbon tab first [Yes/No] <{(s.CaptureRibbon ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
+                if (cr.Status == PromptStatus.Cancel) return;
+                n.CaptureRibbon = cr.Status == PromptStatus.OK ? cr.StringResult == "Yes" : s.CaptureRibbon;
+                var aw = Ask.Keywords(ed, new PromptKeywordOptions($"\nThe capture also visits the other workspaces [Yes/No] <{(s.CaptureAllWorkspaces ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
+                if (aw.Status == PromptStatus.Cancel) return;
+                n.CaptureAllWorkspaces = aw.Status == PromptStatus.OK ? aw.StringResult == "Yes" : s.CaptureAllWorkspaces;
                 SaveAndReport(ed, n);
                 return;
             }
@@ -252,6 +258,8 @@ public sealed partial class Commands
                $"  Word export      : {(s.ExportDocx ? "on" : "off")} (steps.docx next to steps.md)\n" +
                $"  Excel export     : {(s.ExportXlsx ? "on" : "off")} (steps.xlsx next to steps.md)\n" +
                $"  Ribbon tab       : {RibbonTabPosition.Normalize(s.RibbonTabPosition)} (afterHome, first, last, after:<tab id or title>)\n" +
+               $"  Capture ribbon   : {(s.CaptureRibbon ? "on (Build Docs captures every ribbon tab first: pictures, not wireframes)" : "off (the last captures, else wireframes)")}\n" +
+               $"  All workspaces   : {(s.CaptureAllWorkspaces ? "on (the capture also visits the other workspaces; unsaved workspace changes are lost)" : "off")}\n" +
                $"  Loaded CUIX      : {(s.LoadedCustomization ? "documented too (the main .cuix, partials, enterprise file AutoCAD has loaded)" : "not documented")}\n" +
                $"  Prompts          : {(s.UiPrompts ? "window (on top, Browse and recent places; scripts, LISP and FILEDIA 0 use the command line)" : "command line")}\n" +
                $"  Checkpoint key   : {(s.CheckpointChord(out var warn) is { } kc ? kc.Format() : "off")} (while recording; Ctrl+Shift+K, F8, None = off){(warn.Length > 0 ? "\n  WARNING: " + warn : "")}\n";
@@ -275,15 +283,62 @@ public sealed partial class Commands
             }
             if (!Directory.Exists(s.Source)) { ed.WriteMessage($"\nRETRACEDOCS: source folder not found: {s.Source}\n"); return; }
             s.EnsureFolders();
-            var disp = Dispatcher.CurrentDispatcher;
-            var index = s.GuideIndex;
-            var wait = EngineJobs.IsRunning;
-            var loaded = s.LoadedCustomization ? LoadedCustomization() : [];
-            if (!EngineJobs.BuildDocs(s, r => disp.BeginInvoke(() => GuideDone(r, index)), out var runErr, loaded)) { ed.WriteMessage($"\nRETRACEDOCS: {runErr}\n"); return; }
-            if (loaded.Count > 0) ed.WriteMessage($"\nRETRACEDOCS: also documenting the {loaded.Count} customization file(s) AutoCAD has loaded: {string.Join(", ", loaded.Select(Path.GetFileName))}\n");
-            ed.WriteMessage($"\nRETRACEDOCS: {(wait ? "another Retrace job is running; the docs are queued and built right after it" : "building the docs")} from {s.Source}\n  into {s.Docs}\n  AutoCAD stays usable; a message appears here when it is done.\n");
+            var loaded = s.LoadedCustomization ? LoadedCustomization() : [];   // read now, in the command (COM)
+            // the ribbon as AutoCAD draws it, so the docs show pictures, not wireframes: every tab is shown in turn first (a few minutes
+            // for AutoCAD Electrical's ~70 tabs), then the engine builds in the background
+            if (s.CaptureRibbon)
+            {
+                if (RibbonCapture.Running) { ed.WriteMessage("\nRETRACEDOCS: a ribbon capture is running; run it again when that is done.\n"); return; }
+                if (Recorder.Instance.IsRecording)
+                    ed.WriteMessage("\nRETRACEDOCS: a test is being recorded, so the ribbon is not captured now (its tab changes would be recorded); the last captures are used.\n");
+                else
+                {
+                    var spaces = s.CaptureAllWorkspaces ? OtherWorkspaces(ed) : [];
+                    var why = RibbonCapture.StartForDocs(s.Captures, ed, msg => { Print("RETRACEDOCS: " + msg); StartDocsBuild(s, loaded); }, out var tabs, spaces);
+                    if (why == null)
+                    {
+                        var secs = tabs * 1.1 + spaces.Count * 30;
+                        ed.WriteMessage($"\nRETRACEDOCS: capturing the {tabs} ribbon tabs{(spaces.Count > 0 ? $", then those of {spaces.Count} more workspace(s)" : "")} first " +
+                                        $"(about {Math.Max(1, (int)Math.Ceiling(secs / 60))} min; leave AutoCAD as it is), then building the docs.\n");
+                        return;
+                    }
+                    ed.WriteMessage($"\nRETRACEDOCS: the ribbon is not captured ({why}); the last captures are used.\n");
+                }
+            }
+            StartDocsBuild(s, loaded);
         }
         catch (Exception ex) { Log.Error("RETRACEDOCS", ex); ed.WriteMessage($"\nRETRACEDOCS failed: {ex.Message}\n"); }
+    }
+
+    /// <summary>The workspaces of the main and enterprise customization files (their WorkspaceRoot only), for the ribbon capture to switch
+    /// through. Empty, with a message, when WSAUTOSAVE is on: switching would save the temporary state into the user's customization file.</summary>
+    static List<string> OtherWorkspaces(Editor ed)
+    {
+        try
+        {
+            if (Convert.ToInt32(AcApp.GetSystemVariable("WSAUTOSAVE")) != 0)
+            {
+                ed.WriteMessage("\nRETRACEDOCS: WSAUTOSAVE is on, so the other workspaces are not visited (switching would save into your customization file).\n");
+                return [];
+            }
+        }
+        catch (Exception ex) { Log.Error("WSAUTOSAVE", ex); return []; }
+        var names = new List<string>();
+        foreach (var f in LoadedCustomization())   // menu groups' files whatever loadedCustomization says: only their workspace names are read
+            try { names.AddRange(Retrace.Engine.Scan.Cuix.CuixReader.WorkspaceNames(f)); }
+            catch (Exception ex) { Log.Info($"workspaces of {f}: {ex.Message}"); }
+        return names.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>Queues the docs build (engine, background thread) and says so.</summary>
+    void StartDocsBuild(RetraceSettings s, IReadOnlyList<string> loaded)
+    {
+        var disp = Dispatcher.CurrentDispatcher;
+        var index = s.GuideIndex;
+        var wait = EngineJobs.IsRunning;
+        if (!EngineJobs.BuildDocs(s, r => disp.BeginInvoke(() => GuideDone(r, index)), out var runErr, loaded)) { Print($"RETRACEDOCS: {runErr}"); return; }
+        if (loaded.Count > 0) Print($"RETRACEDOCS: also documenting the {loaded.Count} customization file(s) AutoCAD has loaded: {string.Join(", ", loaded.Select(Path.GetFileName))}");
+        Print($"RETRACEDOCS: {(wait ? "another Retrace job is running; the docs are queued and built right after it" : "building the docs")} from {s.Source}\n  into {s.Docs}\n  AutoCAD stays usable; a message appears here when it is done.");
     }
 
     /// <summary>The customization files AutoCAD has loaded: each menu group's file (the main .cuix and its partials, read over COM) and the
