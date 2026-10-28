@@ -21,6 +21,23 @@ public static class CuixReader
         catch (Exception ex) when (ex is XmlException or IOException or UnauthorizedAccessException) { return false; }
     }
 
+    /// <summary>Only the workspace names of a .cuix / .cui (its WorkspaceRoot part), without reading the rest. Empty when there is none.</summary>
+    public static List<string> WorkspaceNames(string absPath)
+    {
+        XElement? root;
+        if (absPath.EndsWith(".cui", StringComparison.OrdinalIgnoreCase)) root = XDocument.Load(absPath).Root?.DescendantsAndSelf("WorkspaceRoot").FirstOrDefault();
+        else
+        {
+            using var zip = ZipFile.OpenRead(absPath);
+            var entry = zip.Entries.FirstOrDefault(e => string.Equals(Path.GetFileName(e.FullName), "WorkspaceRoot.cui", StringComparison.OrdinalIgnoreCase));
+            if (entry == null) return [];
+            using var s = entry.Open();
+            root = XDocument.Load(s).Root;
+        }
+        if (root == null) return [];
+        return root.Elements("Workspace").Select(w => Norm((string?)w.Element("Name"))).Where(n => n.Length > 0).Distinct().ToList();
+    }
+
     public static CuixModel Read(string absPath, string relPath, string? container = null)
     {
         var model = new CuixModel { File = relPath };

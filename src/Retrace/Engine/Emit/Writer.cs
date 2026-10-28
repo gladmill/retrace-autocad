@@ -32,7 +32,7 @@ public static class Writer
         // once any tab was captured, say which were not (the others still show their wireframe)
         if (ix.Captures.Tabs.Count > 0)
             foreach (var tab in ix.AllTabs.Where(t => ix.Captures.For(t) == null))
-                model.Warnings.Add($"ribbon: no capture of the tab {tab.Title} ({tab.Id}): it shows its wireframe. Show the tab in AutoCAD (a workspace that has it) and run RETRACECAPTURERIBBON again.");
+                model.Warnings.Add($"ribbon: no capture of the tab {tab.Title} ({tab.Id}): it shows its wireframe. AutoCAD did not show it when the ribbon was captured (not in this product's workspaces, empty, or the setting captureAllWorkspaces is off).");
         foreach (var f in model.Forms)
             Asset(model, sink, ix.FormAsset[f], () => FormRenderer.Render(f, model.InputRoot), ct);
 

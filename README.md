@@ -6,7 +6,7 @@ checkpoints. Retrace then writes the test as step-by-step instructions (Markdown
 tells you pass or fail. It can also read your customization folder (`.cuix`, C#, VB.NET, C++, `.rc`, XAML, `.dcl`) and
 write Markdown docs: ribbons, commands, dialogs, a source map, and an editable user guide with how-tos built from your recordings.
 
-Status: pre-1.0 (0.2.0). AutoCAD 2026 (R25.1), Windows x64. Written against the `AutoCAD.NET` 25.1.0 packages.
+Status: pre-1.0 (0.2.1). AutoCAD 2026 (R25.1), Windows x64. Written against the `AutoCAD.NET` 25.1.0 packages.
 Verified in AutoCAD only in part: see [Limitations](#limitations).
 
 ## Install
@@ -98,7 +98,7 @@ All are on the Retrace ribbon tab (panels Record, Test, Guide, Open, Tools) exce
 | `RETRACESETTINGS`, `-RETRACESETTINGS` | Settings window; the second form asks on the command line (including the checkpoint shortcut). |
 | `RETRACEFOLDER` | Open a folder in Explorer: `Root`, `Tests` (default), `Captures` or `Docs`. Ribbon buttons Tests, Captures and Docs call it. |
 | `RETRACECAPTUREDCL` | Open each DCL dialog of a `.dcl` file or folder and save a picture and geometry (`<stem>__<dialog>.png` + `.json`) in the captures folder. |
-| `RETRACECAPTURERIBBON` | Show each ribbon tab (all, or the current one) and save what AutoCAD drew in the captures folder (`ribbon__<tab>.png`, one picture per panel, and a `.json` with where every panel and button is). The next docs build shows these instead of the drawn wireframes. |
+| `RETRACECAPTURERIBBON` | Show each ribbon tab (All: also the hidden and contextual ones, shown for a moment each; Shown; or Current) and save what AutoCAD drew in the captures folder (`ribbon__<tab>.png`, one picture per panel, and a `.json` with where every panel and button is). The next docs build shows these instead of the drawn wireframes. |
 | `RETRACECLOSEALL` | Close every open drawing without saving (asks once). Handy between test runs. |
 
 Set the environment variable `RETRACE_AUTOSTART=1` to start recording (test name `auto`) at the first idle moment after AutoCAD starts.
@@ -148,6 +148,8 @@ Recordings hold drawing names, typed text, coordinates and object handles. Treat
 | `checkpointKey` | `Ctrl+Shift+K` | Shortcut for a checkpoint while recording, e.g. `Ctrl+Shift+J` or `F13`. Ctrl and Shift plus A-Z, 0-9 or F1-F24; a letter or digit needs Ctrl. No Alt (letting it go opens the ribbon's key tips). While recording Retrace takes the key from AutoCAD, so pick one AutoCAD does not use: F1-F12, `Ctrl+1` (Properties) and `Ctrl+C`/`V`/`Z`/`S` are AutoCAD's. Pressed during a command, the checkpoint is taken when that command ends. `None` or empty = off. An invalid value falls back to the default and is logged. While a dialog is open the key goes to the dialog. Set it in Settings (click the box, press the keys) or with `-RETRACESETTINGS`. |
 | `promptStyle` | `commandLine` | How Retrace's commands ask for a test name, a recording, a file or folder, or a choice. `ui`: in a window on top of AutoCAD, with Browse... (the Windows file or folder dialog) and the places recently chosen for that question; choices are buttons. `commandLine`: on the command line. A command run from a script or LISP, or with `FILEDIA` 0, always asks on the command line. Set it in Settings or with `-RETRACESETTINGS`. Recent places are kept in `recent.json` in the root folder. |
 | `loadedCustomization` | `true` | `RETRACEDOCS` also documents the customization files AutoCAD has loaded at that moment: each menu group's file (the main `.cuix` and its partials) and the enterprise file (`ENTERPRISEMENU`), besides the `.cuix` / `.cui` files in the source folder. Partial files that a read file names in its header are read too (relative to that file); one that is missing is a warning. A file is read once; two files with the same name are told apart by their full path. Legacy `.cui` files (one XML file) are read like `.cuix`. |
+| `captureRibbon` | `true` | `RETRACEDOCS` (Build docs) first captures every ribbon tab, as `RETRACECAPTURERIBBON` All does, and then builds, so the docs show the ribbon as AutoCAD draws it, not wireframes. Hidden tabs and contextual tabs (Text Editor, Array...) are shown for a moment each, then the first tab is active again. About 1-2 minutes for AutoCAD Electrical's ~70 tabs; leave AutoCAD alone meanwhile. Tabs AutoCAD cannot show (in no workspace, a workspace this product does not have, or empty) keep their wireframe and are listed under Warnings. Off: the last captures in the captures folder are used. |
+| `captureAllWorkspaces` | `false` | With `captureRibbon`: also switch to each other workspace of the main customization file (WSCURRENT) for the tabs only it loads (3D Modeling's Solid, Mesh...), then back. Off by default because going back reloads your workspace as saved: unsaved palette and toolbar changes are lost. Never done while `WSAUTOSAVE` is on (switching would save into your customization file). Not done while a test is being recorded (no capture then). |
 | `ribbonTabPosition` | empty (= `afterHome`) | `afterHome`, `first`, `last` or `after:<tab id or title>`, for example `after:ID_TabInsert`. |
 
 ## What the docs folder contains

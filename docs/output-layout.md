@@ -80,7 +80,7 @@ CUIX icons are resource ids inside `acad.exe`, so the wireframes cannot show the
 
 ### Ribbon captures
 
-`RETRACECAPTURERIBBON` (in AutoCAD) writes `ribbon__<tab>.png`, `ribbon__<tab>__<n>.png` per panel and `ribbon__<tab>.json` (tab id and title,
+`RETRACEDOCS` does this first when the setting `captureRibbon` is on (the default), with hidden and contextual tabs and the other workspaces too. `RETRACECAPTURERIBBON` (in AutoCAD) writes `ribbon__<tab>.png`, `ribbon__<tab>__<n>.png` per panel and `ribbon__<tab>.json` (tab id and title,
 every panel's and item's id, text and rectangle in device pixels) to the captures folder, for each tab the ribbon shows (not contextual tabs,
 not Retrace's own). With a capture for a tab, the build draws no wireframe for it: its SVG (`reference\images\ribbon\...svg`) is the
 captured picture with an invisible box over every panel and item it found, carrying the wireframe's ids and `data-source`, so

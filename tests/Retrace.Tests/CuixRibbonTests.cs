@@ -356,4 +356,12 @@ public static class LooseActions {
         }
         finally { try { Directory.Delete(dir, true); } catch (Exception) { } }
     }
+
+    [Fact]
+    public void Workspace_names_alone()
+    {
+        var path = MakeCuix();
+        try { Assert.Equal(new[] { "Drafting" }, CuixReader.WorkspaceNames(path)); }
+        finally { File.Delete(path); }
+    }
 }
