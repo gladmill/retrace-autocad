@@ -5,8 +5,9 @@ You do a manual test once while Retrace records it: ribbon clicks, commands, pro
 checkpoints. Retrace then writes the test as step-by-step instructions (Markdown, Word, Excel), replays it later and
 tells you pass or fail. It can also read your customization folder (`.cuix`, C#, VB.NET, C++, `.rc`, XAML, `.dcl`) and
 write Markdown docs: ribbons, commands, dialogs, a source map, and an editable user guide with how-tos built from your recordings.
+And it maps each ribbon button to the LISP, C++, C# or VB.NET code it runs.
 
-Status: pre-1.0 (0.2.1). AutoCAD 2026 (R25.1), Windows x64. Written against the `AutoCAD.NET` 25.1.0 packages.
+Status: pre-1.0 (0.2.2). AutoCAD 2026 (R25.1), Windows x64. Written against the `AutoCAD.NET` 25.1.0 packages.
 Verified in AutoCAD only in part: see [Limitations](#limitations).
 
 ## Install
@@ -94,6 +95,8 @@ All are on the Retrace ribbon tab (panels Record, Test, Guide, Open, Tools) exce
 | `RETRACESCR` | Write a `.scr` script next to the recording for its plain-command parts. Not on the ribbon. |
 | `RETRACEOPEN` | The Open test window: your tests with their last verdict, and one button per file or folder of the selected test, plus Run this test. |
 | `RETRACEDOCS` | Build the docs from the source folder, the captures and the recorded tests. AutoCAD stays usable. |
+| `RETRACEMAP` | The Map window: tick the folders with your CUI / CUIX files and code, press Map, and see which code each ribbon button runs. Writes `ribbon-map.md`, `.csv` and `.json` (see [Ribbon map](#ribbon-map)). AutoCAD stays usable. |
+| `-RETRACEMAP` | The same on the command line, for scripts: asks for the folders (separated by `;`; Enter keeps the ones ticked last time), then whether to map the ribbon AutoCAD shows now. Prints a summary when it is done. Not on the ribbon. |
 | `RETRACEGUIDE` | The guide palette: page tree, live preview, Edit / Save / Revert, Open in editor. |
 | `RETRACESETTINGS`, `-RETRACESETTINGS` | Settings window; the second form asks on the command line (including the checkpoint shortcut). |
 | `RETRACEFOLDER` | Open a folder in Explorer: `Root`, `Tests` (default), `Captures` or `Docs`. Ribbon buttons Tests, Captures and Docs call it. |
@@ -103,6 +106,25 @@ All are on the Retrace ribbon tab (panels Record, Test, Guide, Open, Tools) exce
 
 Set the environment variable `RETRACE_AUTOSTART=1` to start recording (test name `auto`) at the first idle moment after AutoCAD starts.
 
+## Ribbon map
+
+Map (`RETRACEMAP`, ribbon Retrace > Guide > Map) answers "which code runs when I click this ribbon button?". It writes one row per ribbon item: its tab, panel and label, what a click runs (a command, a LISP function, a method, a class), and where your code defines that, in LISP, C++, C# or VB.NET.
+
+**What it reads.** Everything comes from the folders you pick, and from AutoCAD if you let it:
+
+- Ribbon items from `.cuix` and `.cui` files, and from ribbons that code builds (C# and VB.NET with `RibbonTab`, `RibbonPanelSource`, `RibbonButton`...). With the live ribbon on, also the ribbon AutoCAD shows now: the tabs that plugins build when AutoCAD runs, and the `.cuix` files AutoCAD has loaded.
+- Code in the same folders: LISP (`.lsp`, `.mnl`), C++, C# and VB.NET. A command is found from `(defun c:NAME ...)` and `(vlax-add-cmd "NAME" ...)` in LISP, `[CommandMethod]` / `<CommandMethod>` in C# and VB.NET, and `addCommand` / `ACED_ARXCOMMAND_ENTRY_AUTO` in C++. LISP functions a button's macro calls are followed; `(load "file")` is matched to the file. A code ribbon's button is followed to its macro (`CommandParameter`), its handler method or its handler class.
+
+**The window.**
+
+1. **Folders.** Add folders... (several at once) or drop folders, or files from them, from Explorer. Every folder you ever add stays in the list, newest first, ticked or not, in `map-folders.json`; tick the ones for this map. A folder that is gone shows "(not found)" and stays for when it is back. Remove from list only forgets a folder. Space ticks the selected folder, Delete removes it.
+2. **Options.** "Also map the ribbon AutoCAD shows now" adds the live ribbon. "List every live tab, also AutoCAD's own" lists the tabs of AutoCAD itself; off, a tab that only the live ribbon has is listed only when something in it maps to your code. Both are remembered.
+3. **Map.** Runs in the background; AutoCAD stays usable and Cancel stops it. The result is a table you can filter (type part of a tab, button, command, file or method; or show only mapped, not found or no action items) and sort. Double-click a row, or Enter, opens the code in your editor (Settings > Editor) at its line. "Open where defined" opens the ribbon item itself: the code that builds it, or its `.cuix` in Explorer (a `.cuix` is a zip, so there is no line to jump to). Hover a cell for details.
+
+**What it writes.** `C:\temp\retrace\map\ribbon-map.md` (the report), `ribbon-map.csv` (for Excel) and `ribbon-map.json` (for tools), rewritten at every map; the columns, Origin, Found by and Status are explained in [docs/ribbon-map.md](docs/ribbon-map.md). They hold full paths of your local folders and the names of your buttons and code: treat them as your data. The Report, Excel and Map folder buttons open them.
+
+**It is heuristic.** It finds less rather than something wrong. A LISP command is found only from `(defun c:...)` and `(vlax-add-cmd ...)`; compiled `.fas` / `.vlx` files are not read. A macro's LISP calls are followed, a DIESEL macro (`$M=...`) is not. A code ribbon is read from the source and from the live ribbon; a button built through helper methods or from data may not be understood. A row that runs something no chosen folder defines is "Not found", and one with nothing to look up (a drop-down, an AutoCAD button the live ribbon tells nothing about) is "No action". What could not be read is under Warnings.
+
 ## Folders on disk
 
 Everything is under `C:\temp\retrace` (fixed; there is no setting or variable for the root). The tests, captures and docs folders can be moved with settings.
@@ -111,6 +133,8 @@ Everything is under `C:\temp\retrace` (fixed; there is no setting or variable fo
 C:\temp\retrace\
   settings.json                       your settings
   retrace.log                         errors and warnings of the plugin
+  map-folders.json                    the Map window's folders, newest first, and which are ticked
+  map\                                the last ribbon map: ribbon-map.md, ribbon-map.csv, ribbon-map.json
   tests\                              one folder per recorded test
     2026-10-10_0243_dtest\            start time, then the name; a clash gets _2, _3
       recording.jsonl                 the recording (see docs/recording-format.md)
@@ -125,7 +149,7 @@ C:\temp\retrace\
   cache\native\<version>\             the extracted native WebView2 loader
 ```
 
-Recordings hold drawing names, typed text, coordinates and object handles. Treat them as your data.
+Recordings hold drawing names, typed text, coordinates and object handles. Treat them as your data. The map files hold full local paths and the names of your buttons and code.
 
 ## Settings
 
@@ -167,7 +191,7 @@ Recordings hold drawing names, typed text, coordinates and object handles. Treat
 
 ## Limitations
 
-- Pre-1.0. Run in AutoCAD Electrical 2026 (R25.1) on 2026-10-22: the bundle loads, the Retrace tab appears, and record / checkpoint / stop, `steps.md` with Word and Excel export, `RETRACEREPLAY` (PASS), `RETRACEDOCS` and the guide palette work. Run it in your AutoCAD before you rely on it.
+- Pre-1.0. Run in AutoCAD Electrical 2026 (R25.1) on 2026-10-22: the bundle loads, the Retrace tab appears, and record / checkpoint / stop, `steps.md` with Word and Excel export, `RETRACEREPLAY` (PASS), `RETRACEDOCS` and the guide palette work. The ribbon map was run in plain AutoCAD 2026 on 2026-10-28: `-RETRACEMAP` and the Map window (ribbon button, Map, filter, Open code, Add folders) on test folders with CUIX, CUI, LISP, C++, C#, VB.NET and the live ribbon, including a tab a plugin builds at run time. Run it in your AutoCAD before you rely on it.
 - The engine that builds the docs runs inside the AutoCAD process (on a background thread). A bug in it is caught and reported, but it shares memory with AutoCAD. Screenshots are queued and taken a moment later, never inside an AutoCAD event handler.
 - Replay is not a pixel-exact replay: a ribbon click with recorded answers is replayed through its macro. Handles refer to the drawing the test was recorded in. The pick point on an object is not replayed. Points are typed absolute, angles in degrees (assumes `AUNITS` 0). Text answers with spaces break at the first space.
 - Palette sets (your plugin's `PaletteSet`, WinForms or WPF content): the fields you change and the push buttons you click are recorded, as one step per
@@ -183,7 +207,7 @@ Recordings hold drawing names, typed text, coordinates and object handles. Treat
   are asked through WinForms itself. Other owner-drawn controls, list views, trees and password fields are not read. A dialog that opens a nested dialog still needs a person.
 - AutoCAD's security prompt is never answered by a replay: the run stops with `INCOMPLETE` and says what to do. A recording does not replay a security prompt either.
 - Docs scanners are heuristic: they find less rather than something wrong, and report what they missed under Warnings in `docs\README.md`. Wireframes are drawn from the source, not captured from AutoCAD.
-- Not tested in AutoCAD yet: a full `RETRACERUN` (only up to its file picker), the Open test window, `RETRACECAPTUREDCL`, and plain AutoCAD (only AutoCAD Electrical was used).
+- Not tested in AutoCAD yet: a full `RETRACERUN` (only up to its file picker), the Open test window, `RETRACECAPTUREDCL`, and plain AutoCAD for anything but the ribbon map (AutoCAD Electrical was used).
 
 ## Build and test
 

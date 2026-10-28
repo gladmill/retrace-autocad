@@ -159,9 +159,9 @@ public sealed class ModelIndex
         var steps = new List<string>();
         steps.Add(c.Kind switch
         {
-            EntryKind.CommandMethod or EntryKind.ArxAddCommand or EntryKind.ArxCommandEntry
+            EntryKind.CommandMethod or EntryKind.ArxAddCommand or EntryKind.ArxCommandEntry or EntryKind.LispCommand
                 => $"Type {c.Name} at the command line and press Enter",
-            EntryKind.LispFunction => $"Type ({c.Name}) at the command line and press Enter",
+            EntryKind.LispFunction or EntryKind.LispDefun => $"Type ({c.Name}) at the command line and press Enter",
             _ => "Use the ribbon button below (no command name is registered)",
         });
         foreach (var h in RibbonFor(c).Take(3))

@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Retrace.Engine.Map;
 using Retrace.Engine.Util;
 
 namespace Retrace.Engine.Scan.CodeRibbon;
@@ -49,6 +50,8 @@ public static class CodeRibbonReader
         private readonly List<M> _methods = new();
         // string constant/static fields: name -> (file, value)
         private readonly Dictionary<string, List<(string File, string Value)>> _fields = new();
+        // items whose CommandHandler sends commands, for properties set later in another method
+        private readonly HashSet<RibbonItem> _sendsCommand = new(ReferenceEqualityComparer.Instance);
 
         private static readonly Regex CsField = Rx.Create(
             "\\b(?:const|static|readonly)\\b[^;=(){}]*?\\bstring\\s+(\\w+)\\s*=\\s*(@?\"(?:[^\"\\\\]|\\\\.|\"\")*\")\\s*;",
@@ -377,11 +380,11 @@ public static class CodeRibbonReader
             if (props.TryGetValue("Image", out var img) && !Rx.IsMatch(img, @"^\s*\w+\s*$") && !img.Contains('('))
                 item.Image = Rx.Replace(img, @"\s+", "");
 
-            if (props.TryGetValue("CommandHandler", out var ch) && NewItemAny(ch) is { } hType
-                && id != null && !id.StartsWith('{') && HandlerSendsCommand(hType))
-                item.Command = id.ToUpperInvariant();
+            var sends = SendsCommand(props);
+            if (sends) _sendsCommand.Add(item);
+            if (sends && id != null && !id.StartsWith('{')) item.Command = id.ToUpperInvariant();
 
-            if (props.TryGetValue("CommandParameter", out var cp)) ApplyHandlerObject(item, cp, sc);
+            if (props.TryGetValue("CommandParameter", out var cp) && !ApplyMacro(item, cp, sc, sends)) ApplyHandlerObject(item, cp, sc);
 
             if (item.Kind == RibbonItemKind.SplitButton && varName != null)
                 foreach (var a in ItemsAdds(m).Where(a => a.Recv == varName))
@@ -395,8 +398,36 @@ public static class CodeRibbonReader
             string? Str(string p) => props.TryGetValue(p, out var e) ? Eval(e, sc).Text : null;
             if (Str("Text") is { } t) item.Text = t.Trim();
             if (Str("ToolTip") is { } tt) item.Tooltip = tt;
-            if (props.TryGetValue("CommandParameter", out var cp)) ApplyHandlerObject(item, cp, sc);
+            if (SendsCommand(props)) _sendsCommand.Add(item);
+            if (props.TryGetValue("CommandParameter", out var cp) && !ApplyMacro(item, cp, sc, _sendsCommand.Contains(item))) ApplyHandlerObject(item, cp, sc);
         }
+
+        /// <summary>The button's CommandHandler is a class of the scanned code that calls SendStringToExecute.</summary>
+        private bool SendsCommand(Dictionary<string, string> props) =>
+            props.TryGetValue("CommandHandler", out var ch) && NewItemAny(ch) is { } hType && HandlerSendsCommand(hType);
+
+        /// <summary>
+        /// CommandParameter = "^C^C_DRAWGRID " (a string literal, a constant, literals joined with +): the macro the button's handler sends. It
+        /// becomes the item's Macro, and its first command (none for a LISP-only macro) the item's Command, in place of the guess from the
+        /// button's Id. Only text that reads as a macro is taken, unless the handler is known to send commands: "Grid" may be a key the
+        /// handler switches on. Text built from a call or an interpolated string may differ at run time, so it is not taken. False when the
+        /// parameter is not such a macro.
+        /// </summary>
+        private bool ApplyMacro(RibbonItem item, string cpExpr, Scope sc, bool handlerSends)
+        {
+            var v = Eval(cpExpr, sc);
+            if (!v.Literal || string.IsNullOrWhiteSpace(v.Text)) return false;
+            if (!handlerSends && !LooksLikeMacro(v.Text)) return false;
+            item.Macro = v.Text;
+            item.Command = MacroText.Parse(v.Text).Commands.FirstOrDefault();
+            return true;
+        }
+
+        /// <summary>A macro, not a key: control codes (^C), a command prefix (_ . ' * +), a LISP or DIESEL expression, or the space, ; or
+        /// line break that ends a command.</summary>
+        private static bool LooksLikeMacro(string text) =>
+            text.Contains('^') || text.Contains(';') || text[0] is '_' or '.' or '\'' or '*' or '+' or '(' or '$'
+            || text[^1] is ' ' or '\n' or '\r';
 
         /// <summary>
         /// CommandParameter = new Handler(assembly, className, methodName, ...) (or a variable or helper parameter holding it): an

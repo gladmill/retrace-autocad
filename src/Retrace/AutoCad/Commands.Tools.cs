@@ -33,6 +33,7 @@ public sealed partial class Commands
         _pending = null;
         CloseOpenTest();
         CloseCheckpoints();
+        CloseMap();
         EngineJobs.Cancel();
     }
 

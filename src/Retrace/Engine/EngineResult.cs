@@ -20,6 +20,8 @@ public sealed class EngineResult
     /// <summary>The Word / Excel file written; the "(new)" name when the real one was open.</summary>
     public string? Docx { get; internal set; }
     public string? Xlsx { get; internal set; }
+    /// <summary>The ribbon map (MapRibbon), also when it could not be written; null for the other jobs or when it failed.</summary>
+    public Map.RibbonMapResult? RibbonMap { get; internal set; }
 
     internal void Info(string line) => Messages.Add(line);
     internal void Warn(string line) { if (!Warnings.Contains(line)) Warnings.Add(line); }

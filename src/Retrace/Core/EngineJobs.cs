@@ -17,6 +17,7 @@ public static class EngineJobs
     }
 
     const string DocsKind = "docs";
+    const string MapKind = "map";
 
     static readonly object Gate = new();
     static readonly Queue<Item> Waiting = new();
@@ -76,6 +77,12 @@ public static class EngineJobs
             dropped = [.. Waiting];
             Waiting.Clear();
         }
+        Report(dropped);
+    }
+
+    /// <summary>Their onDone gets a cancelled result, on a thread-pool thread like a finished job's.</summary>
+    static void Report(List<Item> dropped)
+    {
         if (dropped.Count == 0) return;
         Task.Run(() =>
         {
@@ -116,6 +123,33 @@ public static class EngineJobs
         var opt = DocsOptions(s, loaded);
         if (!Start(ct => EngineRunner.BuildDocs(opt, ct), onDone, out error, DocsKind)) { error = "The docs are already being built."; return false; }
         return true;
+    }
+
+    /// <summary>The ribbon map, written to <see cref="Retrace.Engine.Map.RibbonMapOptions.Output"/>. Refused (false) while another map is
+    /// running or waiting; queued behind any other running job.</summary>
+    public static bool MapRibbon(Retrace.Engine.Map.RibbonMapOptions opt, Action<EngineResult> onDone, out string error)
+    {
+        if (!Start(ct => EngineRunner.MapRibbon(opt, ct), onDone, out error, MapKind)) { error = "A ribbon map is already being made."; return false; }
+        return true;
+    }
+
+    /// <summary>Cancels the running job of <paramref name="kind"/> ("map", "docs") at its next checkpoint and drops the waiting ones of that
+    /// kind (their onDone gets a cancelled result). Jobs of other kinds go on. The Map window's Cancel.</summary>
+    public static void Cancel(string kind)
+    {
+        if (kind == null) return;   // jobs started with no kind are not "of the same kind"
+        var dropped = new List<Item>();
+        lock (Gate)
+        {
+            if (_current is { } running && running.Kind == kind)
+                try { running.Cts.Cancel(); } catch (ObjectDisposedException) { }
+            var all = Waiting.ToArray();
+            Waiting.Clear();
+            foreach (var w in all)
+                if (w.Kind == kind) dropped.Add(w);
+                else Waiting.Enqueue(w);
+        }
+        Report(dropped);
     }
 
     /// <summary>One recording -> steps.md next to it (+ Word / Excel). Queued behind any running job.</summary>

@@ -44,14 +44,17 @@ static class Ask
         catch (Exception ex) { Log.Error("Ask setting", ex); return false; }
     }
 
+    /// <summary>A script (CMDACTIVE 4) or LISP / ActiveX (32) runs the command: nobody is there to use a window. An error counts as a script,
+    /// the safe side: the command line.</summary>
+    public static bool ScriptRuns()
+    {
+        try { return (Convert.ToInt32(AcApp.GetSystemVariable("CMDACTIVE")) & (4 | 32)) != 0; }
+        catch (Exception ex) { Log.Error("Ask.ScriptRuns", ex); return true; }
+    }
+
     /// <summary>Whether to ask in the window: the setting says "ui", FILEDIA is on, no script or LISP runs the command (CMDACTIVE 4 / 32),
     /// and no command-line form asked for the command line.</summary>
-    public static bool InWindow()
-    {
-        if (_commandLineOnly > 0 || !UiSetting() || !FileDialogsOn()) return false;
-        try { return (Convert.ToInt32(AcApp.GetSystemVariable("CMDACTIVE")) & (4 | 32)) == 0; }
-        catch (Exception ex) { Log.Error("Ask.InWindow", ex); return false; }
-    }
+    public static bool InWindow() => _commandLineOnly == 0 && UiSetting() && FileDialogsOn() && !ScriptRuns();
 
     /// <summary>A line of text, a file or a folder. <paramref name="recent"/>: the recent-places list a file or folder answer goes to (and comes
     /// from), one per question (e.g. "recording", "folder:docs"). <paramref name="filter"/>: the file dialog's filter. <paramref name="initial"/>:
