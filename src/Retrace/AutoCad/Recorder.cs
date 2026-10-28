@@ -51,6 +51,10 @@ public sealed class Recorder
 
     // checkpoint names: where the last thing was done (a dialog, a ribbon button, a typed command) and how many checkpoints so far
     Checkpoints.CheckpointContext? _lastCtx;
+    NativeAction? _lastNative;              // the last native palette action, for its checkpoint name once a native_value names it
+    Checkpoints.CheckpointContext? _nativeCtx;   // its context: back in force after a window it opened closed by itself
+    DrawingOpen.Tracker _startup = new();   // which LISP is a drawing's start-up (not the person's): no checkpoint name from it
+    int _ctxCmdDepth, _ctxLispDepth;        // commands / LISP running, as the events say: a drawing opened inside one is that step's
     int _marks;
 
     // origin attribution: the last ribbon click that has not been matched to a command yet
@@ -101,7 +105,7 @@ public sealed class Recorder
         BeginShots();
         _promptMsg.Clear();
         _openPrompts = 0;
-        _lastCtx = null;
+        _lastCtx = null; _startup = new(); _ctxCmdDepth = 0; _ctxLispDepth = 0;
         _marks = 0;
         _lastRibbonConsumed = true;
         // initial drawing state, right after the header; read here (command/idle context), never in an event handler
@@ -135,7 +139,7 @@ public sealed class Recorder
     {
         var w = _w;
         if (w == null) return null;
-        Log.Safe("Stop palette", () => EmitPalette(_pal.Flush(w.ElapsedMs, drop: true)));
+        Log.Safe("Stop palette", () => { EmitPalette(_pal.Flush(w.ElapsedMs, drop: true)); NativeTick(true); });
         // the pictures still queued (the last command's result) are taken now, and their `shot` events must land before session_end
         Log.Safe("Stop shots", () => { _shots.Pump(w.ElapsedMs, force: true); _shots.Drain(); });
         Log.Safe("Stop", () => w.Event("session_end", CurDoc()));
@@ -150,6 +154,7 @@ public sealed class Recorder
     static string? Try(Func<string?> f) { try { return f(); } catch { return null; } }
     static string? CurDoc() { try { var d = AcApp.DocumentManager.MdiActiveDocument; return d == null ? null : Path.GetFileName(d.Name); } catch { return null; } }
     static string? DocName(Document? d) { try { return d == null ? null : Path.GetFileName(d.Name); } catch { return null; } }
+    static string? DocPath(Document? d) { try { return d is { IsNamedDrawing: true } ? d.Name : null; } catch { return null; } }
 
     /// <summary>Writes one event and queues its screenshot request (if the type gets one). Returns the event's n, 0 if not written.</summary>
     int Emit(string type, string? doc, params (string, object?)[] f)
@@ -171,15 +176,55 @@ public sealed class Recorder
     void NoteContext(string type, (string, object?)[] f)
     {
         string? F(string k) => f.FirstOrDefault(x => x.Item1 == k).Item2 as string;
+        // the LISP AutoCAD runs while a drawing opens, and the commands inside it, are not what the person did: the readers leave
+        // them out of the steps (DrawingOpen.StartupEvents, same tracker), so they name no checkpoint either
+        var startupFlag = f.FirstOrDefault(x => x.Item1 == "startup").Item2 as bool?;
+        if (_startup.Feed(type, _w?.ElapsedMs ?? 0, startupFlag)) return;
         switch (type)
         {
+            case "cmd_start": _ctxCmdDepth++; break;
+            case "cmd_end" or "cmd_cancel" or "cmd_fail": if (_ctxCmdDepth > 0) _ctxCmdDepth--; break;
+            case "lisp_start": _ctxLispDepth++; break;
+            case "lisp_end" or "lisp_cancel": if (_ctxLispDepth > 0) _ctxLispDepth--; break;
+        }
+        // the person did something else: a window that closes by itself from now on is not the native action's
+        if (type is "ribbon" or "lisp_start" or "palette_values" or "palette_click" or "doc_created" || (type == "cmd_start" && F("origin") != "palette")) _nativeCtx = null;
+        switch (type)
+        {
+            // opened while no command or LISP ran: an "Open drawing" step (the readers' rule); inside OPEN it is that command's
+            case "doc_created" when F("path") is { } opened && _ctxCmdDepth == 0 && _ctxLispDepth == 0:
+                _lastCtx = new Checkpoints.CheckpointContext("open", null, Path.GetFileName(opened));
+                break;
             case "ribbon": _lastCtx = new Checkpoints.CheckpointContext("ribbon", F("panel") ?? F("tab"), F("text") ?? F("id")); break;
             case "cmd_start" when F("origin") is not ("ribbon" or "palette"): _lastCtx = new Checkpoints.CheckpointContext("command", null, F("command")); break;
             case "lisp_start": _lastCtx = new Checkpoints.CheckpointContext("command", null, "lisp"); break;
             case "modal_title": _lastCtx = new Checkpoints.CheckpointContext("dialog", F("title"), null); break;
+            // a window a native palette action opened that closed by itself is no step for the readers (NativeAction.ClosedByItself):
+            // the native action stays the checkpoint's context
+            case "dialog_values" when _nativeCtx != null && F("closedWith") == null && f.FirstOrDefault(x => x.Item1 == "read").Item2 is null or 0:
+                _lastCtx = _nativeCtx;
+                break;
             case "dialog_values": _lastCtx = new Checkpoints.CheckpointContext("dialog", F("title") ?? _lastCtx?.Container, F("closedWith")); break;
             case "palette_values": _lastCtx = new Checkpoints.CheckpointContext("palette", F("palette"), null); break;
             case "palette_click": _lastCtx = new Checkpoints.CheckpointContext("palette", F("palette"), F("button")); break;
+            case "native_click" or "native_select":
+            {
+                // the readers' rule (Checkpoints.ContextOf): where and what; an open that follows names the checkpoint after the drawing
+                var na = new NativeAction(F("control") ?? "", F("action") ?? "", f.FirstOrDefault(x => x.Item1 == "path").Item2 as string[] ?? Array.Empty<string>(),
+                    f.FirstOrDefault(x => x.Item1 == "index").Item2 as int? ?? 1, 0, F("label"), F("value"), f.FirstOrDefault(x => x.Item1 == "entry").Item2 as int? ?? 0);
+                _lastCtx = _nativeCtx = new Checkpoints.CheckpointContext("control", F("palette"), na.Target, na.Describe() + $" in the {F("palette")} palette");
+                _lastNative = na;
+                break;
+            }
+            case "native_value" when _lastNative != null && _nativeCtx != null && F("value") is { } value:
+            {
+                // the entry's name, now known: as the readers name the step (if nothing else happened since)
+                _lastNative = _lastNative with { Value = value };
+                var named = _nativeCtx with { Control = _lastNative.Target, Description = _lastNative.Describe() + $" in the {_nativeCtx.Container} palette" };
+                if (ReferenceEquals(_lastCtx, _nativeCtx)) _lastCtx = named;
+                _nativeCtx = named;
+                break;
+            }
         }
     }
 
@@ -195,7 +240,7 @@ public sealed class Recorder
         var enabled = settings.Screenshots;
         _dlg.Clear();
         _dlg.Enabled = settings.DialogValues;
-        _pal.Clear();
+        _pal.Clear(); NativePalette.Clear();
         _pal.Enabled = settings.DialogValues;
         _pal.Pictures = settings.Screenshots;
         _dlg.Clock = () => _w?.ElapsedMs ?? 0;
@@ -216,7 +261,7 @@ public sealed class Recorder
     {
         if (_shotTimer != null) return;
         var t = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(120) };
-        t.Tick += (_, _) => Log.Safe("shot timer", () => { var w = _w; if (w != null) { _shots.Pump(w.ElapsedMs); _dlg.Tick(w.ElapsedMs); _pal.Tick(w.ElapsedMs); } });
+        t.Tick += (_, _) => Log.Safe("shot timer", () => { var w = _w; if (w != null) { _shots.Pump(w.ElapsedMs); _dlg.Tick(w.ElapsedMs); _pal.Tick(w.ElapsedMs); NativeTick(false); } });
         _shotTimer = t;
         t.Start();
     }
@@ -268,7 +313,7 @@ public sealed class Recorder
             _shotTimer?.Stop();
             _shotTimer = null;
             _dlg.Clear();   // also removes the dialog message hook
-            _pal.Clear();
+            _pal.Clear(); NativePalette.Clear();
         });
     }
 
@@ -377,7 +422,8 @@ public sealed class Recorder
     // ---- documents and commands --------------------------------------------------------------
 
     void OnDocActivated(object? s, DocumentCollectionEventArgs e) => Log.Safe("DocActivated", () => { HookDocument(e.Document); Emit("doc_active", DocName(e.Document)); });
-    void OnDocCreated(object? s, DocumentCollectionEventArgs e) => Log.Safe("DocCreated", () => { HookDocument(e.Document); Emit("doc_created", DocName(e.Document)); });
+    // path: the full path of a drawing opened from a file (null for a new, never saved one), so a replay can open it again
+    void OnDocCreated(object? s, DocumentCollectionEventArgs e) => Log.Safe("DocCreated", () => { HookDocument(e.Document); Emit("doc_created", DocName(e.Document), ("path", DocPath(e.Document))); });
     void OnDocToBeDestroyed(object? s, DocumentCollectionEventArgs e) => Log.Safe("DocToBeDestroyed", () => { Emit("doc_closing", DocName(e.Document)); UnhookDocument(e.Document); });
 
     void HookDocument(Document d)
@@ -438,7 +484,12 @@ public sealed class Recorder
             () => Log.Safe("pending checkpoint", () => { if (MarkPending) Commands.Instance.MarkFromKey(PendingAt); }));   // two ends in a row queue two calls
     }
     void OnUnknown(object? s, UnknownCommandEventArgs e) => Log.Safe("UnknownCommand", () => Emit("cmd_unknown", DocName(s as Document), ("command", e.GlobalCommandName)));
-    void OnLispStart(object? s, LispWillStartEventArgs e) => Log.Safe("LispWillStart", () => { _cmdDoc = DocName(s as Document); Emit("lisp_start", _cmdDoc, ("firstLine", e.FirstLine)); });
+    // startup: LISP AutoCAD runs while a drawing opens (no click or key since it opened), not the person's (DrawingOpen)
+    void OnLispStart(object? s, LispWillStartEventArgs e) => Log.Safe("LispWillStart", () =>
+    {
+        _cmdDoc = DocName(s as Document);
+        Emit("lisp_start", _cmdDoc, ("firstLine", e.FirstLine), ("startup", _startup.IsStartupLisp(_w?.ElapsedMs ?? 0, _lastInputMs)));
+    });
     void OnLispEnded(object? s, EventArgs e) => Log.Safe("LispEnded", () => Emit("lisp_end", DocName(s as Document)));
     void OnLispCancelled(object? s, EventArgs e) => Log.Safe("LispCancelled", () => Emit("lisp_cancel", DocName(s as Document)));
 
@@ -578,6 +629,7 @@ public sealed class Recorder
         var m = e.Message.message;
         if (CheckpointKey.TryHandle(m, e.Message.wParam, e.Message.lParam)) { e.Handled = true; return; }   // the shortcut is not user input
         if (m is 0x0100 or 0x0201 && _pal.Enabled) PaletteInput(e.Message.hwnd, (uint)m, e.Message.wParam, e.Message.lParam);
+        if (m is 0x0201 or 0x0203 or 0x0204) NativeInput(e.Message.hwnd, (uint)m, e.Message.lParam);
         // WM_KEYDOWN, WM_L/R/MBUTTONDOWN. Shift, Ctrl and Alt alone answer nothing (pressed for the checkpoint shortcut, they made an
         // AutoCAD Electrical mouse-move point look typed)
         if (m is 0x0201 or 0x0204 or 0x0207 || (m == 0x0100 && (long)e.Message.wParam is not (0x10 or 0x11 or 0x12 or (>= 0xA0 and <= 0xA5))))
@@ -604,6 +656,35 @@ public sealed class Recorder
             _lastPaletteT = w.ElapsedMs; _lastPaletteTick = _inputTick; _lastPaletteButton = button; _lastPaletteConsumed = false;
         }
         catch (Exception ex) { Log.Error("palette input", ex); }
+    }
+
+    /// <summary>A click in a native palette (AutoCAD Electrical's Project Manager): a tree item or a push button (<see cref="NativePalette"/>).</summary>
+    void NativeInput(IntPtr hwnd, uint message, IntPtr lParam)
+    {
+        if (_w == null) return;
+        try { EmitNative(NativePalette.OnClick(hwnd, message, lParam)); }
+        catch (Exception ex) { Log.Error("native palette input", ex); }
+    }
+
+    void EmitNative(NativePalette.Input? a)
+    {
+        var w = _w;
+        if (a == null || w == null) return;
+        var n = Emit(a.Control == "combo" ? "native_select" : "native_click", CurDoc(), ("palette", a.Where.Palette), ("set", a.Where.Set), ("control", a.Control),
+            ("action", a.Action), ("path", a.Path), ("index", a.Index), ("id", a.Id), ("label", a.Label), ("value", a.Value), ("entry", a.Entry > 0 ? a.Entry : null));
+        NativePalette.Written(a, n, w.ElapsedMs);
+        // a command the click starts (a toolbar button, the entry picked from a right-click menu) belongs to this step, as with .NET palettes
+        _lastPaletteT = w.ElapsedMs; _lastPaletteTick = _inputTick; _lastPaletteButton = a.Path?.LastOrDefault() ?? a.Label ?? a.Value; _lastPaletteConsumed = false;
+    }
+
+    /// <summary>Timer tick, checkpoint and Stop: a drop-down entry picked with the keyboard, and the name of an entry picked from a list that holds no text.</summary>
+    void NativeTick(bool force)
+    {
+        var w = _w;
+        if (w == null) return;
+        var (select, value) = NativePalette.Tick(_modalOpen > 0, w.ElapsedMs, force);
+        EmitNative(select);
+        if (value is { } v) Emit("native_value", CurDoc(), ("for", v.For), ("value", v.Value));
     }
 
     void EmitPalette(PaletteWatch.Values? v, bool withPicture = true)
@@ -739,7 +820,7 @@ public sealed class Recorder
     public string? Mark(string? note, DrawingDigest? state, Checkpoints.CheckpointContext? at = null)
     {
         // values set in a palette just before the checkpoint (the shortcut pressed while still in it) come first
-        if (_w is { } w) Log.Safe("mark palette", () => EmitPalette(_pal.Flush(w.ElapsedMs, drop: false)));
+        if (_w is { } w) Log.Safe("mark palette", () => { EmitPalette(_pal.Flush(w.ElapsedMs, drop: false)); NativeTick(true); });
         MarkPending = false;   // any checkpoint (the ribbon button too) answers a pending shortcut press
         var auto = Checkpoints.AutoName(_marks + 1, at ?? _lastCtx);
         var name = Checkpoints.Clean(note);

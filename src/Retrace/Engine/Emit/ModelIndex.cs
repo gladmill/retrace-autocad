@@ -29,17 +29,24 @@ public sealed class ModelIndex
     public ILookup<string, RibbonHit> RibbonByCommand { get; }
     public ILookup<string, FormOpener> OpenersByForm { get; }
 
+    /// <summary>Ribbon tabs as captured in AutoCAD (RETRACECAPTURERIBBON), from the captures folders.</summary>
+    public RibbonCaptures Captures { get; }
+
+    /// <summary>"ribbon" for a tab captured in AutoCAD, "ribbon wireframe" for one drawn from the source: the picture's alt text.</summary>
+    public string TabPictureName(RibbonTab tab) => Captures.For(tab) != null ? "ribbon" : "ribbon wireframe";
+
     public ModelIndex(EngineModel model, EngineOptions options)
     {
         Model = model;
         Options = options;
         AllTabs = model.Cuix.SelectMany(c => c.Tabs).Concat(model.CodeTabs).ToList();
+        Captures = RibbonCaptures.Load(options.Captures, model.Warnings);
 
         var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var tab in AllTabs)
         {
             var dir = tab.Origin == RibbonOrigin.Cuix
-                ? $"cuix/{Slug.Of(Path.GetFileNameWithoutExtension(tab.Container))}"
+                ? $"cuix/{Slug.Of(Path.ChangeExtension(tab.Container, null))}"   // "acad.cuix" -> acad; "AutoCAD Electrical 2026/acad.cuix" -> its own folder
                 : $"code/{Slug.Of(tab.Container)}";
             var name = Unique(used, $"{dir}/{Slug.Of(tab.Title)}", $"{dir}/{Slug.Of(tab.Title)}-{Slug.Of(tab.Id)}");
             TabDoc[tab] = $"{DocsLayout.RefRibbon}/{name}.md";

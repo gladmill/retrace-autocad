@@ -50,6 +50,17 @@ public sealed class RetraceSettings
     /// <summary>Keyboard shortcut that adds a checkpoint while recording, e.g. "Ctrl+Shift+K" or "F8". "" or "None" = off. An invalid value falls back to the default.</summary>
     [JsonPropertyName("checkpointKey")] public string CheckpointKey { get; set; } = KeyChord.Default;
 
+    /// <summary>The docs also cover the customization files AutoCAD has loaded when they are built (the main .cuix, its partial and
+    /// enterprise files, with the partials they name), besides the .cuix / .cui files in the source folder. On by default.</summary>
+    [JsonPropertyName("loadedCustomization")] public bool LoadedCustomization { get; set; } = true;
+
+    /// <summary>How Retrace's own commands ask for names, files, folders and choices: "commandLine" (the default) on the command line, "ui" in
+    /// a window on top of AutoCAD with a Browse button and recent places. Scripts, LISP and FILEDIA 0 always get the command line.</summary>
+    [JsonPropertyName("promptStyle")] public string PromptStyle { get; set; } = PromptStyles.CommandLine;
+
+    /// <summary>The prompt style asked for: true for "ui" (any case), false for anything else.</summary>
+    [JsonIgnore] public bool UiPrompts => string.Equals(Clean(PromptStyle), PromptStyles.Ui, StringComparison.OrdinalIgnoreCase);
+
     /// <summary>The root folder this instance was loaded from (not stored). Tests point it at a temp folder.</summary>
     [JsonIgnore] public string RootDir { get; set; } = Paths.Root;
 

@@ -36,21 +36,20 @@ public sealed partial class Commands
         EngineJobs.Cancel();
     }
 
-    static bool FileDialogsOn()
-    {
-        try { return Convert.ToInt32(AcApp.GetSystemVariable("FILEDIA")) != 0; } catch (Exception) { return true; }
-    }
+    static bool FileDialogsOn() => Ask.FileDialogsOn();
 
     // ---- session picking ------------------------------------------------------------------------------------------
 
-    /// <summary>File dialog starting in the tests folder; with FILEDIA=0 a command-line prompt ('last' = newest).</summary>
+    /// <summary>File dialog starting in the tests folder; with FILEDIA=0 a command-line prompt ('last' = newest); with promptStyle "ui"
+    /// the prompt window, as RETRACEREPLAY asks (<see cref="AskSession"/>).</summary>
     static string? PickSession(Editor ed)
     {
         var dir = RetraceSettings.Load().Tests;
         Directory.CreateDirectory(dir);
+        if (Ask.InWindow()) return AskSession(ed);
         if (!FileDialogsOn())
         {
-            var r = ed.GetString(new PromptStringOptions("\nRecording ('last' = newest): ") { AllowSpaces = true });
+            var r = Ask.String(ed, "\nRecording ('last' = newest): ");
             if (r.Status != PromptStatus.OK) return null;
             var s = r.StringResult.Trim().Trim('"');
             if (s.Equals("last", StringComparison.OrdinalIgnoreCase)) return TestFolders.Newest(dir);
@@ -147,6 +146,7 @@ public sealed partial class Commands
             var s = RetraceSettings.Load();
             if (commandLine || !FileDialogsOn())
             {
+                using var cl = Ask.CommandLineOnly();   // -RETRACESETTINGS is the command-line form
                 ed.WriteMessage("\nRetrace settings (" + s.FilePath + ")\n" + Describe(s));
                 var n = s.Clone();
                 var src = AskPath(ed, "Source folder (code to document)", s.Source, "");
@@ -154,38 +154,38 @@ public sealed partial class Commands
                 var docs = AskPath(ed, "Docs folder", s.Docs, s.DefaultDocs); if (docs == null) return;
                 var tests = AskPath(ed, "Tests folder", s.Tests, s.DefaultTests); if (tests == null) return;
                 var cap = AskPath(ed, "Captures folder (DCL captures)", s.Captures, s.DefaultCaptures); if (cap == null) return;
-                var edt = AskPath(ed, "Editor for \"Open in editor\" (program path)", s.Editor, RetraceSettings.DefaultEditor()); if (edt == null) return;
+                var edt = AskPath(ed, "Editor for \"Open in editor\" (program path)", s.Editor, RetraceSettings.DefaultEditor(), Ask.Of.File); if (edt == null) return;
                 n.SourceFolder = src == "." ? "" : src;
                 n.DocsFolder = RetraceSettings.Normalize(docs, s.DefaultDocs);
                 n.TestsFolder = RetraceSettings.Normalize(tests, s.DefaultTests);
                 n.CapturesFolder = RetraceSettings.Normalize(cap, s.DefaultCaptures);
                 n.EditorPath = RetraceSettings.Normalize(edt, RetraceSettings.DefaultEditor());
-                var shots = ed.GetKeywords(new PromptKeywordOptions($"\nScreenshots while recording [Yes/No] <{(s.Screenshots ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
+                var shots = Ask.Keywords(ed, new PromptKeywordOptions($"\nScreenshots while recording [Yes/No] <{(s.Screenshots ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
                 if (shots.Status == PromptStatus.Cancel) return;
                 n.Screenshots = shots.Status == PromptStatus.OK ? shots.StringResult == "Yes" : s.Screenshots;
-                var dv = ed.GetKeywords(new PromptKeywordOptions($"\nRecord changed dialog values [Yes/No] <{(s.DialogValues ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
+                var dv = Ask.Keywords(ed, new PromptKeywordOptions($"\nRecord changed dialog values [Yes/No] <{(s.DialogValues ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
                 if (dv.Status == PromptStatus.Cancel) return;
                 n.DialogValues = dv.Status == PromptStatus.OK ? dv.StringResult == "Yes" : s.DialogValues;
-                var af = ed.GetKeywords(new PromptKeywordOptions($"\nRETRACERUN fills dialogs itself [Yes/No] <{(s.AutoFillDialogs ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
+                var af = Ask.Keywords(ed, new PromptKeywordOptions($"\nRETRACERUN fills dialogs itself [Yes/No] <{(s.AutoFillDialogs ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
                 if (af.Status == PromptStatus.Cancel) return;
                 n.AutoFillDialogs = af.Status == PromptStatus.OK ? af.StringResult == "Yes" : s.AutoFillDialogs;
-                var rc = ed.GetKeywords(new PromptKeywordOptions($"\nShow the checkpoints to rename after Stop [Yes/No] <{(s.ReviewCheckpoints ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
+                var rc = Ask.Keywords(ed, new PromptKeywordOptions($"\nShow the checkpoints to rename after Stop [Yes/No] <{(s.ReviewCheckpoints ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
                 if (rc.Status == PromptStatus.Cancel) return;
                 n.ReviewCheckpoints = rc.Status == PromptStatus.OK ? rc.StringResult == "Yes" : s.ReviewCheckpoints;
-                var su = ed.GetKeywords(new PromptKeywordOptions($"\nRun test opens hidden palettes while it drives them [Yes/No] <{(s.ShowDrivenUi ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
+                var su = Ask.Keywords(ed, new PromptKeywordOptions($"\nRun test opens hidden palettes while it drives them [Yes/No] <{(s.ShowDrivenUi ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
                 if (su.Status == PromptStatus.Cancel) return;
                 n.ShowDrivenUi = su.Status == PromptStatus.OK ? su.StringResult == "Yes" : s.ShowDrivenUi;
-                var xd = ed.GetKeywords(new PromptKeywordOptions($"\nAlso write a Word file (steps.docx) [exportDocx] [Yes/No] <{(s.ExportDocx ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
+                var xd = Ask.Keywords(ed, new PromptKeywordOptions($"\nAlso write a Word file (steps.docx) [exportDocx] [Yes/No] <{(s.ExportDocx ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
                 if (xd.Status == PromptStatus.Cancel) return;
                 n.ExportDocx = xd.Status == PromptStatus.OK ? xd.StringResult == "Yes" : s.ExportDocx;
-                var xx = ed.GetKeywords(new PromptKeywordOptions($"\nAlso write an Excel file (steps.xlsx) [Yes/No] <{(s.ExportXlsx ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
+                var xx = Ask.Keywords(ed, new PromptKeywordOptions($"\nAlso write an Excel file (steps.xlsx) [Yes/No] <{(s.ExportXlsx ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
                 if (xx.Status == PromptStatus.Cancel) return;
                 n.ExportXlsx = xx.Status == PromptStatus.OK ? xx.StringResult == "Yes" : s.ExportXlsx;
-                var tp = ed.GetString(new PromptStringOptions($"\nRibbon tab position: afterHome, first, last or after:<tab id or title> <{RibbonTabPosition.Normalize(s.RibbonTabPosition)}> (Enter keeps, . resets): ") { AllowSpaces = true });
+                var tp = Ask.String(ed, $"\nRibbon tab position: afterHome, first, last or after:<tab id or title> <{RibbonTabPosition.Normalize(s.RibbonTabPosition)}> (Enter keeps, . resets): ");
                 if (tp.Status == PromptStatus.Cancel) return;
                 var tpv = (tp.StringResult ?? "").Trim();
                 if (tpv.Length > 0) n.RibbonTabPosition = tpv == "." || tpv.Equals("default", StringComparison.OrdinalIgnoreCase) ? "" : RibbonTabPosition.Normalize(tpv);
-                var ck = ed.GetString(new PromptStringOptions($"\nCheckpoint shortcut, e.g. Ctrl+Shift+K or F8, None = off <{(KeyChord.IsOff(s.CheckpointKey) ? "None" : s.CheckpointKey)}> (Enter keeps, . resets): ") { AllowSpaces = true });
+                var ck = Ask.String(ed, $"\nCheckpoint shortcut, e.g. Ctrl+Shift+K or F8, None = off <{(KeyChord.IsOff(s.CheckpointKey) ? "None" : s.CheckpointKey)}> (Enter keeps, . resets): ");
                 if (ck.Status == PromptStatus.Cancel) return;
                 var ckv = (ck.StringResult ?? "").Trim();
                 if (ckv.Length > 0)
@@ -195,6 +195,13 @@ public sealed partial class Commands
                     else if (KeyChord.TryParse(ckv, out var chord, out var ckErr)) n.CheckpointKey = chord.Format();
                     else { ed.WriteMessage($"\nCheckpoint shortcut not changed: {ckErr}\n"); }
                 }
+                var ps = Ask.Keywords(ed, new PromptKeywordOptions($"\nRetrace asks for names, files and folders in [Window/CommandLine] <{(s.UiPrompts ? "Window" : "CommandLine")}>: ", "Window CommandLine") { AllowNone = true });
+                if (ps.Status == PromptStatus.Cancel) return;
+                if (ps.Status == PromptStatus.OK) n.PromptStyle = ps.StringResult == "Window" ? PromptStyles.Ui : PromptStyles.CommandLine;
+                // last, so scripts written for the questions before it keep working
+                var lc = Ask.Keywords(ed, new PromptKeywordOptions($"\nDocs also cover the CUIX files AutoCAD has loaded [Yes/No] <{(s.LoadedCustomization ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
+                if (lc.Status == PromptStatus.Cancel) return;
+                n.LoadedCustomization = lc.Status == PromptStatus.OK ? lc.StringResult == "Yes" : s.LoadedCustomization;
                 SaveAndReport(ed, n);
                 return;
             }
@@ -217,9 +224,11 @@ public sealed partial class Commands
     }
 
     /// <summary>Enter keeps the current value; '.' or 'default' resets to the default (for the source folder: clears it).</summary>
-    static string? AskPath(Editor ed, string label, string current, string dflt)
+    static string? AskPath(Editor ed, string label, string current, string dflt, Ask.Of kind = Ask.Of.Folder)
     {
-        var r = ed.GetString(new PromptStringOptions($"\n{label} <{(current.Length == 0 ? "not set" : current)}> (Enter keeps, . resets): ") { AllowSpaces = true });
+        var r = Ask.String(ed, $"\n{label} <{(current.Length == 0 ? "not set" : current)}> (Enter keeps, . resets): ", kind,
+            "path:" + new string(label.TakeWhile(c => c != '(').ToArray()).Trim().ToLowerInvariant(),   // recent places of this question only
+            kind == Ask.Of.File ? "Programs (*.exe;*.cmd;*.bat)|*.exe;*.cmd;*.bat|All files (*.*)|*.*" : null, initial: current);
         if (r.Status == PromptStatus.Cancel) return null;
         var t = (r.StringResult ?? "").Trim().Trim('"');
         if (t.Length == 0) return current;
@@ -243,6 +252,8 @@ public sealed partial class Commands
                $"  Word export      : {(s.ExportDocx ? "on" : "off")} (steps.docx next to steps.md)\n" +
                $"  Excel export     : {(s.ExportXlsx ? "on" : "off")} (steps.xlsx next to steps.md)\n" +
                $"  Ribbon tab       : {RibbonTabPosition.Normalize(s.RibbonTabPosition)} (afterHome, first, last, after:<tab id or title>)\n" +
+               $"  Loaded CUIX      : {(s.LoadedCustomization ? "documented too (the main .cuix, partials, enterprise file AutoCAD has loaded)" : "not documented")}\n" +
+               $"  Prompts          : {(s.UiPrompts ? "window (on top, Browse and recent places; scripts, LISP and FILEDIA 0 use the command line)" : "command line")}\n" +
                $"  Checkpoint key   : {(s.CheckpointChord(out var warn) is { } kc ? kc.Format() : "off")} (while recording; Ctrl+Shift+K, F8, None = off){(warn.Length > 0 ? "\n  WARNING: " + warn : "")}\n";
     }
 
@@ -267,14 +278,62 @@ public sealed partial class Commands
             var disp = Dispatcher.CurrentDispatcher;
             var index = s.GuideIndex;
             var wait = EngineJobs.IsRunning;
-            if (!EngineJobs.BuildDocs(s, r => disp.BeginInvoke(() => GuideDone(r, index)), out var runErr)) { ed.WriteMessage($"\nRETRACEDOCS: {runErr}\n"); return; }
+            var loaded = s.LoadedCustomization ? LoadedCustomization() : [];
+            if (!EngineJobs.BuildDocs(s, r => disp.BeginInvoke(() => GuideDone(r, index)), out var runErr, loaded)) { ed.WriteMessage($"\nRETRACEDOCS: {runErr}\n"); return; }
+            if (loaded.Count > 0) ed.WriteMessage($"\nRETRACEDOCS: also documenting the {loaded.Count} customization file(s) AutoCAD has loaded: {string.Join(", ", loaded.Select(Path.GetFileName))}\n");
             ed.WriteMessage($"\nRETRACEDOCS: {(wait ? "another Retrace job is running; the docs are queued and built right after it" : "building the docs")} from {s.Source}\n  into {s.Docs}\n  AutoCAD stays usable; a message appears here when it is done.\n");
         }
         catch (Exception ex) { Log.Error("RETRACEDOCS", ex); ed.WriteMessage($"\nRETRACEDOCS failed: {ex.Message}\n"); }
     }
 
+    /// <summary>The customization files AutoCAD has loaded: each menu group's file (the main .cuix and its partials, read over COM) and the
+    /// enterprise file (ENTERPRISEMENU), as full paths that exist. A name without a folder is looked up on AutoCAD's support path. One menu
+    /// group that cannot be read is logged and skipped. UI thread (COM).</summary>
+    static List<string> LoadedCustomization()
+    {
+        var found = new List<string>();
+        var db = AcApp.DocumentManager.MdiActiveDocument?.Database;
+        void Add(string? p)
+        {
+            p = p?.Trim();
+            if (string.IsNullOrEmpty(p) || p == ".") return;   // ENTERPRISEMENU "." = none
+            // a menu group's file name may come without its extension, or without its folder
+            foreach (var c in new[] { p, p + ".cuix", p + ".cui" })
+            {
+                if (!c.EndsWith(".cuix", StringComparison.OrdinalIgnoreCase) && !c.EndsWith(".cui", StringComparison.OrdinalIgnoreCase)) continue;
+                var full = Path.IsPathRooted(c) ? c : Find(c);
+                if (full == null || !File.Exists(full)) continue;
+                if (!found.Contains(full, StringComparer.OrdinalIgnoreCase)) found.Add(full);
+                return;
+            }
+        }
+        string? Find(string name)
+        {
+            try { return db == null ? null : HostApplicationServices.Current.FindFile(name, db, FindFileHint.Default); }
+            catch (Exception) { return null; }   // not on the support path
+        }
+        try
+        {
+            foreach (dynamic g in ((dynamic)Autodesk.AutoCAD.ApplicationServices.Application.AcadApplication).MenuGroups)
+            {
+                try { Add((string?)g.MenuFileName); }
+                catch (Exception ex) { Log.Error("loaded customization: a menu group", ex); }
+            }
+        }
+        catch (Exception ex) { Log.Error("loaded customization: menu groups", ex); }
+        try { Add(AcApp.GetSystemVariable("ENTERPRISEMENU") as string); }
+        catch (Exception ex) { Log.Error("loaded customization: ENTERPRISEMENU", ex); }
+        return found;
+    }
+
     static string? AskSourceFolder(Editor ed, string current)
     {
+        if (Ask.InWindow())
+        {
+            var a = Ask.String(ed, "\nFolder with the code, CUIX and DCL files to document: ", Ask.Of.Folder, "folder", initial: Directory.Exists(current) ? current : "");
+            var p = a.Status == PromptStatus.OK ? a.StringResult.Trim().Trim('"') : "";
+            return p.Length == 0 ? null : p;
+        }
         if (FileDialogsOn())
         {
             var d = new Microsoft.Win32.OpenFolderDialog { Title = "Folder with the code, CUIX and DCL files to document" };
@@ -398,7 +457,7 @@ public sealed partial class Commands
         {
             var k = new PromptKeywordOptions("\nFolder to open [Root/Tests/Captures/Docs] <Tests>: ", "Root Tests Captures Docs") { AllowNone = true };
             k.Keywords.Default = "Tests";
-            var kr = ed.GetKeywords(k);
+            var kr = Ask.Keywords(ed, k);
             if (kr.Status != PromptStatus.OK && kr.Status != PromptStatus.None) return;
             OpenFolder(kr.Status == PromptStatus.OK ? kr.StringResult : "Tests");
         }

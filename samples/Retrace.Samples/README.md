@@ -4,7 +4,7 @@ A tiny sample plugin to practise the Retrace flow on: record a manual workflow, 
 see the same commands in the guide that Retrace generates from this source. Not a product.
 
 Target: AutoCAD 2026 (R25.1), net8.0-windows, `AutoCAD.NET` 25.1.0. Build: `dotnet build -c Release`
-(produces `Retrace.Samples.dll`). It is not part of the release bundle: `NETLOAD` it, or copy it next to `Retrace.dll` for a VM test.
+(produces `Retrace.Samples.dll`). It is not part of the release bundle: `NETLOAD` it, or on a VM install it with `tools/vm/install-samples.sh`, which loads it at every AutoCAD start.
 
 ## Commands
 

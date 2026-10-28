@@ -92,6 +92,8 @@ public static class StepWording
     {
         var where = $"In the **{Md.Cell(string.IsNullOrWhiteSpace(st.DialogTitle) ? "(untitled)" : st.DialogTitle)}** palette"
                     + (string.IsNullOrWhiteSpace(st.Panel) || st.Panel == st.DialogTitle ? "" : $" ({Md.Cell(st.Panel)})");
+        if (st.Native != null)   // a native palette: one action, no values
+            return $"{where}, {st.Native.Describe(Md.Cell, x => $"**{x}**")}" + (st.OpensDrawing != null ? $". It opens {Md.Code(st.OpensDrawing)}" : "");
         var click = string.IsNullOrWhiteSpace(st.Text) ? null : $"click **{Md.Cell(st.Text)}**";
         if (ChangeLines(st).Count == 0) return click == null ? where + ", leave the values as they are" : $"{where}, {click}";
         return click == null ? where + ", make these changes:" : $"{where}, make these changes, then {click}:";

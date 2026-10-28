@@ -55,11 +55,11 @@ public sealed unsafe class DclCapture
         string support;
         try { support = Path.GetDirectoryName(HostApplicationServices.Current.FindFile("acad.dcl", doc.Database, FindFileHint.Default))!; }
         catch { support = Path.Combine(Path.GetDirectoryName(Process.GetCurrentProcess().MainModule!.FileName)!, "Support"); }
-        var src = Ask(ed, $"\nDCL file or folder <{support}>: ", support);
+        var src = Ask(ed, $"\nDCL file or folder <{support}>: ", support, Retrace.AutoCad.Ask.Of.File, "dcl-source", "DCL files (*.dcl)|*.dcl");
         if (src == null) return;
-        var outDir = Ask(ed, $"\nOutput folder <{DefaultOut}>: ", DefaultOut);
+        var outDir = Ask(ed, $"\nOutput folder <{DefaultOut}>: ", DefaultOut, Retrace.AutoCad.Ask.Of.Folder, "folder:captures");
         if (outDir == null) return;
-        var filter = Ask(ed, "\nOnly dialogs whose file or name contains <all>: ", "");
+        var filter = Ask(ed, "\nOnly dialogs whose file or name contains <all>: ", "", Retrace.AutoCad.Ask.Of.Text);
         if (filter == null) return;
 
         if (!File.Exists(src) && !Directory.Exists(src)) { ed.WriteMessage($"\nRETRACECAPTUREDCL: not found: {src}\n"); return; }
@@ -73,9 +73,9 @@ public sealed unsafe class DclCapture
     /// <summary>The captures folder of the Retrace settings.</summary>
     static string DefaultOut => RetraceSettings.Load().Captures;
 
-    static string? Ask(Editor ed, string msg, string def)
+    static string? Ask(Editor ed, string msg, string def, Retrace.AutoCad.Ask.Of kind, string? recent = null, string? filter = null)
     {
-        var r = ed.GetString(new PromptStringOptions(msg) { AllowSpaces = true });
+        var r = Retrace.AutoCad.Ask.String(ed, msg, kind, recent, filter, initial: def);
         if (r.Status == PromptStatus.Cancel) return null;
         var s = r.StringResult?.Trim().Trim('"');
         return string.IsNullOrEmpty(s) ? def : s;

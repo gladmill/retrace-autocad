@@ -95,21 +95,25 @@ public static class EngineJobs
     /// <summary>Reference docs + editable user guide + How-to pages from recordings. Captures / tests folders that do not exist are left out.
     /// The settings' folders are already absolute (relative ones are resolved against the root folder, see <see cref="RetraceSettings"/>).
     /// Never throws: an invalid path is left as written and the engine reports it as a failed result.</summary>
-    public static EngineOptions DocsOptions(RetraceSettings s) => new()
+    /// <param name="loaded">the customization files AutoCAD has loaded (read on the UI thread); documented too when the setting
+    /// loadedCustomization is on</param>
+    public static EngineOptions DocsOptions(RetraceSettings s, IReadOnlyList<string>? loaded = null) => new()
     {
         Input = Full(s.Source),
         Output = Full(s.Docs),
         Captures = SafeExists(s.Captures) ? [Full(s.Captures)] : [],
         Sessions = SafeExists(s.Tests) ? [Full(s.Tests)] : [],
+        Customization = s.LoadedCustomization && loaded != null ? loaded : [],
+        FollowPartials = s.LoadedCustomization,
     };
 
     static string Full(string p) { try { return Path.GetFullPath(p); } catch (Exception) { return p; } }
     static bool SafeExists(string p) { try { return Directory.Exists(p); } catch (Exception) { return false; } }
 
     /// <summary>Queues a docs build. Refused (false) while another docs build is running or waiting; WriteSteps and Export always queue.</summary>
-    public static bool BuildDocs(RetraceSettings s, Action<EngineResult> onDone, out string error)
+    public static bool BuildDocs(RetraceSettings s, Action<EngineResult> onDone, out string error, IReadOnlyList<string>? loaded = null)
     {
-        var opt = DocsOptions(s);
+        var opt = DocsOptions(s, loaded);
         if (!Start(ct => EngineRunner.BuildDocs(opt, ct), onDone, out error, DocsKind)) { error = "The docs are already being built."; return false; }
         return true;
     }

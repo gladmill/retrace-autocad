@@ -19,6 +19,8 @@ public static class DocsLayout
     public const string Data = "data";
 
     public const string GuideImages = Guide + "/images";
+    /// <summary>A button's panel as captured in AutoCAD, the button outlined: <c>&lt;tab&gt;/&lt;button anchor&gt;.svg</c> (RibbonCaptures).</summary>
+    public const string GuideRibbonImages = GuideImages + "/ribbon";
     public const string RefRibbon = Reference + "/ribbon";
     public const string RefCommands = Reference + "/commands";
     public const string RefDialogs = Reference + "/dialogs";

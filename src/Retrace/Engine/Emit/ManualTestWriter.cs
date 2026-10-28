@@ -212,7 +212,7 @@ public sealed class ManualTestWriter(ModelIndex ix, OutputSink sink)
     {
         var doc = RibbonTestDoc(ix, tab);
         var sb = new StringBuilder($"# Manual tests: ribbon tab {tab.Title}\n\n{Header}\n");
-        sb.Append($"![wireframe]({Md.Rel(doc, ix.TabAsset[tab])})\n\n");
+        sb.Append($"![{ix.TabPictureName(tab)}]({Md.Rel(doc, ix.TabAsset[tab])})\n\n");
         sb.Append($"Setup: {string.Join(" → ", ix.ReachTab(tab))}.\n\n");
         sb.Append(Md.Table(new[] { "#", "Action", "Expected result", "Pass/Fail" }, new[]
         {

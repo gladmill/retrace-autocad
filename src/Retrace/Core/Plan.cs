@@ -11,11 +11,13 @@ public sealed record Answer(string Kind, string Status, JsonElement? Value, stri
 
 public sealed class Step
 {
-    public string Kind = "";            // ribbon | command | lisp | dialog | palette | mark | tab
+    public string Kind = "";            // ribbon | command | lisp | dialog | palette | mark | tab | open
     public string Title = "";           // human readable one-liner
     public string? ItemId, Macro, Tab, Panel, Path;
     public string? Command;             // command started by this step (global name)
     public string? Lisp;
+    public string? Drawing;             // open: the full path of the drawing to open; palette (native): the drawing its double-click opened
+    public NativeAction? Native;        // palette: what was done in a native palette (tree item, toolbar button, drop-down); null = .NET palette
     public string? DialogTitle;         // dialog: its title; palette: the palette (its tab in the palette set; Panel = the set)
     public string? Button;              // palette: the button clicked, null when only values changed
     public int ButtonIndex = 1;         // palette: which of the palette's buttons with that text (1 = the first)
@@ -99,14 +101,35 @@ public static class Plan
         string? lastModalTitle = null;
         Step? modalStep = null;
         Step? palette = null;   // the last palette step: a click right after its values joins it
+        var nativeDialogs = new HashSet<Step>();   // dialog steps opened right after a native palette action (NativeAction.ModalMs)
         Step? modalOwner = null; var hadDialogBefore = false;   // the command that was running at the current modal_enter and its HadDialog before it (restored if that dialog is a security prompt)
         var modalByN = new Dictionary<long, Step>();   // event n of modal_enter / modal_title -> its dialog step
-        foreach (var e in events)
+        var nativeByN = new Dictionary<long, Step>();  // event n of native_select -> its step (a native_value names the entry later)
+        var list = events as IReadOnlyCollection<JsonElement> ?? events.ToList();
+        var startup = DrawingOpen.StartupEvents(list);   // LISP AutoCAD ran by itself while a drawing opened: not steps
+        foreach (var e in list)
         {
             var type = Str(e, "type");
             var t = Num(e, "t");
+            if (startup.Contains(Num(e, "n"))) continue;
             switch (type)
             {
+                case "doc_created":
+                {
+                    // a drawing opened while no command ran: from a palette (AutoCAD Electrical's Project Manager), Explorer or a
+                    // plugin. A replay opens the same file. Opened by a command (OPEN, NEW), the command step replays it.
+                    if (depth > 0 || inLisp || DrawingOpen.PathOf(e) is not { } path) break;
+                    // opened by double-clicking it in a native palette (the Project Manager): the palette step opens it
+                    if (palette is { Native.Action: "dblclick", Drawing: null } && steps.Count > 0 && ReferenceEquals(steps[^1], palette) && t - palette.T <= DrawingOpen.StartupMs)
+                    {
+                        palette.Drawing = path;
+                        palette.Title += $" (opens {System.IO.Path.GetFileName(path.Replace('\\', '/'))})";
+                        break;
+                    }
+                    cur = null;
+                    steps.Add(new Step { Kind = "open", T = t, Drawing = path, Title = $"Open drawing {System.IO.Path.GetFileName(path.Replace('\\', '/'))}" });
+                    break;
+                }
                 case "tab":
                     if (IsOwnTab(Str(e, "id"))) break;
                     steps.Add(new Step { Kind = "tab", T = t, Tab = Str(e, "title"), Title = $"Activate ribbon tab \"{Str(e, "title") ?? Str(e, "id")}\"" });
@@ -164,12 +187,15 @@ public static class Plan
                 }
                 case "modal_enter":
                 case "modal_title":
+                    // a window a native palette action opened: dropped at its dialog_values if it closed by itself (NativeAction.ModalMs)
+                    bool afterNative = type == "modal_enter" && palette is { Native: not null } && steps.Count > 0 && ReferenceEquals(steps[^1], palette) && t - palette.T <= NativeAction.ModalMs;
                     if (type == "modal_enter")
                     {
                         modalStep = new Step { Kind = "dialog", T = t, DialogTitle = Str(e, "title"), Title = "" };
                         steps.Add(modalStep);
                         modalOwner = cur; hadDialogBefore = cur?.HadDialog ?? false;
                         if (cur != null) cur.HadDialog = true;
+                        if (afterNative) nativeDialogs.Add(modalStep);
                     }
                     else if (modalStep != null && !string.IsNullOrEmpty(Str(e, "title"))) modalStep.DialogTitle = Str(e, "title");
                     // AutoCAD's security prompt (loading an untrusted dll or LISP file) is a person's decision, not a step of the test: drop it.
@@ -189,6 +215,13 @@ public static class Plan
                 case "dialog_values":
                     if (e.TryGetProperty("for", out var fv) && fv.ValueKind == JsonValueKind.Number && fv.TryGetInt64(out var fn) && modalByN.TryGetValue(fn, out var ds))
                     {
+                        // opened by a native palette action and closed by itself ("Updating..."): not a step
+                        if (nativeDialogs.Contains(ds) && NativeAction.ClosedByItself(e))
+                        {
+                            steps.Remove(ds);
+                            if (ReferenceEquals(ds, modalStep) && modalOwner != null) modalOwner.HadDialog = hadDialogBefore;
+                            break;
+                        }
                         ds.ClosedWith = Str(e, "closedWith");
                         ds.ValuesSource = Str(e, "source");
                         ds.ValuesRead = e.TryGetProperty("read", out var rv) && rv.ValueKind == JsonValueKind.Number && rv.TryGetInt32(out var ri) ? ri : 0;
@@ -196,6 +229,33 @@ public static class Plan
                         if (e.TryGetProperty("fields", out var fa) && fa.ValueKind == JsonValueKind.Array)
                             foreach (var f in fa.EnumerateArray())
                                 ds.Values.Add(new FieldChange(Str(f, "key") ?? "", Str(f, "label") ?? "", Str(f, "kind") ?? "", Str(f, "before") ?? "", Str(f, "after") ?? ""));
+                    }
+                    break;
+                case "native_click":
+                case "native_select":
+                {
+                    if (NativeAction.From(e) is not { } na) break;
+                    string? name = Str(e, "palette"), set = Str(e, "set");
+                    var title = $"Palette \"{name}\": {na.Describe()}";
+                    // a double-click arrives as a click, then the double-click, on the same item: one step
+                    if (na.Action == "dblclick" && palette is { Native: { Control: "tree", Action: "click" } prev } && steps.Count > 0 && ReferenceEquals(steps[^1], palette)
+                        && prev.Path.SequenceEqual(na.Path) && palette.DialogTitle == name && t - palette.T <= 2000)
+                    {
+                        palette.Native = na; palette.Title = title; palette.Button = na.Target;
+                        break;
+                    }
+                    // Button: what a command the click starts is linked to (origin "palette", below)
+                    palette = new Step { Kind = "palette", T = t, DialogTitle = name, Panel = set, Native = na, Button = na.Target, Title = title };
+                    steps.Add(palette);
+                    nativeByN[Num(e, "n")] = palette;
+                    break;
+                }
+                case "native_value":
+                    if (nativeByN.TryGetValue(Num(e, "for"), out var ns) && ns.Native != null && Str(e, "value") is { } nativeValue)
+                    {
+                        ns.Native = ns.Native with { Value = nativeValue };
+                        ns.Button = ns.Native.Target;
+                        ns.Title = $"Palette \"{ns.DialogTitle}\": {ns.Native.Describe()}";
                     }
                     break;
                 case "palette_values":

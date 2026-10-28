@@ -16,7 +16,7 @@ public static class InputScanner
         [".cs"] = Lang.CSharp, [".vb"] = Lang.VbNet,
         [".cpp"] = Lang.Cpp, [".cxx"] = Lang.Cpp, [".cc"] = Lang.Cpp, [".c"] = Lang.Cpp,
         [".h"] = Lang.Cpp, [".hpp"] = Lang.Cpp, [".hxx"] = Lang.Cpp, [".inl"] = Lang.Cpp,
-        [".xaml"] = Lang.Xaml, [".rc"] = Lang.Rc, [".dcl"] = Lang.Dcl, [".cuix"] = Lang.Cuix,
+        [".xaml"] = Lang.Xaml, [".rc"] = Lang.Rc, [".dcl"] = Lang.Dcl, [".cuix"] = Lang.Cuix, [".cui"] = Lang.Cuix,
     };
 
     private static readonly string[] ProjectExts = { ".csproj", ".vbproj", ".vcxproj" };

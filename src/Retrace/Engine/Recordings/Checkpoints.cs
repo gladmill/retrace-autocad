@@ -28,7 +28,8 @@ public static class Checkpoints
 
     /// <summary>The automatic name: `checkpoint&lt;index&gt;`, then where the last thing was done and with which control, as lowercase words
     /// joined by `_`: after a dialog `checkpoint1_draw_grid_button_ok` (dialog title, the button that closed it), after a ribbon click
-    /// `checkpoint2_draw_button_grid` (panel, button), after a palette `checkpoint3_box_button_draw_box` (palette, button), after a typed command `checkpoint4_cmd_drawgrid`; `checkpoint1` before anything was done.</summary>
+    /// `checkpoint2_draw_button_grid` (panel, button), after a palette `checkpoint3_box_button_draw_box` (palette, button), after a typed command `checkpoint4_cmd_drawgrid`,
+    /// after opening a drawing `checkpoint5_open_demo01_dwg`; `checkpoint1` before anything was done.</summary>
     public static string AutoName(int index, CheckpointContext? last)
     {
         var parts = new List<string> { "checkpoint" + index };
@@ -53,6 +54,9 @@ public static class Checkpoints
                     break;
                 case "command":
                     parts.Add("cmd_" + Token(last.Control));
+                    break;
+                case "open":
+                    parts.Add("open_" + Token(last.Control));
                     break;
             }
         var name = string.Join("_", parts.Where(p => p.Length > 0 && !p.EndsWith('_')));
@@ -89,7 +93,7 @@ public static class Checkpoints
     }
 
     /// <summary>Where the last action before a checkpoint happened, for its name and for the review window.</summary>
-    /// <param name="Kind">dialog | ribbon | palette | command | control (the control at the cursor when the shortcut was pressed)</param>
+    /// <param name="Kind">dialog | ribbon | palette | command | open (a drawing opened; Control = its file name) | control (the control at the cursor when the shortcut was pressed)</param>
     /// <param name="Container">dialog title, ribbon panel (else tab), palette name</param>
     /// <param name="Control">dialog: "ok" / "cancel" (how it was closed) or null; ribbon or palette: the button's text (palette: null when only values changed); command: its name</param>
     /// <param name="Description">"control" only: what was at the cursor, in a sentence (stored in the mark's `near`)</param>
@@ -102,6 +106,7 @@ public static class Checkpoints
             "ribbon" => string.Join(" › ", new[] { Container, Control }.Where(x => !string.IsNullOrWhiteSpace(x))) + " on the ribbon",
             "palette" => (Control is { Length: > 0 } b ? b + " in the " : "the ") + (Container ?? "(untitled)") + " palette",
             "control" => Description ?? (Control is { Length: > 0 } k ? $"{k} in {Container}" : Container ?? "?"),
+            "open" => $"{Control ?? "a drawing"} opened",
             _ => (Control ?? "?").ToUpperInvariant() + " typed",
         };
     }
@@ -115,7 +120,11 @@ public static class Checkpoints
         {
             "ribbon" => new CheckpointContext("ribbon", FirstText(st.Panel, st.Tab), FirstText(st.Text, st.ItemId)),
             "command" or "lisp" => new CheckpointContext("command", null, st.Kind == "lisp" ? "lisp" : st.Command),
+            // a native palette: where and what (checkpoint3_projects_demo01_dwg); after a double-click that opened a drawing, that drawing
+            "palette" when st.OpensDrawing != null => new CheckpointContext("open", null, Path.GetFileName(st.OpensDrawing.Replace('\\', '/'))),
+            "palette" when st.Native != null => new CheckpointContext("control", st.DialogTitle, st.Native.Target, st.Native.Describe() + $" in the {st.DialogTitle} palette"),
             "palette" => new CheckpointContext("palette", st.DialogTitle, st.Text),
+            "doc" when st.Text != null => new CheckpointContext("open", null, st.Text),   // an "Open drawing" step; Text = the file name
             _ => null,
         };
     }

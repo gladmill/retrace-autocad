@@ -29,7 +29,13 @@ sealed class Replayer
 
     readonly List<Step> _steps;
     readonly ReplayMode _mode;
-    readonly Document _doc;
+    Document _doc;   // the drawing being replayed in; an "open" step moves the replay to the drawing it opens
+    int _lispRunning;   // LISP running in _doc (a drawing's start-up LISP runs after it opens)
+    bool _afterOpen; DateTime _quietSince = DateTime.MinValue;   // after an open: wait until the drawing has been quiet for a moment
+    Step? _awaitOpen; DateTime _awaitSince;   // a native palette double-click that opened a drawing when recorded: waiting for it to open
+    bool _inTick;    // a tick is running: a modal loop inside it must not start another
+    bool _docGone;   // _doc was closed: go on in the active drawing
+    string? _lastStarted; DateTime _lastStartedAt;   // the last command that started, and when: a native palette action may start it before the step waits for it
     readonly DispatcherTimer _timer;
     readonly ReplayWindow _win = new();
     readonly string _sessionPath;
@@ -75,8 +81,13 @@ sealed class Replayer
         _timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(200) };
         _timer.Tick += (_, _) =>
         {
+            // a native palette action is handled inside the tick that does it, and may show a window that pumps messages meanwhile
+            // (AutoCAD Electrical's "Updating..."): that must not start the next tick
+            if (_inTick) return;
+            _inTick = true;
             try { Tick(); }
             catch (Exception ex) { Log.Error("Replay tick", ex); Finish(false, true, "exception: " + ex.Message); }
+            finally { _inTick = false; }
         };
         _win.NextClicked += () => _userNext = true;
         _win.StopClicked += () => Finish(false, false, "stopped by the user");
@@ -112,14 +123,117 @@ sealed class Replayer
         _running = true;
         AcApp.EnterModal += OnEnterModal;
         AcApp.LeaveModal += OnLeaveModal;
-        _doc.CommandWillStart += OnCmdStart;
-        _doc.CommandFailed += OnCmdFailed;
-        _doc.UnknownCommand += OnUnknown;
-        _doc.CommandEnded += OnCmdEnded;
-        _doc.CommandCancelled += OnCmdCancelled;
+        Hook(_doc);
+        AcApp.DocumentManager.DocumentToBeDestroyed += OnDocGone;
         _win.Show();
         _win.Show("Retrace replay", "Starting...", false);
         _timer.Start();
+    }
+
+    /// <summary>A line on the command line of the drawing that is active now: a drawing opened by a palette click becomes active at once, and
+    /// AutoCAD refuses to write to one that is not (eNotApplicable).</summary>
+    void Say(string message)
+    {
+        try { (AcApp.DocumentManager.MdiActiveDocument ?? _doc).Editor.WriteMessage(message); }
+        catch (Exception ex) { Log.Info($"replay message not shown ({ex.Message}): {message.Trim()}"); }
+    }
+
+    void Hook(Document d)
+    {
+        d.CommandWillStart += OnCmdStart;
+        d.CommandFailed += OnCmdFailed;
+        d.UnknownCommand += OnUnknown;
+        d.CommandEnded += OnCmdEnded;
+        d.CommandCancelled += OnCmdCancelled;
+        d.LispWillStart += OnLispStart;
+        d.LispEnded += OnLispEnd;
+        d.LispCancelled += OnLispEnd;
+    }
+
+    void Unhook(Document d)
+    {
+        d.CommandWillStart -= OnCmdStart;
+        d.CommandFailed -= OnCmdFailed;
+        d.UnknownCommand -= OnUnknown;
+        d.CommandEnded -= OnCmdEnded;
+        d.CommandCancelled -= OnCmdCancelled;
+        d.LispWillStart -= OnLispStart;
+        d.LispEnded -= OnLispEnd;
+        d.LispCancelled -= OnLispEnd;
+    }
+
+    void OnLispStart(object? s, LispWillStartEventArgs e) => _lispRunning++;
+
+    /// <summary>The drawing being replayed in is closing: AutoCAD Electrical closes an untouched new drawing when it opens a project drawing or
+    /// switches projects. Unhooked now; the next tick goes on in the active drawing (<see cref="_docGone"/>).</summary>
+    void OnDocGone(object? s, DocumentCollectionEventArgs e)
+    {
+        if (!ReferenceEquals(e.Document, _doc)) return;
+        Log.Safe("Replay doc gone", () => Unhook(_doc));
+        _docGone = true;
+    }
+    void OnLispEnd(object? s, EventArgs e) { if (_lispRunning > 0) _lispRunning--; }
+
+    /// <summary>An "open" step: opens the recorded drawing and replays the rest in it, the way the person went on in the drawing they
+    /// opened. Already open and unchanged, it switches to it; open with unsaved changes it stops (they are not what the file holds, and
+    /// a test never discards someone's changes). False when it could not: the run has finished with the reason.</summary>
+    bool OpenDrawing(Step s)
+    {
+        var path = s.Drawing ?? "";
+        var dm = AcApp.DocumentManager;
+        try
+        {
+            var doc = OpenDocument(path);
+            if (doc != null && !(bool)((dynamic)doc.GetAcadDocument()).Saved)
+            {
+                Finish(false, true, $"{Path.GetFileName(path)} is open with unsaved changes: save or close it, then run the test again");
+                return false;
+            }
+            if (doc == null)
+            {
+                if (!File.Exists(path)) { Finish(false, true, $"drawing not found: {path}"); return false; }
+                doc = dm.Open(path, false);
+            }
+            Follow(doc);
+            Say($"\n  Opened {path}\n");
+            return true;
+        }
+        catch (Exception ex) { Log.Error("OpenDrawing", ex); Finish(false, true, $"could not open {path}: {ex.Message}"); return false; }
+    }
+
+    /// <summary>Replays the rest in <paramref name="doc"/>, a drawing just opened. Its start-up (acaddoc.lsp, S::STARTUP, AutoCAD Electrical's
+    /// project setup) runs after this, partly on the drawing's first idle: the next step waits until it has been quiet (no command, no
+    /// LISP) for a second.</summary>
+    void Follow(Document doc)
+    {
+        var dm = AcApp.DocumentManager;
+        if (dm.MdiActiveDocument != doc) dm.MdiActiveDocument = doc;
+        if (!ReferenceEquals(doc, _doc)) { Log.Safe("Replay unhook", () => Unhook(_doc)); _doc = doc; Hook(_doc); }
+        _lispRunning = 0; _afterOpen = true; _quietSince = DateTime.MinValue;
+        _notBefore = DateTime.Now.AddMilliseconds(500);
+    }
+
+    static Document? OpenDocument(string path) =>
+        AcApp.DocumentManager.Cast<Document>().FirstOrDefault(d => d.IsNamedDrawing && string.Equals(d.Name, path, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>A native palette double-click that opened <see cref="Step.Drawing"/> when recorded: follow the drawing once it is open. If it
+    /// does not open within 20 s, Retrace opens it itself (the run goes on, with a warning in the result).</summary>
+    void TickAwaitOpen()
+    {
+        var s = _awaitOpen!;
+        if (OpenDocument(s.Drawing!) is { } doc)
+        {
+            _awaitOpen = null;
+            Follow(doc);
+            Say($"\n  Opened {s.Drawing}\n");
+            NextPaletteStep();
+            return;
+        }
+        if (DateTime.Now - _awaitSince < TimeSpan.FromSeconds(20)) return;
+        _awaitOpen = null;
+        _warnings.Add($"step {_i + 1}: the double-click in the {s.DialogTitle} palette did not open {Path.GetFileName(s.Drawing)}; Retrace opened it itself");
+        if (!OpenDrawing(s)) return;
+        NextPaletteStep();
     }
 
     /// <summary>Compares the drawing now with the session's initial state (command context: RETRACEREPLAY is running).</summary>
@@ -148,11 +262,8 @@ sealed class Replayer
         {
             AcApp.EnterModal -= OnEnterModal;
             AcApp.LeaveModal -= OnLeaveModal;
-            _doc.CommandWillStart -= OnCmdStart;
-            _doc.CommandFailed -= OnCmdFailed;
-            _doc.UnknownCommand -= OnUnknown;
-            _doc.CommandEnded -= OnCmdEnded;
-            _doc.CommandCancelled -= OnCmdCancelled;
+            AcApp.DocumentManager.DocumentToBeDestroyed -= OnDocGone;
+            if (!_docGone) Unhook(_doc);
         });
         Current = null;
         try { _win.Close(); } catch { }
@@ -170,9 +281,8 @@ sealed class Replayer
             notes.AddRange(_warnings);
             _result.Message = string.Join("; ", notes);
             var written = _result.Write(_sessionPath, ex => Log.Error("write result", ex));
-            var ed = _doc.Editor;
-            ed.WriteMessage($"\nRetrace replay ended at step {_result.StepsRun}/{_steps.Count}: {message}\n");
-            ed.WriteMessage($"\n{_result.Summary()}\n" + (written != null ? $"Result: {written}\n" : "Result file could not be written (see retrace.log).\n"));
+            Say($"\nRetrace replay ended at step {_result.StepsRun}/{_steps.Count}: {message}\n");
+            Say($"\n{_result.Summary()}\n" + (written != null ? $"Result: {written}\n" : "Result file could not be written (see retrace.log).\n"));
             if (_alert) ShowAlert(written);
         });
     }
@@ -206,6 +316,7 @@ sealed class Replayer
     {
         if (OwnCommands.IsOwnCommand(e.GlobalCommandName)) return;
         _pendingStart = false;
+        _lastStarted = e.GlobalCommandName; _lastStartedAt = DateTime.Now;
         // a command without prompts can start and end between two ticks: remember that the palette button's command started
         if (_paletteCommand != null && string.Equals(e.GlobalCommandName, _paletteCommand.Command, StringComparison.OrdinalIgnoreCase)) _paletteCommandStarted = true;
     }
@@ -218,12 +329,25 @@ sealed class Replayer
         _pendingStart = false;
         var inProgress = _doc.CommandInProgress;
         // our own RETRACEREPLAY command has already returned (the timer runs after it), so anything in progress is replayed work
-        return string.IsNullOrEmpty(inProgress) && _doc.Editor.IsQuiescent;
+        var quiet = string.IsNullOrEmpty(inProgress) && _doc.Editor.IsQuiescent && _lispRunning == 0;
+        if (!_afterOpen) return quiet;
+        if (!quiet) { _quietSince = DateTime.MinValue; return false; }
+        if (_quietSince == DateTime.MinValue) { _quietSince = DateTime.Now; return false; }
+        if ((DateTime.Now - _quietSince).TotalSeconds < 1) return false;
+        _afterOpen = false;
+        return true;
     }
 
     void Tick()
     {
         if (!_running) return;
+        if (_docGone)
+        {
+            if (AcApp.DocumentManager.MdiActiveDocument is not { } active || ReferenceEquals(active, _doc)) return;   // between drawings
+            _docGone = false;
+            _doc = active; Hook(_doc);
+            Log.Info($"replay continues in {active.Name}: the drawing it ran in was closed");
+        }
         if (_eventError != null) { Finish(false, true, _eventError); return; }
         // AutoCAD's security prompt (an untrusted dll or LISP file is being loaded) is a decision for a person, never a test step:
         // stop at once with what to do, in both modes, and leave the prompt open for the person to answer.
@@ -250,9 +374,11 @@ sealed class Replayer
         {
             if (_mode == ReplayMode.Auto && !_interactive)
             {
-                // a dialog needs a person; give transient ones a moment to close by themselves
+                // a dialog needs a person; give transient ones a moment to close by themselves, and a progress window (no button to
+                // press: AutoCAD Electrical's "Updating..." while a native palette switches projects) up to two minutes
                 if (_modalSince == DateTime.MinValue) _modalSince = DateTime.Now;
-                if ((DateTime.Now - _modalSince).TotalSeconds > 2)
+                var waited = (DateTime.Now - _modalSince).TotalSeconds;
+                if (waited > 2 && (waited > 120 || !Native.IsProgressWindow(Native.ForegroundOfThisProcess())))
                 {
                     var title = _steps.Skip(Math.Max(0, _i - 1)).FirstOrDefault(x => x.Kind == "dialog")?.DialogTitle;
                     var di = _steps.FindIndex(Math.Max(0, _i - 1), x => x.Kind == "dialog");
@@ -265,6 +391,7 @@ sealed class Replayer
             return;
         }
         _modalSince = DateTime.MinValue;
+        if (_awaitOpen != null) { TickAwaitOpen(); return; }
         if (!Settled()) return;
         if (_i >= _steps.Count) { Finish(true, false, "finished"); return; }
 
@@ -273,7 +400,7 @@ sealed class Replayer
         {
             _shown = true; _stepShownAt = DateTime.Now; _modalsAtStepStart = _modalsSeen; _userNext = false;
             _win.Show($"Step {_i + 1}/{_steps.Count}", Describe(s), _mode == ReplayMode.Step);
-            _doc.Editor.WriteMessage($"\n[replay {_i + 1}/{_steps.Count}] {s.Title}\n");
+            Say($"\n[replay {_i + 1}/{_steps.Count}] {s.Title}\n");
         }
         if (_mode == ReplayMode.Step && !_userNext) return;
 
@@ -287,11 +414,11 @@ sealed class Replayer
             return;
         }
 
-        Execute(s);
+        if (!Execute(s)) return;
         _result.Steps.Add(new StepResult { Index = _i + 1, Kind = s.Kind, Title = s.Title });
         _i++;
         _shown = false;
-        _notBefore = DateTime.Now.AddMilliseconds(400);
+        if (_notBefore < DateTime.Now.AddMilliseconds(400)) _notBefore = DateTime.Now.AddMilliseconds(400);
     }
 
     void StopAtSecurityPrompt(string title)
@@ -323,14 +450,14 @@ sealed class Replayer
                     if (_fill.State != DialogAutoFiller.Phase.GaveUp)
                     {
                         var what = $"Step {_i + 1}: filling the dialog {step.DialogTitle}...";
-                        if (!_fillAnnounced) { _fillAnnounced = true; _doc.Editor.WriteMessage("\n" + what + "\n"); }
+                        if (!_fillAnnounced) { _fillAnnounced = true; Say("\n" + what + "\n"); }
                         _win.Show($"Step {_i + 1}/{_steps.Count}: filling the dialog", what, false);
                         return;
                     }
                     Log.Info($"autofill gave up on \"{step.DialogTitle}\": {_fill.Note ?? string.Join("; ", _fill.Results.Where(r => r.Status != FieldFillResult.Applied).Select(r => r.Label + " " + r.Status + (r.Message != null ? " (" + r.Message + ")" : "")))}");
                 }
                 var msg = DialogMessage(step);
-                if (!_announced) { _announced = true; _doc.Editor.WriteMessage("\n" + msg + "\n"); }
+                if (!_announced) { _announced = true; Say("\n" + msg + "\n"); }
                 _win.Show($"Step {_i + 1}/{_steps.Count}: dialog open", msg, false);
                 return;
             }
@@ -373,7 +500,7 @@ sealed class Replayer
             first = false;
             _i++;
         }
-        if (failed) _doc.Editor.WriteMessage($"\nDialog step failed: {d.FailReason}. Continuing with the next steps.\n");
+        if (failed) Say($"\nDialog step failed: {d.FailReason}. Continuing with the next steps.\n");
         d.Reset(); _doneAt = DateTime.MinValue;
         _fill = null; _fillTried = false; _fillAnnounced = false;
         _announced = false; _cancelSent = false; _shown = false;
@@ -434,12 +561,26 @@ sealed class Replayer
         if (_showUi && !_revealDone && !Reveal(s, now)) return;
         if (_paletteSince == DateTime.MinValue) _paletteSince = now;
         if (now < _paletteRetryAt) return;
-        var problem = PaletteFill.Run(s);
+        var problem = s.Native != null
+            ? NativePalette.Run(s, (x, y) => { if (_cursorHome == null && PaletteReveal.GetCursorPos(out var home)) _cursorHome = home; MoveCursor(new PaletteReveal.POINT { X = x, Y = y }); })
+            : PaletteFill.Run(s);
         if (problem == null)
         {
-            _doc.Editor.WriteMessage($"\n  Palette \"{s.DialogTitle}\": done.\n");
+            Say($"\n  Palette \"{s.DialogTitle}\": done.\n");
             _result.Steps.Add(new StepResult { Index = _i + 1, Kind = "palette", Title = s.Title });
-            if (s.Command != null) { _paletteCommand = s; _paletteCommandStarted = false; _paletteClickedAt = now; return; }
+            // a right-click in a native palette: its menu is not replayed, the command picked from it is typed (the item is selected now)
+            if (s.Native is { Action: "rclick" } && s.Command != null)
+            {
+                var typed = Plan.InputText(new Step { Kind = "command", Command = s.Command, Answers = s.Answers });
+                if (!string.IsNullOrEmpty(typed)) { _doc.SendStringToExecute(typed, true, false, true); _pendingStart = true; _sentAt = now; }
+                NextPaletteStep();
+                return;
+            }
+            if (s.Drawing != null) { _awaitOpen = s; _awaitSince = now; return; }
+            // a command a native action starts with nothing to answer is the palette's own doing (AEMTRELOAD after a project switch; not run
+            // at all when the project was active already): nothing to wait for. One with answers is waited for, from the step's first try.
+            if (s.Command != null && !(s.Native != null && s.Answers.Count == 0))
+            { _paletteCommand = s; _paletteCommandStarted = false; _paletteClickedAt = s.Native != null ? _paletteSince : now; return; }
             NextPaletteStep();
             return;
         }
@@ -450,7 +591,7 @@ sealed class Replayer
             Finish(false, false, $"needs a person: palette {s.DialogTitle} ({problem})");
             return;
         }
-        _doc.Editor.WriteMessage($"\n  Palette \"{s.DialogTitle}\": {problem}. Do it by hand, then click Next.\n");
+        Say($"\n  Palette \"{s.DialogTitle}\": {problem}. Do it by hand, then click Next.\n");
         _win.Show($"Step {_i + 1}/{_steps.Count}: palette", $"{s.Title}\nRetrace could not do it: {problem}.\nDo it in the palette, then click Next.", true);
         _userNext = false;
         _paletteForPerson = true;
@@ -462,6 +603,8 @@ sealed class Replayer
     {
         var s = _paletteCommand!;
         bool running = string.Equals(_doc.CommandInProgress, s.Command, StringComparison.OrdinalIgnoreCase);
+        // started (and perhaps ended) while the native palette action ran, before this step waited for it
+        if (s.Native != null && _lastStartedAt >= _paletteClickedAt && string.Equals(_lastStarted, s.Command, StringComparison.OrdinalIgnoreCase)) _paletteCommandStarted = true;
         if (running || _paletteCommandStarted)
         {
             var text = Plan.InputText(s, includeStart: false);
@@ -548,10 +691,13 @@ sealed class Replayer
         _ => a.Status,
     };
 
-    void Execute(Step s)
+    /// <summary>Runs one step; false when the run ended in it.</summary>
+    bool Execute(Step s)
     {
         switch (s.Kind)
         {
+            case "open":
+                return OpenDrawing(s);
             case "tab":
                 ActivateTab(s.Tab);
                 break;
@@ -559,25 +705,25 @@ sealed class Replayer
                 Checkpoint(s);
                 break;
             case "dialog":
-                _doc.Editor.WriteMessage($"\n  Dialog \"{s.DialogTitle}\": fill it in by hand.\n");
+                Say($"\n  Dialog \"{s.DialogTitle}\": fill it in by hand.\n");
                 break;
             case "ribbon" or "command" or "lisp":
                 RunStep(s);
                 break;
         }
+        return true;
     }
 
     /// <summary>Compares the drawing with the digest recorded at this checkpoint.</summary>
     void Checkpoint(Step s)
     {
-        var ed = _doc.Editor;
         var cp = new CheckpointResult { Index = ++_checks, Note = s.Note ?? "", Expected = s.State };
         _result.Checkpoints.Add(cp);
         var label = string.IsNullOrEmpty(cp.Note) ? "" : $" ({cp.Note})";
         if (s.State == null)
         {
             cp.Differences.Add("no state recorded for this checkpoint");
-            ed.WriteMessage($"\n  CHECK {cp.Index} SKIPPED{label}: no recorded state (older recording). EXPECTED: {s.Note}\n");
+            Say($"\n  CHECK {cp.Index} SKIPPED{label}: no recorded state (older recording). EXPECTED: {s.Note}\n");
             _win.Show("Check " + cp.Index, "No recorded state. Expected: " + s.Note, false);
             return;
         }
@@ -585,7 +731,7 @@ sealed class Replayer
         if (cp.Actual == null) { cp.Pass = false; cp.Differences.Add("could not read the drawing"); }
         else { cp.Differences = DrawingDigest.Compare(s.State, cp.Actual); cp.Pass = cp.Differences.Count == 0; }
         var line = cp.Pass == true ? $"CHECK {cp.Index} PASS" : $"CHECK {cp.Index} FAIL: {string.Join("; ", cp.Differences)}";
-        ed.WriteMessage($"\n  {line}{label}\n");
+        Say($"\n  {line}{label}\n");
         _win.Show("Check " + cp.Index + (cp.Pass == true ? " PASS" : " FAIL"), (cp.Note.Length > 0 ? cp.Note + "\n" : "") + string.Join("\n", cp.Differences), false);
     }
 
@@ -597,7 +743,7 @@ sealed class Replayer
         string? text;
         if (dialog != null) (text, _deferred) = Plan.InputAroundDialog(s, dialog.T);
         else { text = Plan.InputText(s); _deferred = null; }
-        if (string.IsNullOrEmpty(text)) { _doc.Editor.WriteMessage("\n  (nothing replayable in this step)\n"); return; }
+        if (string.IsNullOrEmpty(text)) { Say("\n  (nothing replayable in this step)\n"); return; }
         if (s.Kind == "ribbon") ActivateTab(s.Tab);
         // SendStringToExecute: queued, runs as typed input when AutoCAD is next quiescent; "\n" is Enter
         _doc.SendStringToExecute(text, true, false, true);

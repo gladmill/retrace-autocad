@@ -28,7 +28,11 @@ public static class Writer
         var ix = new ModelIndex(model, opt);
 
         foreach (var tab in ix.AllTabs)
-            Asset(model, sink, ix.TabAsset[tab], () => RibbonRenderer.Render(tab), ct);
+            Asset(model, sink, ix.TabAsset[tab], () => TabPicture(model, ix, tab), ct);
+        // once any tab was captured, say which were not (the others still show their wireframe)
+        if (ix.Captures.Tabs.Count > 0)
+            foreach (var tab in ix.AllTabs.Where(t => ix.Captures.For(t) == null))
+                model.Warnings.Add($"ribbon: no capture of the tab {tab.Title} ({tab.Id}): it shows its wireframe. Show the tab in AutoCAD (a workspace that has it) and run RETRACECAPTURERIBBON again.");
         foreach (var f in model.Forms)
             Asset(model, sink, ix.FormAsset[f], () => FormRenderer.Render(f, model.InputRoot), ct);
 
@@ -78,6 +82,17 @@ public static class Writer
             model.Warnings.Add($"sessions: {ex.GetType().Name}: {ex.Message}");
             return [];
         }
+    }
+
+    /// <summary>The tab's capture from AutoCAD when there is one (a picture that cannot be read: a warning, and the wireframe), else its wireframe.</summary>
+    private static string TabPicture(EngineModel model, ModelIndex ix, RibbonTab tab)
+    {
+        if (ix.Captures.For(tab) is { } cap)
+        {
+            try { return ix.Captures.TabSvg(tab, cap); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { model.Warnings.Add($"ribbon capture of {tab.Title}: {ex.Message}; showing the wireframe"); }
+        }
+        return RibbonRenderer.Render(tab);
     }
 
     private static void Asset(EngineModel model, OutputSink sink, string rel, Func<string> render, CancellationToken ct)

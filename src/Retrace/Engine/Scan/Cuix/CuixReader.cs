@@ -5,26 +5,49 @@ using System.Xml.Linq;
 
 namespace Retrace.Engine.Scan.Cuix;
 
-/// <summary>Reads a .cuix (zip of .cui XML parts) into ribbon tabs, macros and workspaces.</summary>
+/// <summary>Reads a .cuix (zip of .cui XML parts) or a legacy .cui (the same sections in one XML file) into ribbon tabs, macros and workspaces.</summary>
 public static class CuixReader
 {
-    public static CuixModel Read(string absPath, string relPath)
+    /// <param name="container">the name tabs are filed under (their Container): the file name by default; a label that tells two files of
+    /// the same name apart otherwise ("AutoCAD Electrical 2026/acad.cuix")</param>
+    /// <summary>A legacy .cui file: its root element is CustSection. A loose part of an unzipped .cuix (RibbonRoot.cui, MenuGroup.cui...) is not.</summary>
+    public static bool IsLegacyCui(string path)
+    {
+        try
+        {
+            using var r = XmlReader.Create(path, new XmlReaderSettings { DtdProcessing = DtdProcessing.Ignore });
+            return r.MoveToContent() == XmlNodeType.Element && r.LocalName == "CustSection";
+        }
+        catch (Exception ex) when (ex is XmlException or IOException or UnauthorizedAccessException) { return false; }
+    }
+
+    public static CuixModel Read(string absPath, string relPath, string? container = null)
     {
         var model = new CuixModel { File = relPath };
-        using var zip = ZipFile.OpenRead(absPath);
+        var single = absPath.EndsWith(".cui", StringComparison.OrdinalIgnoreCase);
+        using var zip = single ? null : ZipFile.OpenRead(absPath);
+        var whole = single ? XDocument.Load(absPath, LoadOptions.SetLineInfo).Root : null;
 
-        XDocument? Part(string name)
+        // the root element of a part: a .cuix entry's root; in a .cui the section of that name (the header: the whole file)
+        XElement? Part(string name)
         {
-            var entry = zip.Entries.FirstOrDefault(e => string.Equals(Path.GetFileName(e.FullName), name, StringComparison.OrdinalIgnoreCase));
+            if (whole != null)
+            {
+                var section = Path.GetFileNameWithoutExtension(name);
+                return section == "Header" ? whole : whole.DescendantsAndSelf(section).FirstOrDefault();
+            }
+            var entry = zip!.Entries.FirstOrDefault(e => string.Equals(Path.GetFileName(e.FullName), name, StringComparison.OrdinalIgnoreCase));
             if (entry == null) return null;
             using var s = entry.Open();
-            return XDocument.Load(s, LoadOptions.SetLineInfo);
+            return XDocument.Load(s, LoadOptions.SetLineInfo).Root;
         }
+        string Where(string part) => single ? relPath : $"{relPath}!{part}";
+        var tabContainer = container ?? Path.GetFileName(relPath);
 
         var menu = Part("MenuGroup.cui");
-        if (menu?.Root != null)
+        if (menu != null)
         {
-            model.MenuGroup = (string?)menu.Root.Attribute("Name") ?? "";
+            model.MenuGroup = (string?)menu.Attribute("Name") ?? "";
             foreach (var mm in menu.Descendants("MenuMacro"))
             {
                 var id = (string?)mm.Attribute("UID");
@@ -51,19 +74,19 @@ public static class CuixReader
         }
 
         var header = Part("Header.cui");
-        if (header?.Root != null)
+        if (header != null)
             foreach (var p in header.Descendants("PartialMenuFile"))
                 if (!string.IsNullOrWhiteSpace(p.Value)) model.PartialMenus.Add(p.Value.Trim());
 
         var ribbon = Part("RibbonRoot.cui");
-        if (ribbon?.Root != null)
-            ReadRibbon(model, ribbon, $"{relPath}!RibbonRoot.cui");
+        if (ribbon != null)
+            ReadRibbon(model, ribbon, Where("RibbonRoot.cui"), tabContainer);
 
         var ws = Part("WorkspaceRoot.cui");
-        if (ws?.Root != null)
+        if (ws != null)
         {
             var byTab = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-            foreach (var w in ws.Root.Elements("Workspace"))
+            foreach (var w in ws.Elements("Workspace"))
             {
                 var name = Norm((string?)w.Element("Name"));
                 if (name.Length == 0) name = (string?)w.Attribute("UID") ?? "";
@@ -86,9 +109,8 @@ public static class CuixReader
 
     // ------------------------------------------------------------------ ribbon
 
-    private static void ReadRibbon(CuixModel model, XDocument doc, string file)
+    private static void ReadRibbon(CuixModel model, XElement root, string file, string container)
     {
-        var root = doc.Root!;
         SourceRef Ref(XElement e) => new(file, (e as IXmlLineInfo)?.HasLineInfo() == true ? ((IXmlLineInfo)e).LineNumber : 0);
 
         var panels = new Dictionary<string, RibbonPanel>(StringComparer.Ordinal);
@@ -133,7 +155,6 @@ public static class CuixReader
                 selectors.TryAdd(t, rule);
         }
 
-        string container = Path.GetFileName(file.Split('!')[0]);
         foreach (var ts in root.Descendants("RibbonTabSource"))
         {
             var id = (string?)ts.Attribute("UID");
