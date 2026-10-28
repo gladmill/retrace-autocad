@@ -26,6 +26,32 @@ public static class EngineRunner
         foreach (var w in model.Warnings) r.Warn(w);
     });
 
+    /// <summary>The ribbon map (<see cref="Map.RibbonMapper"/>): every ribbon item with the code it runs, from the folders in
+    /// <paramref name="opt"/> and the live ribbon; written to <see cref="Map.RibbonMapOptions.Output"/> (ribbon-map.md / .csv / .json) when
+    /// it is set. <see cref="EngineResult.RibbonMap"/> holds the map, <see cref="EngineResult.Output"/> the output folder. Fails when no
+    /// folder exists; a map that cannot be written is still returned, with the error.</summary>
+    public static EngineResult MapRibbon(Map.RibbonMapOptions opt, CancellationToken ct = default) => Guard(r =>
+    {
+        var map = Map.RibbonMapper.Build(opt, ct);
+        foreach (var w in map.Warnings) r.Warn(w);
+        if (map.Folders.Count == 0) { r.Fail("none of the folders exists"); return; }
+        r.RibbonMap = map;
+        r.Info($"folders:  {map.Folders.Count}, files: {map.FilesRead}");
+        r.Info($"ribbon:   {map.Rows.Count} items: {map.Mapped} mapped to code, {map.NotFound} not found, {map.NoAction} with no action");
+        r.Info(map.LiveMapped ? $"live:     on, {map.LiveTabsLeftOut} tabs left out" : "live:     off");
+        if (opt.Output == null) return;
+        r.Output = opt.Output;
+        try
+        {
+            Map.RibbonMapWriter.Write(map, opt.Output);
+            r.Info($"output:   {opt.Output}");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            r.Fail($"could not write the map: {ex.Message}");
+        }
+    });
+
     /// <summary>One recording -> steps.md next to it (pictures renamed after the steps), and optionally steps.docx / steps.xlsx made from it.
     /// <paramref name="sourceMap"/>: an earlier BuildDocs output folder (or its data\sourcemap.json), to link ribbon steps to the reference pages.</summary>
     public static EngineResult WriteSteps(string recording, bool docx = false, bool xlsx = false, string? sourceMap = null) => Guard(r =>

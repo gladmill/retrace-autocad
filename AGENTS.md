@@ -27,18 +27,22 @@ scripts/pack.sh /some/out/dir                # builds Release and copies the bun
 ```
 src/Retrace/
   Engine/        pure .NET: scans a source folder, writes the docs, reads recordings, writes steps. No AutoCAD, no UI.
-    Scan/          InputScanner, Cuix/, CodeRibbon/, Commands/ (commands + UI flow), Forms/ (WinForms, .rc, XAML, DCL, palettes)
+    Scan/          InputScanner, Cuix/, CodeRibbon/, Commands/ (commands + UI flow; LispScanner reads .lsp / .mnl only when a scan asks), Forms/ (WinForms, .rc, XAML, DCL, palettes)
     Model.cs       the contract between scanners and writers (EngineModel); Linker.cs links ribbon items, commands and forms
     Pipeline.cs    scan -> analyze -> link -> emit, with a CancellationToken
+    Map/           the ribbon map: RibbonMapper (every ribbon item -> the code it runs), RibbonMapWriter (md / csv / json), MacroText (what a macro runs),
+                   LiveRibbon (plain copy of the live ribbon), RibbonMapModel (options, rows, result)
     Emit/          markdown, SVG wireframes, sourcemap.json, guide, manual test plans; DocsLayout.cs names every path in the docs folder
     Recordings/    recording.jsonl reader, steps.md / docx / xlsx writers, picture naming, recordings analysis and pages
     Util/          CodeText (comments, braces, arguments), Rx (regex with a timeout), font metrics, SVG helpers
     EngineRunner.cs  the entry points
   Core/          plugin logic with no AutoCAD, WPF or WinForms: Paths, RetraceSettings, SessionWriter, Plan,
-                 ReplayResult, DrawingDigest, ShotPolicy, DialogWait, DialogFillCore, SecurityPrompt, RibbonTabPosition, GuideModel, EngineJobs
-  AutoCad/       everything that touches AutoCAD: RetraceApp (IExtensionApplication and every [CommandMethod]), Commands, RetraceTab (ribbon),
-                 Recorder, Replayer, DialogWatch / DialogFill (dialog values), ShotService, DrawingState, DclCapture, Native / Win32, Log
-  Ui/            WPF windows and the guide palette: SettingsWindow, ReplayWindow, OpenTestWindow, GuidePalette, GuideControl, MarkdownPage, ScriptViewer, WebPreview
+                 ReplayResult, DrawingDigest, ShotPolicy, DialogWait, DialogFillCore, SecurityPrompt, RibbonTabPosition, GuideModel, EngineJobs,
+                 MapFolders (every folder given to the Map window, newest first), EditorLaunch (the arguments that open a file at a line in the editor)
+  AutoCad/       everything that touches AutoCAD: RetraceApp (IExtensionApplication and every [CommandMethod]), Commands (partial: Commands.Map is RETRACEMAP),
+                 RetraceTab (ribbon), Recorder, Replayer, DialogWatch / DialogFill (dialog values), ShotService, DrawingState, DclCapture, Native / Win32, Log,
+                 LiveRibbonReader (copies the live ribbon into the engine's LiveTab records)
+  Ui/            WPF windows and the guide palette: SettingsWindow, ReplayWindow, OpenTestWindow, MapWindow (with MapRowView, its display text), GuidePalette, GuideControl, MarkdownPage, ScriptViewer, WebPreview
   Embedded/      Dependencies.cs
 ```
 
@@ -52,7 +56,7 @@ Namespaces follow folders (`Retrace.Engine.Scan`, `Retrace.Core`, `Retrace.AutoC
 
 ### Engine API
 
-`Retrace.Engine.EngineRunner` is the in-process entry point. Every method is synchronous, never throws, never writes to the console and returns an `EngineResult` (`Messages`, `Warnings`, `Error`, `Cancelled`, `Output`, `Script`, `Docx`, `Xlsx`; `Lines()` for a log).
+`Retrace.Engine.EngineRunner` is the in-process entry point. Every method is synchronous, never throws, never writes to the console and returns an `EngineResult` (`Messages`, `Warnings`, `Error`, `Cancelled`, `Output`, `Script`, `Docx`, `Xlsx`, `RibbonMap`; `Lines()` for a log).
 
 | Method | What it does |
 |---|---|
@@ -60,9 +64,10 @@ Namespaces follow folders (`Retrace.Engine.Scan`, `Retrace.Core`, `Retrace.AutoC
 | `WriteSteps(recording, docx, xlsx, sourceMap)` | `recording.jsonl` -> `steps.md` beside it, pictures renamed after the steps, optional Word and Excel. |
 | `Export(path, docx, xlsx)` | Word / Excel from an existing `steps.md` (a recording or test folder is accepted). |
 | `AnalyzeRecordings(inputs, output, sourceMap)` | The recordings report alone: `recordings/` and `data/recordings.json`. |
+| `MapRibbon(RibbonMapOptions, CancellationToken)` | Read the chosen folders (CUIX / CUI files, ribbon code, LISP, C++, C#, VB.NET) and map every ribbon item to the code it runs, also for the live ribbon the plugin copied (`LiveRibbonReader`). `EngineResult.RibbonMap` holds the rows; with `Output`, `ribbon-map.md`, `.csv` and `.json` are written there. Format: [docs/ribbon-map.md](docs/ribbon-map.md). |
 
-`Retrace.Core.EngineJobs` runs engine jobs one at a time, first in first out (a job started while another runs waits; a second docs build is refused while one runs or waits), on a thread-pool thread so AutoCAD stays usable. `Cancel()` cancels the running job and drops the waiting ones (their `onDone` gets a cancelled result); every accepted job gets `onDone` exactly once, on that thread. Callers marshal to the UI thread themselves (`Dispatcher.BeginInvoke`). `EngineJobs.DocsOptions(settings)` builds the options from the settings.
-Only `BuildDocs` is long enough to check the token, between pipeline stages.
+`Retrace.Core.EngineJobs` runs engine jobs one at a time, first in first out (a job started while another runs waits; a second docs build, or a second ribbon map, is refused while one runs or waits), on a thread-pool thread so AutoCAD stays usable. `Cancel()` cancels the running job and drops the waiting ones (their `onDone` gets a cancelled result); `Cancel("map")` does that for the jobs of one kind only (the Map window's Cancel). Every accepted job gets `onDone` exactly once, on that thread. Callers marshal to the UI thread themselves (`Dispatcher.BeginInvoke`); `Commands.StartMap` does it for the Map window and `-RETRACEMAP`. `EngineJobs.DocsOptions(settings)` builds the options from the settings.
+Only `BuildDocs` and `MapRibbon` are long enough to check the token: `BuildDocs` between pipeline stages, `MapRibbon` between folders and stages.
 
 ### One dll: embedded dependencies
 
@@ -86,7 +91,8 @@ Do not add a dependency without embedding it, adding its name to the list in `pa
 - **Paths.** Build file paths with `Path.Combine` and the other Path APIs. Use `/` only inside markdown links and in the `file` of `shot` events. Every path in the docs folder is named in `Engine/Emit/DocsLayout.cs`; on-disk test folder names and discovery are in `Engine/Recordings/TestFolders.cs` (the one implementation, Core uses it too).
 - **`Paths.Root` is a constant** (`C:\temp\retrace`). No environment variable, no setting. Every function takes the root as a parameter so tests can use a temp folder. Do not read `Paths.Root` directly in new code that tests need to reach; pass the root in.
 - **No work in AutoCAD event handlers.** Handlers only record data. Screenshots are queued and taken later from a timer or `Application.Idle`; drawing digests are read only in a command or timer context. Do not touch AutoCAD objects inside a `PromptingFor*` handler (reading `PromptOptions.Keywords` there made AutoCAD loop on mouse picks).
-- **Errors never reach AutoCAD.** Command bodies go through `RetraceApp.Run`, which logs and prints. Log with `AutoCad/Log.cs` (writes `C:\temp\retrace\retrace.log`).
+- **Errors never reach AutoCAD.** Command bodies go through `RetraceApp.Run`, which logs and prints. Log with `AutoCad/Log.cs` (writes `C:\temp\retrace\retrace.log`). Window handlers do the same: catch, log, and show one line in the window.
+- **The live ribbon is copied, not shared.** The engine never sees an `Autodesk.Windows` object: `AutoCad/LiveRibbonReader.cs` copies the ribbon on the UI thread into `LiveTab` / `LivePanel` / `LiveItem` records (`Engine/Map/LiveRibbon.cs`), which the engine reads on its own thread. `Commands.StartMap` takes the copy, and the list of loaded customization files, before it starts the job.
 - **Writing files.** Write to a temp file and move it over the target when a reader could see half a file (results, steps.docx, recording.jsonl rewrite).
 - **Wireframe fidelity.** Win32 `.rc` and WinForms wireframes are drawn at 100 % / 96 DPI (`Engine/Util/FontMetrics.cs`; `FontMetricsData.cs` is generated by `tools/gen_font_metrics.py`, numbers only, no font files). Compare against real captures with `tools/compare_captures.py <captures> <out>` (needs Pillow and rsvg-convert).
 - **Writing style for docs and messages:** short sentences, concrete, no marketing.
@@ -96,6 +102,7 @@ Do not add a dependency without embedding it, adding its name to the list in `pa
 - The scanner never opens files whose names look like secrets (`InputScanner.LooksSecret`). It lists them as skipped. Keep it that way.
 - Test fixtures are synthetic. Do not copy client code, client names or Autodesk SDK files into the repo.
 - Recordings and captures are user data: they hold drawing names, typed text, coordinates and object handles. Never commit real ones; tests use synthetic JSONL only.
+- Map files are user data too: `ribbon-map.md`, `.csv`, `.json` and `map-folders.json` hold full local paths and the names of the user's buttons, commands and code. Never commit real ones; tests build synthetic folders.
 - No secrets, no keys, no personal or company names in code, docs or fixtures.
 
 ## VM test scripts (`tools/vm`)
@@ -115,4 +122,7 @@ The scripts live in `C:\retrace-vm\` on the VM. See `tools/vm/README.md` for eac
 | `TestFolderTests`, `RecordingTests`, `RecordingShotTests` | Test folder layout, reading recordings, picture naming. |
 | `ScriptTests`, `ExportTests` | `steps.md`, docx and xlsx. |
 | `SettingsTests` | Settings keys and defaults. |
+| `LispScannerTests`, `MacroTextTests` | LISP commands and functions found in `.lsp` / `.mnl` (comments and strings skipped, line numbers right); what a ribbon macro runs (commands, LISP calls, loads, DIESEL). |
+| `RibbonMapperTests` | The ribbon map end to end on synthetic folders: CUIX, CUI and code ribbons, the live ribbon and loaded customization, statuses, the three files. |
+| `MapFoldersTests` | The Map window's folder list: newest first, ticks, remove, the options, a broken file. |
 | `SecurityPromptTests`, `DialogFillTests`, `DialogValuesTests` | Security prompts, dialog auto-fill and dialog values. |

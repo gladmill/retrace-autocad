@@ -63,9 +63,12 @@ public sealed class ManualTestWriter(ModelIndex ix, OutputSink sink)
     {
         var list = new List<string>
         {
-            c.Lang == Lang.Cpp
-                ? $"The {c.Project} ObjectARX module is loaded (APPLOAD / ARX LOAD)."
-                : $"The {c.Project} assembly is loaded (NETLOAD or autoload bundle).",
+            c.Lang switch
+            {
+                Lang.Cpp => $"The {c.Project} ObjectARX module is loaded (APPLOAD / ARX LOAD).",
+                Lang.Lisp => $"The {c.Project} LISP file is loaded (APPLOAD or the load function).",
+                _ => $"The {c.Project} assembly is loaded (NETLOAD or autoload bundle).",
+            },
             "A drawing is open and no other command is running.",
         };
         foreach (var allowed in c.Flow.Select(s => s.Extra.GetValueOrDefault("allowed")).Where(a => a != null).Distinct())

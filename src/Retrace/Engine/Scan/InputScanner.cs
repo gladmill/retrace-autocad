@@ -19,6 +19,13 @@ public static class InputScanner
         [".xaml"] = Lang.Xaml, [".rc"] = Lang.Rc, [".dcl"] = Lang.Dcl, [".cuix"] = Lang.Cuix, [".cui"] = Lang.Cuix,
     };
 
+    // AutoLISP, read only when a scan asks for it (the ribbon map does, Build docs does not). A .mnl is the menu LISP AutoCAD loads with a
+    // .cuix of the same name. Compiled LISP (.fas, .vlx) is listed so a (load "x") can be matched to it, but never read.
+    private static readonly Dictionary<string, Lang> LispLangs = new(StringComparer.OrdinalIgnoreCase)
+    {
+        [".lsp"] = Lang.Lisp, [".mnl"] = Lang.Lisp, [".fas"] = Lang.Other, [".vlx"] = Lang.Other,
+    };
+
     private static readonly string[] ProjectExts = { ".csproj", ".vbproj", ".vcxproj" };
 
     /// <summary>Names that may hold credentials. Never opened, only listed as skipped.</summary>
@@ -28,7 +35,10 @@ public static class InputScanner
 
     public static bool LooksSecret(string fileName) => SecretName.IsMatch(fileName);
 
-    public static EngineModel Scan(string inputRoot)
+    /// <param name="lisp">also list .lsp and .mnl files (read as <see cref="Lang.Lisp"/> text) and .fas / .vlx files (listed as
+    /// <see cref="Lang.Other"/> with no text); off, as Build docs scans</param>
+    /// <param name="ct">checked for each file, so a scan of a very large folder can be cancelled</param>
+    public static EngineModel Scan(string inputRoot, bool lisp = false, CancellationToken ct = default)
     {
         inputRoot = Path.GetFullPath(inputRoot);
         var model = new EngineModel { InputRoot = inputRoot };
@@ -36,6 +46,7 @@ public static class InputScanner
 
         foreach (var abs in Walk(inputRoot))
         {
+            ct.ThrowIfCancellationRequested();
             var rel = Rel(inputRoot, abs);
             var name = Path.GetFileName(abs);
             var ext = Path.GetExtension(abs);
@@ -58,10 +69,10 @@ public static class InputScanner
                     };
                 continue;
             }
-            if (!Langs.TryGetValue(ext, out var lang)) continue;
+            if (!Langs.TryGetValue(ext, out var lang) && !(lisp && LispLangs.TryGetValue(ext, out lang))) continue;
 
             string text = "";
-            if (lang != Lang.Cuix)
+            if (lang is not (Lang.Cuix or Lang.Other))   // .cuix / .cui are read by CuixReader; .fas / .vlx are compiled
             {
                 try { text = File.ReadAllText(abs); }
                 catch (Exception ex) { model.Warnings.Add($"{rel}: could not read ({ex.Message})"); continue; }

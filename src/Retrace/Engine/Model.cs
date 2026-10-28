@@ -11,7 +11,8 @@ public sealed record SourceRef(string File, int Line)
     public override string ToString() => $"{File}:{Line}";
 }
 
-public enum Lang { CSharp, VbNet, Cpp, Xaml, Rc, Dcl, Cuix, Other }
+/// <summary>Lisp: AutoLISP / Visual LISP (.lsp, .mnl), read only when a scan asks for it (the ribbon map does, Build docs does not).</summary>
+public enum Lang { CSharp, VbNet, Cpp, Xaml, Rc, Dcl, Cuix, Other, Lisp }
 
 /// <summary>One input file, already read. Text is null for binary/unread files.</summary>
 public sealed class SourceFile
@@ -146,6 +147,10 @@ public enum EntryKind
     ArxCommandEntry,
     /// <summary>A method a ribbon button calls directly (e.g. through a handler object that names the class and method), not a registered command.</summary>
     RibbonHandler,
+    /// <summary>AutoLISP command: (defun c:NAME ...) or (vlax-add-cmd "NAME" 'fn). Typed as NAME at the command line.</summary>
+    LispCommand,
+    /// <summary>AutoLISP function: (defun NAME ...). Called as (NAME ...) from a macro or other LISP.</summary>
+    LispDefun,
 }
 
 public enum FlowKind

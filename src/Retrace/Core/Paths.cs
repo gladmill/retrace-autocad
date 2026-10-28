@@ -21,6 +21,10 @@ public static class Paths
     public static string SettingsFile(string root = Root) => Path.Combine(root, SettingsFileName);
     /// <summary>The places the prompt window lists as recent (<see cref="RecentPlaces"/>).</summary>
     public static string RecentFile(string root = Root) => Path.Combine(root, "recent.json");
+    /// <summary>Every folder the Map window was given, newest first, with the ones ticked last time (<see cref="MapFolders"/>).</summary>
+    public static string MapFoldersFile(string root = Root) => Path.Combine(root, "map-folders.json");
+    /// <summary>The last ribbon map: ribbon-map.md, .csv and .json.</summary>
+    public static string Map(string root = Root) => Path.Combine(root, "map");
     /// <summary>Errors and warnings of the plugin.</summary>
     public static string LogFile(string root = Root) => Path.Combine(root, LogFileName);
     public static string Tests(string root = Root) => Path.Combine(root, "tests");

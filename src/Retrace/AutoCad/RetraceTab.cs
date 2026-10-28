@@ -57,6 +57,7 @@ public static class RetraceTab
         src.Title = "Guide";
         src.Items.Add(Button("RETRACEGUIDE", "Guide", "book", "^C^C_RETRACEGUIDE ", "Read and edit the guide in a palette inside AutoCAD."));
         src.Items.Add(Button("RETRACEDOCS", "Build docs", "build", "^C^C_RETRACEDOCS ", "Run the engine on your code, captures and recordings and write the guide, reference and test plans."));
+        src.Items.Add(Button("RETRACEMAP", "Map", "map", "^C^C_RETRACEMAP ", "Map each ribbon button to the code it runs (LISP, C++, C#, VB.NET), from the CUI and CUIX files and the code in the folders you pick, and from the ribbon AutoCAD shows now."));
         src.Items.Add(Button("RETRACESETTINGS", "Settings", "sliders", "^C^C_RETRACESETTINGS ", "Set the folders, the editor and the checkpoint shortcut."));
         return Wrap(src);
     }

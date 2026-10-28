@@ -36,4 +36,57 @@ public class InputScannerTests
         }
         finally { Directory.Delete(root, true); }
     }
+
+    [Fact]
+    public void Lisp_files_are_read_only_when_asked_and_compiled_ones_are_listed_but_never_read()
+    {
+        var root = Directory.CreateTempSubdirectory("retrace-test-lisp").FullName;
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(root, "lisp"));
+            Directory.CreateDirectory(Path.Combine(root, "bin"));
+            Directory.CreateDirectory(Path.Combine(root, "net"));
+            File.WriteAllText(Path.Combine(root, "lisp", "tools.lsp"), "(defun c:tool () 1)");
+            File.WriteAllText(Path.Combine(root, "lisp", "TOOLS.MNL"), "(defun c:menu () 1)");
+            File.WriteAllText(Path.Combine(root, "lisp", "tools.fas"), "COMPILED");
+            File.WriteAllText(Path.Combine(root, "lisp", "pack.vlx"), "COMPILED");
+            File.WriteAllText(Path.Combine(root, "lisp", "api-key.lsp"), "(setq k \"SECRET\")");
+            File.WriteAllText(Path.Combine(root, "bin", "gen.lsp"), "(defun c:gen () 1)");
+            File.WriteAllText(Path.Combine(root, "net", "Cmds.cs"), "class C {}");
+
+            // Build docs: no LISP at all
+            var docs = InputScanner.Scan(root);
+            Assert.Equal(new[] { "net/Cmds.cs" }, docs.Files.Select(f => f.RelPath));
+
+            var m = InputScanner.Scan(root, lisp: true);
+            var byName = m.Files.ToDictionary(f => f.RelPath);
+            Assert.Equal(Lang.Lisp, byName["lisp/tools.lsp"].Lang);
+            Assert.Equal("(defun c:tool () 1)", byName["lisp/tools.lsp"].Text);
+            Assert.Equal("lisp", byName["lisp/tools.lsp"].Project);
+            Assert.Equal(Lang.Lisp, byName["lisp/TOOLS.MNL"].Lang);   // the menu LISP of a .cuix of the same name
+            Assert.Equal((Lang.Other, ""), (byName["lisp/tools.fas"].Lang, byName["lisp/tools.fas"].Text));
+            Assert.Equal((Lang.Other, ""), (byName["lisp/pack.vlx"].Lang, byName["lisp/pack.vlx"].Text));
+            Assert.DoesNotContain("lisp/api-key.lsp", byName.Keys);   // the name looks like a secret: never opened
+            Assert.Contains(m.Skipped, s => s.StartsWith("lisp/api-key.lsp"));
+            Assert.DoesNotContain(m.Files, f => f.Text.Contains("SECRET") || f.Text.Contains("COMPILED"));
+            Assert.DoesNotContain("bin/gen.lsp", byName.Keys);        // the usual skipped folders
+            Assert.Equal(Lang.CSharp, byName["net/Cmds.cs"].Lang);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void A_cancelled_token_stops_a_scan_between_files()
+    {
+        var root = Directory.CreateTempSubdirectory("retrace-test-scan-cancel").FullName;
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "a.cs"), "class A {}");
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+            Assert.Throws<OperationCanceledException>(() => InputScanner.Scan(root, ct: cts.Token));
+            Assert.Single(InputScanner.Scan(root).Files);   // and without a token it reads as before
+        }
+        finally { Directory.Delete(root, true); }
+    }
 }
