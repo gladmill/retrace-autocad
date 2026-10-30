@@ -108,6 +108,38 @@ static class PaletteFill
         return null;
     }
 
+    /// <summary>Tdoc: the controls of a WinForms palette that the step sets, and its button, for the numbered boxes of the palette's picture. Nothing
+    /// for a WPF or native palette, or one that is not open. UI thread.</summary>
+    public static List<DialogBox> TdocBoxes(Retrace.Core.Step s)
+    {
+        var boxes = new List<DialogBox>();
+        try
+        {
+            var page = FindPage(s);
+            if (page == IntPtr.Zero || s.Native != null) return boxes;
+            var hidden = !IsWindowVisible(page);
+            var scan = DialogReader.Scan(page, hidden);
+            if (scan.Fields.Count == 0 && scan.Buttons.Count == 0) return boxes;   // WPF: its controls have no windows
+            var values = s.Values ?? new List<FieldChange>();
+            var map = FillMatcher.Match(values, scan.Fields.Select(f => new LiveField(f.Key, f.Label, f.Kind)).ToList());
+            for (int i = 0; i < values.Count; i++)
+                if (map[i] >= 0 && !FillMatcher.IsNoOp(values[i]) && scan.Handles[map[i]].Count > 0)
+                    boxes.Add(new DialogBox(scan.Handles[map[i]][0], default, TdocPlan.FieldCallout(values[i])));
+            if (!string.IsNullOrEmpty(s.Button))
+            {
+                int want = Math.Max(1, s.ButtonIndex), seen = 0;
+                foreach (var (h, _, text) in scan.Buttons)
+                    if (string.Equals(ButtonLabel(text), s.Button, StringComparison.OrdinalIgnoreCase) && ++seen == want)
+                    {
+                        boxes.Add(new DialogBox(h, default, "Click " + s.Button));
+                        break;
+                    }
+            }
+        }
+        catch (Exception ex) { Log.Error("tdoc palette boxes", ex); }
+        return boxes;
+    }
+
     /// <summary>The window of the step's palette, or zero.</summary>
     public static IntPtr FindPage(Retrace.Core.Step s) => Find(s.Panel, s.DialogTitle);
 

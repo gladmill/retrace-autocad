@@ -56,11 +56,11 @@ public class SettingsTests
         var root = Path.Combine(Path.GetTempPath(), "retrace-settings-" + Guid.NewGuid().ToString("N"));
         try
         {
-            var s = new RetraceSettings { RootDir = root, SourceFolder = "/src", DocsFolder = "/d", TestsFolder = "/t", CapturesFolder = "/c", EditorPath = "ed", ExportDocx = true, RibbonTabPosition = "last" };
+            var s = new RetraceSettings { RootDir = root, SourceFolder = "/src", DocsFolder = "/d", TestsFolder = "/t", CapturesFolder = "/c", EditorPath = "ed", ExportDocx = true, RibbonTabPosition = "last", TdocBringToFront = false, TdocAnnotate = false, TdocStepDelayMs = 2500 };
             Assert.True(s.Save(out var err), err);
             using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Paths.SettingsFile(root)));
             Assert.Equal(
-                new[] { "autoFillDialogs", "captureAllWorkspaces", "captureRibbon", "capturesFolder", "checkpointKey", "dialogValues", "docsFolder", "editorPath", "exportDocx", "exportXlsx", "loadedCustomization", "promptStyle", "reviewCheckpoints", "ribbonTabPosition", "screenshots", "showDrivenUi", "sourceFolder", "testsFolder" },
+                new[] { "autoFillDialogs", "captureAllWorkspaces", "captureRibbon", "capturesFolder", "checkpointKey", "dialogValues", "docsFolder", "editorPath", "exportDocx", "exportXlsx", "loadedCustomization", "promptStyle", "reviewCheckpoints", "ribbonTabPosition", "screenshots", "showDrivenUi", "sourceFolder", "tdocAnnotate", "tdocBringToFront", "tdocStepDelayMs", "testsFolder" },
                 doc.RootElement.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray());
             var back = RetraceSettings.Load(root);
             Assert.Equal(root, back.RootDir);
@@ -69,7 +69,49 @@ public class SettingsTests
             Assert.True(back.ExportDocx);
             Assert.Equal("last", back.RibbonTabPosition);
             Assert.Equal("Ctrl+Shift+K", back.CheckpointKey);
+            Assert.False(back.TdocBringToFront);
+            Assert.False(back.TdocAnnotate);
+            Assert.Equal(2500, back.TdocStepDelayMs);
             Assert.Equal("last", RibbonTabPosition.ReadSettingFromDisk(root));
+        }
+        finally { try { Directory.Delete(root, true); } catch (IOException) { } }
+    }
+
+    [Fact]
+    public void Tdoc_settings_default_to_front_annotate_and_1500_ms()
+    {
+        var s = new RetraceSettings();
+        Assert.True(s.TdocBringToFront);
+        Assert.True(s.TdocAnnotate);
+        Assert.Equal(1500, s.TdocStepDelayMs);
+        var root = Path.Combine(Path.GetTempPath(), "retrace-tdocdef-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(root);
+            File.WriteAllText(Paths.SettingsFile(root), "{ \"screenshots\": false }");   // keys missing: the defaults
+            var back = RetraceSettings.Load(root);
+            Assert.True(back.TdocBringToFront);
+            Assert.True(back.TdocAnnotate);
+            Assert.Equal(1500, back.TdocStepDelayMs);
+        }
+        finally { try { Directory.Delete(root, true); } catch (IOException) { } }
+    }
+
+    [Theory]
+    [InlineData(-5, 0)]
+    [InlineData(0, 0)]
+    [InlineData(250, 250)]
+    [InlineData(10000, 10000)]
+    [InlineData(10001, 10000)]
+    [InlineData(int.MaxValue, 10000)]
+    public void Tdoc_step_delay_is_clamped_on_load(int stored, int expected)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "retrace-tdocclamp-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(root);
+            File.WriteAllText(Paths.SettingsFile(root), "{ \"tdocStepDelayMs\": " + stored + " }");
+            Assert.Equal(expected, RetraceSettings.Load(root).TdocStepDelayMs);
         }
         finally { try { Directory.Delete(root, true); } catch (IOException) { } }
     }

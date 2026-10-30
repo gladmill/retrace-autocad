@@ -22,6 +22,7 @@ public sealed partial class Commands
         public required string Path;
         public required DrawingDigest? Initial;
         public DateTime Created = DateTime.UtcNow;
+        public TdocCapture? Tdoc;   // set by a Tdoc run (RETRACETDOC) for the test it sent here
     }
 
     PendingTest? _pending;
@@ -31,6 +32,8 @@ public sealed partial class Commands
     {
         if (_testIdleHooked) { AcApp.Idle -= OnTestIdle; _testIdleHooked = false; }
         _pending = null;
+        TdocRun.Abort();
+        CloseTdoc();
         CloseOpenTest();
         CloseCheckpoints();
         CloseMap();
@@ -67,10 +70,11 @@ public sealed partial class Commands
         var ed = Ed; if (ed == null) return;
         try
         {
-            if (Replayer.Current != null) { ed.WriteMessage("\nA replay is already running.\n"); return; }
-            if (Recorder.Instance.IsRecording) { ed.WriteMessage("\nStop the recording first (RETRACESTOP): a test opens a new drawing and replays into it.\n"); return; }
-            var path = TakeQueuedTest() ?? PickSession(ed);   // the "Open test" window queues its recording; else ask
-            if (path == null || !File.Exists(path)) { ed.WriteMessage("\nNo recording chosen; test cancelled.\n"); return; }
+            // a Tdoc run that sent this RETRACERUN skips its test at once instead of waiting out its 90 s watchdog
+            if (Replayer.Current != null) { ed.WriteMessage("\nA replay is already running.\n"); TdocRun.StartFailed("a replay was already running"); return; }
+            if (Recorder.Instance.IsRecording) { ed.WriteMessage("\nStop the recording first (RETRACESTOP): a test opens a new drawing and replays into it.\n"); TdocRun.StartFailed("a recording was running"); return; }
+            var path = TdocRun.TakeExpected() ?? TakeQueuedTest() ?? PickSession(ed);   // a Tdoc run names its test; the "Open test" window queues its recording; else ask
+            if (path == null || !File.Exists(path)) { ed.WriteMessage("\nNo recording chosen; test cancelled.\n"); TdocRun.StartFailed("the recording was not found"); return; }
             var events = Plan.ReadEvents(path);
             var steps = Plan.Build(events).Where(s => s.Kind != "tab").ToList();
             var initial = Plan.InitialState(events);
@@ -79,12 +83,17 @@ public sealed partial class Commands
             var dm = AcApp.DocumentManager;
             var doc = dm.Add(FindTemplate());
             dm.MdiActiveDocument = doc;
-            _pending = new PendingTest { Doc = doc, Steps = steps, Path = path, Initial = initial };
+            _pending = new PendingTest { Doc = doc, Steps = steps, Path = path, Initial = initial, Tdoc = TdocRun.CaptureFor(path, steps) };
             if (!_testIdleHooked) { AcApp.Idle += OnTestIdle; _testIdleHooked = true; }
             // the new drawing is active now: the old one's editor rejects messages (eNotApplicable)
             doc.Editor.WriteMessage($"\nRETRACERUN: new drawing opened; the test starts when it is ready ({steps.Count} steps, Auto).\n");
         }
-        catch (Exception ex) { Log.Error("RETRACERUN", ex); try { (AcApp.DocumentManager.MdiActiveDocument?.Editor ?? ed).WriteMessage($"\nRETRACERUN failed: {ex.Message}\n"); } catch { } }
+        catch (Exception ex)
+        {
+            Log.Error("RETRACERUN", ex);
+            try { (AcApp.DocumentManager.MdiActiveDocument?.Editor ?? ed).WriteMessage($"\nRETRACERUN failed: {ex.Message}\n"); } catch { }
+            TdocRun.StartFailed(ex.Message);   // no-op unless a Tdoc run is waiting for this test
+        }
     }
 
     static string FindTemplate()
@@ -104,12 +113,19 @@ public sealed partial class Commands
             {
                 AcApp.Idle -= OnTestIdle; _testIdleHooked = false; _pending = null;
                 Print("RETRACERUN: the new drawing did not become active within 60 s; test not started.");
+                if (p.Tdoc != null) TdocRun.StartFailed("the new drawing did not become active within 60 s");
                 return;
             }
             var doc = AcApp.DocumentManager.MdiActiveDocument;
             if (doc == null || !ReferenceEquals(doc, p.Doc) || !string.IsNullOrEmpty(doc.CommandInProgress) || !doc.Editor.IsQuiescent) return;
             AcApp.Idle -= OnTestIdle; _testIdleHooked = false; _pending = null;
-            if (!Replayer.Start(p.Steps, ReplayMode.Auto, p.Path, p.Initial, out var msg, alert: true, interactive: true)) Print("RETRACERUN: " + msg);
+            // a Tdoc run shows no verdict box between its tests and hears when the test is over
+            var tdoc = p.Tdoc;
+            if (!Replayer.Start(p.Steps, ReplayMode.Auto, p.Path, p.Initial, out var msg, alert: tdoc == null, interactive: true, tdoc: tdoc, finished: tdoc == null ? null : r => TdocRun.Finished(tdoc, r)))
+            {
+                Print("RETRACERUN: " + msg);
+                if (tdoc != null) TdocRun.StartFailed(msg);
+            }
             else Print("RETRACERUN: " + msg);
         }
         catch (Exception ex)
@@ -117,6 +133,7 @@ public sealed partial class Commands
             Log.Error("RETRACERUN idle", ex);
             AcApp.Idle -= OnTestIdle; _testIdleHooked = false; _pending = null;
             Print("RETRACERUN failed: " + ex.Message);
+            if (p?.Tdoc != null) TdocRun.StartFailed(ex.Message);
         }
     }
 
@@ -209,6 +226,20 @@ public sealed partial class Commands
                 var aw = Ask.Keywords(ed, new PromptKeywordOptions($"\nThe capture also visits the other workspaces [Yes/No] <{(s.CaptureAllWorkspaces ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
                 if (aw.Status == PromptStatus.Cancel) return;
                 n.CaptureAllWorkspaces = aw.Status == PromptStatus.OK ? aw.StringResult == "Yes" : s.CaptureAllWorkspaces;
+                var tf = Ask.Keywords(ed, new PromptKeywordOptions($"\nTdoc brings the UI to the front before each picture [Yes/No] <{(s.TdocBringToFront ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
+                if (tf.Status == PromptStatus.Cancel) return;
+                n.TdocBringToFront = tf.Status == PromptStatus.OK ? tf.StringResult == "Yes" : s.TdocBringToFront;
+                var ta = Ask.Keywords(ed, new PromptKeywordOptions($"\nTdoc draws green numbered boxes where the user gives input [Yes/No] <{(s.TdocAnnotate ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
+                if (ta.Status == PromptStatus.Cancel) return;
+                n.TdocAnnotate = ta.Status == PromptStatus.OK ? ta.StringResult == "Yes" : s.TdocAnnotate;
+                var td = Ask.String(ed, $"\nTdoc pause before each picture in milliseconds, 0 to {RetraceSettings.MaxTdocStepDelayMs} <{s.TdocStepDelayMs}> (Enter keeps): ");
+                if (td.Status == PromptStatus.Cancel) return;
+                var tdv = (td.StringResult ?? "").Trim();
+                if (tdv.Length > 0)
+                {
+                    if (int.TryParse(tdv, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var ms)) n.TdocStepDelayMs = ms;
+                    else ed.WriteMessage($"\nTdoc pause not changed: \"{tdv}\" is not a number.\n");
+                }
                 SaveAndReport(ed, n);
                 return;
             }
@@ -263,6 +294,9 @@ public sealed partial class Commands
                $"  All workspaces   : {(s.CaptureAllWorkspaces ? "on (the capture also visits the other workspaces; unsaved workspace changes are lost)" : "off")}\n" +
                $"  Loaded CUIX      : {(s.LoadedCustomization ? "documented too (the main .cuix, partials, enterprise file AutoCAD has loaded)" : "not documented")}\n" +
                $"  Prompts          : {(s.UiPrompts ? "window (on top, Browse and recent places; scripts, LISP and FILEDIA 0 use the command line)" : "command line")}\n" +
+               $"  Tdoc front       : {(s.TdocBringToFront ? "on" : "off")} (RETRACETDOC brings AutoCAD, the dialog or the palette to the front before each picture)\n" +
+               $"  Tdoc boxes       : {(s.TdocAnnotate ? "on" : "off")} (green numbered boxes on the pictures where the user gives input)\n" +
+               $"  Tdoc pause       : {s.TdocStepDelayMs} ms (before each picture, so the screen has repainted)\n" +
                $"  Checkpoint key   : {(s.CheckpointChord(out var warn) is { } kc ? kc.Format() : "off")} (while recording; Ctrl+Shift+K, F8, None = off){(warn.Length > 0 ? "\n  WARNING: " + warn : "")}\n";
     }
 

@@ -34,6 +34,10 @@ sealed class SettingsWindow : Window
     readonly CheckBox _review = new() { Content = "After Stop, show the checkpoints so you can rename them", Margin = new Thickness(0, 6, 0, 0), ToolTip = "Opens the checkpoints window when a recording with checkpoints stops. RETRACECHECKPOINTS opens it any time." };
     readonly CheckBox _docx = new() { Content = "Also write Word (.docx)", Margin = new Thickness(0, 6, 0, 0), ToolTip = "steps.docx next to steps.md, made when a recording is stopped." };
     readonly CheckBox _xlsx = new() { Content = "Also write Excel (.xlsx)", Margin = new Thickness(0, 6, 0, 0), ToolTip = "steps.xlsx next to steps.md: one row per step with a PASS / FAIL column." };
+    readonly CheckBox _tdocFront = new() { Content = "Bring the step's windows to the front before each picture", Margin = new Thickness(0, 4, 0, 0), ToolTip = "AutoCAD, the dialog being filled and the palette are put on top (a dialog that is off screen is moved onto it), and Retrace's own replay window stays out of the picture." };
+    readonly CheckBox _tdocAnnotate = new() { Content = "Draw green numbered boxes where the reader gives input", Margin = new Thickness(0, 4, 0, 0), ToolTip = "On the ribbon button, the command line, each dialog field that is filled and the button that closes the dialog. The legend under the picture says what each number is." };
+    readonly TextBox _tdocDelay = new() { Width = 70, Padding = new Thickness(3), Margin = new Thickness(8, 0, 0, 0), ToolTip = "Milliseconds to wait before each picture and between steps, so tool tips are gone and dialogs are drawn. 0 to 10000." };
+    readonly TextBlock _tdocDelayMsg = new() { Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
     readonly ComboBox _tabPos = new() { MinWidth = 320, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(8, 0, 0, 0) };
     readonly List<string> _tabPosValues = new();
     readonly TextBox _key = new() { Width = 180, IsReadOnly = true, IsReadOnlyCaretVisible = false, Padding = new Thickness(3), Margin = new Thickness(8, 0, 0, 0), ToolTip = "Click here, then press the keys. Backspace or Delete turns the shortcut off." };
@@ -93,6 +97,19 @@ sealed class SettingsWindow : Window
         root.Children.Add(_docx);
         _xlsx.IsChecked = current.ExportXlsx;
         root.Children.Add(_xlsx);
+
+        var tdoc = new StackPanel { Margin = new Thickness(6) };
+        _tdocFront.IsChecked = current.TdocBringToFront;
+        tdoc.Children.Add(_tdocFront);
+        _tdocAnnotate.IsChecked = current.TdocAnnotate;
+        tdoc.Children.Add(_tdocAnnotate);
+        var delayRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
+        delayRow.Children.Add(new TextBlock { Text = "Pause before each picture (ms)", VerticalAlignment = VerticalAlignment.Center });
+        _tdocDelay.Text = current.TdocStepDelayMs.ToString();
+        delayRow.Children.Add(_tdocDelay);
+        delayRow.Children.Add(_tdocDelayMsg);
+        tdoc.Children.Add(delayRow);
+        root.Children.Add(new GroupBox { Header = "Training documents (Tdoc)", Margin = new Thickness(0, 12, 0, 0), Content = tdoc });
 
         var posRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
         posRow.Children.Add(new TextBlock { Text = "Ribbon tab position", VerticalAlignment = VerticalAlignment.Center });
@@ -252,11 +269,22 @@ sealed class SettingsWindow : Window
         _docx.IsChecked = false;
         _xlsx.IsChecked = false;
         _tabPos.SelectedIndex = 0;
+        _tdocFront.IsChecked = true;
+        _tdocAnnotate.IsChecked = true;
+        _tdocDelay.Text = new RetraceSettings().TdocStepDelayMs.ToString();
+        _tdocDelayMsg.Text = "";
         SetKey(KeyChord.Default);
     }
 
     void Save()
     {
+        if (!int.TryParse(_tdocDelay.Text.Trim(), out var delay) || delay < 0 || delay > RetraceSettings.MaxTdocStepDelayMs)
+        {
+            _tdocDelayMsg.Text = $"a whole number from 0 to {RetraceSettings.MaxTdocStepDelayMs}";
+            _tdocDelayMsg.Foreground = Brushes.Firebrick;
+            _tdocDelay.Focus();
+            return;
+        }
         var s = Result;
         s.SourceFolder = _rows[0].Box.Text.Trim().Trim('"');
         s.DocsFolder = RetraceSettings.Normalize(_rows[1].Box.Text, s.DefaultDocs);
@@ -277,6 +305,9 @@ sealed class SettingsWindow : Window
         var pos = _tabPos.SelectedIndex >= 0 ? _tabPosValues[_tabPos.SelectedIndex] : RibbonTabPosition.AfterHome;
         s.RibbonTabPosition = pos == RibbonTabPosition.AfterHome ? "" : pos;
         s.CheckpointKey = _keyValue;
+        s.TdocBringToFront = _tdocFront.IsChecked == true;
+        s.TdocAnnotate = _tdocAnnotate.IsChecked == true;
+        s.TdocStepDelayMs = delay;
         Saved = true;
         Close();
     }

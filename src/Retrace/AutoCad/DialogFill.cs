@@ -41,6 +41,14 @@ static class DialogFill
         return ok;
     }
 
+    static void SendNotifyLater(IntPtr ctl, int code)
+    {
+        var parent = GetParent(ctl);
+        if (parent == IntPtr.Zero) return;
+        var w = (IntPtr)((code << 16) | (GetDlgCtrlID(ctl) & 0xFFFF));
+        Task.Run(() => { try { SendNum(parent, WM_COMMAND, w, ctl, SMTO_ABORTIFHUNG, 10000, out _); } catch (Exception ex) { Log.Error("dialog fill (notify)", ex); } });
+    }
+
     /// <summary>WM_COMMAND(code, id) to the control's parent, as the control itself would send it.</summary>
     static void Notify(IntPtr ctl, int code)
     {
@@ -63,7 +71,12 @@ static class DialogFill
             {
                 case "edit":
                     if (WinFormsControls.TrySetText(h, c.After)) return null;
-                    return SendText(h, WM_SETTEXT, 0, c.After, out _) ? null : "the edit box did not answer";
+                    if (!SendText(h, WM_SETTEXT, 0, c.After, out _)) return "the edit box did not answer";
+                    // as when a person tabs on: EN_KILLFOCUS (a DCL edit_box runs its action_tile only on that; WM_SETTEXT has sent EN_CHANGE).
+                    // Sent from a pool thread: DCL ignored it posted, and sent from this (the UI) thread a validator or an action that opens a
+                    // message box would run inside the replay's tick. From another thread the UI thread takes it once the tick has returned.
+                    SendNotifyLater(h, 0x0200);
+                    return null;
                 case "check":
                 {
                     int want = c.After == "on" ? 1 : c.After == "off" ? 0 : -1;
@@ -147,11 +160,18 @@ static class DialogFill
 
     // ---- UI Automation (POOL THREAD ONLY) --------------------------------------------------------------------------------
 
-    internal sealed record UiaOutcome(List<FieldFillResult> Results, bool Clicked, string? Note);
+    internal sealed record UiaOutcome(List<FieldFillResult> Results, bool Clicked, string? Note)
+    {
+        /// <summary>Only with <c>hold</c>: the dialog is filled and verified but not closed. <see cref="Click"/> presses the button, <see cref="Shot"/> says
+        /// where the filled controls and the button are.</summary>
+        public DialogShot? Shot { get; init; }
+        public Action? Click { get; init; }
+    }
 
     /// <summary>Fills a dialog without child windows through UI Automation, verifies by reading it again and, when all went in, invokes OK
-    /// (or Cancel when <paramref name="ok"/> is false and <paramref name="values"/> is empty). Bounded by about 2 s of setting plus one read.</summary>
-    internal static UiaOutcome FillUia(IntPtr dialog, IReadOnlyList<FieldChange> values, bool ok)
+    /// (or Cancel when <paramref name="ok"/> is false and <paramref name="values"/> is empty). Bounded by about 2 s of setting plus one read.
+    /// With <paramref name="hold"/> (a Tdoc run) it stops before the button: the outcome carries the press as <see cref="UiaOutcome.Click"/>.</summary>
+    internal static UiaOutcome FillUia(IntPtr dialog, IReadOnlyList<FieldChange> values, bool ok, bool hold = false)
     {
         var results = values.Select(v => FieldFillResult.Missing(v.Label)).ToList();
         try
@@ -180,8 +200,18 @@ static class DialogFill
             int b = FillMatcher.PickButton(buttons.Select(x => (0, x.Name)).ToList(), ok);
             if (b < 0) return new(results, false, $"could not find the {(ok ? "OK" : "Cancel")} button");
             var el = buttons[b].El;
+            void Press() { try { ((InvokePattern)el.GetCurrentPattern(InvokePattern.Pattern)).Invoke(); } catch (Exception ex) { Log.Error("dialog fill (uia invoke)", ex); } }
+            if (hold)
+            {
+                var filled = new List<DialogBox>();
+                for (int i = 0; i < values.Count; i++)
+                    if (map[i] >= 0 && !FillMatcher.IsNoOp(values[i]) && TdocTargets.Of(scan.Elements[map[i]]) is { } rect)
+                        filled.Add(new DialogBox(IntPtr.Zero, rect, TdocPlan.FieldCallout(values[i])));
+                var close = TdocTargets.Of(el) is { } cr ? new DialogBox(IntPtr.Zero, cr, TdocPlan.CloseCallout(ok, buttons[b].Name)) : null;
+                return new(results, false, null) { Shot = new DialogShot(dialog, filled, close), Click = Press };
+            }
             // Invoke may not return until the dialog is gone: never wait for it
-            _ = Task.Run(() => { try { ((InvokePattern)el.GetCurrentPattern(InvokePattern.Pattern)).Invoke(); } catch (Exception ex) { Log.Error("dialog fill (uia invoke)", ex); } });
+            _ = Task.Run(Press);
             return new(results, true, null);
         }
         catch (Exception ex) { Log.Error("dialog fill (uia)", ex); return new(results, false, ex.Message); }

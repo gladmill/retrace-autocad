@@ -33,6 +33,7 @@ static class RibbonIcons
         "opentest" => ("M5,4 L19,4 L19,8 M5,4 L5,28 L19,28 M9,11 L16,11 M9,16 L16,16 M9,21 L13,21 M20,18 A5,5 0 1 1 19.99,18 Z M24,23 L29,28", false, false),
         "closeall" => ("M8,4 L22,4 L22,22 L8,22 Z M4,8 L4,26 L18,26 M11,9 L19,17 M19,9 L11,17", false, false),
         "map" => ("M4,8 L11,5 L21,9 L28,6 L28,25 L21,28 L11,24 L4,27 Z M11,5 L11,24 M21,9 L21,28", false, false),
+        "tdoc" => ("M7,4 L20,4 L25,9 L25,28 L7,28 Z M20,4 L20,9 L25,9 M11,15 L21,15 M11,20 L21,20 M11,24 L17,24", false, false),
         _ => ("M6,6 L26,6 L26,26 L6,26 Z", false, false),
     };
 

@@ -24,8 +24,9 @@ public sealed class FieldFillResult
     public static FieldFillResult Fail(string label, string message) => new() { Label = label, Status = Failed, Message = message };
 }
 
-/// <summary>How the replay may handle a dialog by itself.</summary>
-public enum AutoMode { None, Ok, Cancel }
+/// <summary>How the replay may handle a dialog by itself. MessageOk: closed with OK and the recorder read no fields (a LISP alert, a message
+/// box): OK is pressed only if the dialog really has no input fields when replayed, else a person fills it.</summary>
+public enum AutoMode { None, Ok, Cancel, MessageOk }
 
 public static class FillMatcher
 {
@@ -40,7 +41,8 @@ public static class FillMatcher
         if (closedWith == "cancel") return AutoMode.Cancel;
         if (!valuesKnown) return AutoMode.None;
         if (changed > 0) return AutoMode.Ok;
-        return closedWith == "ok" && read > 0 ? AutoMode.Ok : AutoMode.None;
+        if (closedWith != "ok") return AutoMode.None;
+        return read > 0 ? AutoMode.Ok : AutoMode.MessageOk;
     }
 
     static bool SameLabel(string a, string b) => string.Equals(DialogFieldsCore.CleanLabel(a), DialogFieldsCore.CleanLabel(b), StringComparison.OrdinalIgnoreCase);

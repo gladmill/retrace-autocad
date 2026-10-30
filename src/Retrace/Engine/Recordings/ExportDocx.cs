@@ -30,12 +30,18 @@ public static class ExportDocx
         main.Document = new Document(body);
         var w = new Writer(doc, main);
         w.All(doc.Ast, body);
-        body.Append(new SectionProperties(
-            new PageSize { Width = 11906, Height = 16838 },
-            new PageMargin { Top = 1134, Right = 1134, Bottom = 1134, Left = 1134, Header = 708, Footer = 708, Gutter = 0 }));
+        body.Append(PageSection());
         main.Document.Save();
         return w.Pictures;
     }
+
+    /// <summary>A4, 2 cm margins (shared with <see cref="TrainingDocx"/>).</summary>
+    internal static SectionProperties PageSection() => new(
+        new PageSize { Width = 11906, Height = 16838 },
+        new PageMargin { Top = 1134, Right = 1134, Bottom = 1134, Left = 1134, Header = 708, Footer = 708, Gutter = 0 });
+
+    /// <summary>A text run content; control characters XML cannot hold (typed text in a recording may have them) are dropped.</summary>
+    internal static Text TextOf(string s) => new(s.Any(c => c < ' ' && c != '\t' && c != '\n' && c != '\r') ? new string(s.Where(c => c >= ' ' || c == '\t' || c == '\n' || c == '\r').ToArray()) : s) { Space = SpaceProcessingModeValues.Preserve };
 
     /// <summary>PNG width and height from the IHDR chunk, or null if the file is not a PNG.</summary>
     public static (int W, int H)? PngSize(string file)
@@ -63,22 +69,26 @@ public static class ExportDocx
         return (Math.Max(1, (long)(cx * k)), Math.Max(1, (long)(cy * k)));
     }
 
-    static void AddStyles(MainDocumentPart main)
+    internal static Style ParaStyle(string id, string name, string? basedOn, string size, bool bold, string? before = null, string? after = null, string? next = "Normal")
+    {
+        var rpr = new StyleRunProperties();
+        if (bold) rpr.Append(new Bold());
+        rpr.Append(new FontSize { Val = size });
+        var st = new Style(new StyleName { Val = name }) { Type = StyleValues.Paragraph, StyleId = id };
+        if (basedOn != null) st.Append(new BasedOn { Val = basedOn });
+        if (next != null) st.Append(new NextParagraphStyle { Val = next });
+        st.Append(new PrimaryStyle());
+        st.Append(new StyleParagraphProperties(new SpacingBetweenLines { Before = before ?? "0", After = after ?? "120" }));
+        st.Append(rpr);
+        return st;
+    }
+
+    /// <summary>Adds the style part: Normal, Heading 1-3, Code, Table Grid; <paramref name="extra"/> styles come after them.</summary>
+    internal static void AddStyles(MainDocumentPart main, params Style[] extra)
     {
         var sp = main.AddNewPart<StyleDefinitionsPart>();
-        Style Para(string id, string name, string? basedOn, string size, bool bold, string? before = null, string? after = null, string? next = "Normal")
-        {
-            var rpr = new StyleRunProperties();
-            if (bold) rpr.Append(new Bold());
-            rpr.Append(new FontSize { Val = size });
-            var st = new Style(new StyleName { Val = name }) { Type = StyleValues.Paragraph, StyleId = id };
-            if (basedOn != null) st.Append(new BasedOn { Val = basedOn });
-            if (next != null) st.Append(new NextParagraphStyle { Val = next });
-            st.Append(new PrimaryStyle());
-            st.Append(new StyleParagraphProperties(new SpacingBetweenLines { Before = before ?? "0", After = after ?? "120" }));
-            st.Append(rpr);
-            return st;
-        }
+        Style Para(string id, string name, string? basedOn, string size, bool bold, string? before = null, string? after = null, string? next = "Normal") =>
+            ParaStyle(id, name, basedOn, size, bold, before, after, next);
         var normal = new Style(new StyleName { Val = "Normal" }, new PrimaryStyle(),
             new StyleParagraphProperties(new SpacingBetweenLines { After = "120", Line = "264", LineRule = LineSpacingRuleValues.Auto}),
             new StyleRunProperties(new RunFonts { Ascii = "Calibri", HighAnsi = "Calibri", ComplexScript = "Calibri" }, new FontSize { Val = "22" }))
@@ -108,7 +118,33 @@ public static class ExportDocx
                     new BottomMargin { Width = "0", Type = TableWidthUnitValues.Dxa }, new TableCellRightMargin { Width = 108, Type = TableWidthValues.Dxa })))
         { Type = StyleValues.Table, StyleId = "TableNormal", Default = true };
         sp.Styles = new Styles(normal, h1, h2, h3, code, tableNormal, grid);
+        foreach (var e in extra) sp.Styles.Append(e);
         sp.Styles.Save();
+    }
+
+    /// <summary>An inline picture run: the PNG <paramref name="file"/> (<paramref name="w"/> x <paramref name="h"/> px) embedded in <paramref name="main"/>,
+    /// sized with <see cref="FitEmu"/>. <paramref name="id"/> must be unique in the document.</summary>
+    internal static Run PictureRun(MainDocumentPart main, string file, int w, int h, uint id, string altText)
+    {
+        var (cx, cy) = FitEmu(w, h);
+        var part = main.AddImagePart(ImagePartType.Png);
+        using (var fs = File.OpenRead(file)) part.FeedData(fs);
+        var rid = main.GetIdOfPart(part);
+        var drawing = new Drawing(
+            new DW.Inline(
+                new DW.Extent { Cx = cx, Cy = cy },
+                new DW.EffectExtent { LeftEdge = 0, TopEdge = 0, RightEdge = 0, BottomEdge = 0 },
+                new DW.DocProperties { Id = id, Name = $"Picture {id}", Description = altText },
+                new DW.NonVisualGraphicFrameDrawingProperties(new A.GraphicFrameLocks { NoChangeAspect = true }),
+                new A.Graphic(new A.GraphicData(
+                    new PIC.Picture(
+                        new PIC.NonVisualPictureProperties(new PIC.NonVisualDrawingProperties { Id = 0U, Name = Path.GetFileName(file), Description = altText }, new PIC.NonVisualPictureDrawingProperties()),
+                        new PIC.BlipFill(new A.Blip { Embed = rid }, new A.Stretch(new A.FillRectangle())),
+                        new PIC.ShapeProperties(new A.Transform2D(new A.Offset { X = 0, Y = 0 }, new A.Extents { Cx = cx, Cy = cy }),
+                            new A.PresetGeometry(new A.AdjustValueList()) { Preset = A.ShapeTypeValues.Rectangle })))
+                { Uri = "http://schemas.openxmlformats.org/drawingml/2006/picture" }))
+            { DistanceFromTop = 0U, DistanceFromBottom = 0U, DistanceFromLeft = 0U, DistanceFromRight = 0U });
+        return new Run(drawing);
     }
 
     sealed class Writer(StepsDoc doc, MainDocumentPart main)
@@ -220,7 +256,7 @@ public static class ExportDocx
                 }
         }
 
-        static Text Text(string s) => new(s) { Space = SpaceProcessingModeValues.Preserve };
+        static Text Text(string s) => TextOf(s);
 
         static Run Run(string text, bool bold, bool italic, bool code)
         {
@@ -244,27 +280,8 @@ public static class ExportDocx
             var size = File.Exists(file) ? ExportDocx.PngSize(file) : null;
             if (size == null) return Run($"[picture not found: {url}]", false, true, false);
 
-            var (cx, cy) = FitEmu(size.Value.W, size.Value.H);
-            var part = main.AddImagePart(ImagePartType.Png);
-            using (var fs = File.OpenRead(file)) part.FeedData(fs);
-            var rid = main.GetIdOfPart(part);
-            var id = _drawingId++;
             Pictures++;
-            var drawing = new Drawing(
-                new DW.Inline(
-                    new DW.Extent { Cx = cx, Cy = cy },
-                    new DW.EffectExtent { LeftEdge = 0, TopEdge = 0, RightEdge = 0, BottomEdge = 0 },
-                    new DW.DocProperties { Id = id, Name = $"Picture {id}", Description = altText },
-                    new DW.NonVisualGraphicFrameDrawingProperties(new A.GraphicFrameLocks { NoChangeAspect = true }),
-                    new A.Graphic(new A.GraphicData(
-                        new PIC.Picture(
-                            new PIC.NonVisualPictureProperties(new PIC.NonVisualDrawingProperties { Id = 0U, Name = Path.GetFileName(file), Description = altText }, new PIC.NonVisualPictureDrawingProperties()),
-                            new PIC.BlipFill(new A.Blip { Embed = rid }, new A.Stretch(new A.FillRectangle())),
-                            new PIC.ShapeProperties(new A.Transform2D(new A.Offset { X = 0, Y = 0 }, new A.Extents { Cx = cx, Cy = cy }),
-                                new A.PresetGeometry(new A.AdjustValueList()) { Preset = A.ShapeTypeValues.Rectangle })))
-                    { Uri = "http://schemas.openxmlformats.org/drawingml/2006/picture" }))
-                { DistanceFromTop = 0U, DistanceFromBottom = 0U, DistanceFromLeft = 0U, DistanceFromRight = 0U });
-            return new Run(drawing);
+            return PictureRun(main, file, size.Value.W, size.Value.H, _drawingId++, altText);
         }
 
         DocumentFormat.OpenXml.Wordprocessing.Table TableOf(MdTable t)

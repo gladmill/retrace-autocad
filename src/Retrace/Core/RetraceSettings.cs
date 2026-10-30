@@ -44,6 +44,20 @@ public sealed class RetraceSettings
     /// put back after), so the run can be watched. Off: the palette is driven while it stays hidden. Recording never moves the mouse. On by default.</summary>
     [JsonPropertyName("showDrivenUi")] public bool ShowDrivenUi { get; set; } = true;
 
+    /// <summary>Tdoc run: before every picture, bring the UI of the step to the front (AutoCAD's window, the dialog being filled, the palette), move a
+    /// dialog that is off screen onto it and keep Retrace's own replay window out of the picture. On by default.</summary>
+    [JsonPropertyName("tdocBringToFront")] public bool TdocBringToFront { get; set; } = true;
+
+    /// <summary>Tdoc run: draw green numbered boxes on the pictures where the user gives input (ribbon button, command line, filled dialog fields,
+    /// the button that closes the dialog). On by default.</summary>
+    [JsonPropertyName("tdocAnnotate")] public bool TdocAnnotate { get; set; } = true;
+
+    /// <summary>Tdoc run: pause in milliseconds before each picture and between steps, so the screen has repainted (tool tips gone, dialogs drawn).
+    /// 1500 by default; a value outside 0..10000 is clamped to that range.</summary>
+    [JsonPropertyName("tdocStepDelayMs")] public int TdocStepDelayMs { get => _tdocStepDelayMs; set => _tdocStepDelayMs = Math.Clamp(value, 0, MaxTdocStepDelayMs); }
+    int _tdocStepDelayMs = 1500;
+    public const int MaxTdocStepDelayMs = 10000;
+
     /// <summary>Where the Retrace ribbon tab goes: "" / "afterHome" (right of Home), "first", "last" or "after:&lt;tab id or title&gt;".</summary>
     [JsonPropertyName("ribbonTabPosition")] public string RibbonTabPosition { get; set; } = "";
 

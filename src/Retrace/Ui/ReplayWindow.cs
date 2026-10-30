@@ -76,9 +76,19 @@ sealed class ReplayWindow : Window
     /// <summary>This window's handle (zero before it is shown).</summary>
     public IntPtr Handle => new WindowInteropHelper(this).Handle;
 
+    /// <summary>Put in front of every heading ("Tdoc test 2/5"); empty for none.</summary>
+    public string Prefix { get; set; } = "";
+
+    /// <summary>Hides the window for a picture and shows it again (without taking the focus). A window that was closed stays closed.</summary>
+    public void SetVisible(bool visible)
+    {
+        try { Visibility = visible ? Visibility.Visible : Visibility.Hidden; }
+        catch (Exception ex) { Log.Error("replay window visibility", ex); }
+    }
+
     public void Show(string head, string body, bool nextEnabled)
     {
-        _head.Text = head;
+        _head.Text = Prefix.Length > 0 ? Prefix + ": " + head : head;
         _body.Text = body;
         _next.IsEnabled = nextEnabled;
     }

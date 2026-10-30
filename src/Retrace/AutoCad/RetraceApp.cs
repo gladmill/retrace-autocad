@@ -76,6 +76,8 @@ public sealed class RetraceApp : IExtensionApplication
     [CommandMethod("-RETRACESETTINGS")] public static void SettingsCommandLine() => Run("-RETRACESETTINGS", () => Commands.Instance.Settings(true));
     [CommandMethod("RETRACESTEPS")] public static void OpenSteps() => Run("RETRACESTEPS", Commands.Instance.OpenScript);
     [CommandMethod("RETRACEOPEN")] public static void OpenTestWindow() => Run("RETRACEOPEN", Commands.Instance.OpenTest);
+    [CommandMethod("RETRACETDOC")] public static void TrainingDoc() => Run("RETRACETDOC", Commands.Instance.Tdoc);
+    [CommandMethod("-RETRACETDOC")] public static void TrainingDocCommandLine() => Run("-RETRACETDOC", Commands.Instance.TdocCommandLine);
     [CommandMethod("RETRACEMAP")] public static void MapRibbon() => Run("RETRACEMAP", Commands.Instance.Map);
     [CommandMethod("-RETRACEMAP")] public static void MapRibbonCommandLine() => Run("-RETRACEMAP", Commands.Instance.MapCommandLine);
     [CommandMethod("RETRACEFOLDER")] public static void Folder() => Run("RETRACEFOLDER", Commands.Instance.Folder);

@@ -16,7 +16,7 @@ public class DialogFillTests
     [InlineData(true, 2, 5, "ok", AutoMode.Ok)]
     [InlineData(true, 2, 5, null, AutoMode.Ok)]
     [InlineData(true, 0, 5, "ok", AutoMode.Ok)]        // looked, nothing changed: just OK
-    [InlineData(true, 0, 0, "ok", AutoMode.None)]      // nothing could be read: a person decides
+    [InlineData(true, 0, 0, "ok", AutoMode.MessageOk)] // nothing could be read: OK only if it has no fields when replayed (a message box)
     [InlineData(true, 0, 5, null, AutoMode.None)]      // closing unknown and no values: a person
     [InlineData(false, 0, 0, "ok", AutoMode.None)]     // no dialog_values event
     [InlineData(false, 0, 0, null, AutoMode.None)]

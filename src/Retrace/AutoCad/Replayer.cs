@@ -73,6 +73,9 @@ sealed class Replayer
     DialogAutoFiller? _fill;        // fills the current dialog; null = not tried / not applicable
     bool _fillTried, _fillAnnounced;
     string? _deferred;   // answers recorded after the dialog opened: typed once the person confirmed it (see Plan.InputAroundDialog)
+    // Tdoc run (RETRACETDOC): pictures for the training document; null for every other replay, and then none of the hooks does anything
+    TdocCapture? _tdoc;
+    Action<ReplayResult>? _finished;   // called at the end of Finish, after the result file is written
 
     Replayer(List<Step> steps, ReplayMode mode, Document doc, string sessionPath, bool interactive)
     {
@@ -90,20 +93,33 @@ sealed class Replayer
             finally { _inTick = false; }
         };
         _win.NextClicked += () => _userNext = true;
-        _win.StopClicked += () => Finish(false, false, "stopped by the user");
+        _win.StopClicked += () =>
+        {
+            if (_running && _tdoc != null) _tdoc.StopRequested = true;   // Stop ends a Tdoc run's whole queue (a normal end closes the window too: only while running)
+            Finish(false, false, "stopped by the user");
+        };
     }
 
     /// <summary>Stops a running replay (timer, event handlers, panel). Used when the plugin is shut down.</summary>
-    public static void StopCurrent() { var c = Current; if (c == null) return; c._alert = false; c.Finish(false, false, "stopped (core shutdown)"); }
+    public static void StopCurrent()
+    {
+        var c = Current; if (c == null) return;
+        c._alert = false;
+        if (c._tdoc != null) c._tdoc.StopRequested = true;
+        c.Finish(false, false, "stopped (core shutdown)");
+    }
 
     /// <summary>Starts a replay in the active drawing (call from the RETRACEREPLAY command). <paramref name="initial"/> is the session's
     /// initial drawing state (null for older sessions).</summary>
-    public static bool Start(List<Step> steps, ReplayMode mode, string sessionPath, DrawingDigest? initial, out string message, bool alert = false, bool interactive = false)
+    /// <param name="tdoc">a Tdoc run's pictures for this test (RETRACETDOC); null for a plain replay</param>
+    /// <param name="finished">called once at the end of the run with its result (a Tdoc run starts the next test from it)</param>
+    public static bool Start(List<Step> steps, ReplayMode mode, string sessionPath, DrawingDigest? initial, out string message, bool alert = false, bool interactive = false,
+        TdocCapture? tdoc = null, Action<ReplayResult>? finished = null)
     {
         if (Current != null) { message = "A replay is already running (close its window or press Stop)."; return false; }
         var doc = AcApp.DocumentManager.MdiActiveDocument;
         if (doc == null) { message = "No active drawing."; return false; }
-        var r = new Replayer(steps, mode, doc, sessionPath, interactive) { _alert = alert };
+        var r = new Replayer(steps, mode, doc, sessionPath, interactive) { _alert = alert, _tdoc = tdoc, _finished = finished };
         Current = r;
         r.Begin(initial);
         message = $"Replaying {steps.Count} steps ({mode}).";
@@ -125,6 +141,12 @@ sealed class Replayer
         AcApp.LeaveModal += OnLeaveModal;
         Hook(_doc);
         AcApp.DocumentManager.DocumentToBeDestroyed += OnDocGone;
+        if (_tdoc != null)
+        {
+            _win.Prefix = _tdoc.Label;
+            _tdoc.Begin(_win.SetVisible, AcApp.MainWindow.Handle);
+            TdocRun.Started(_tdoc);
+        }
         _win.Show();
         _win.Show("Retrace replay", "Starting...", false);
         _timer.Start();
@@ -285,6 +307,7 @@ sealed class Replayer
             Say($"\n{_result.Summary()}\n" + (written != null ? $"Result: {written}\n" : "Result file could not be written (see retrace.log).\n"));
             if (_alert) ShowAlert(written);
         });
+        if (_finished != null) Log.Safe("Replay finished callback", () => _finished(_result));
     }
 
     /// <summary>RETRACERUN only (never for RETRACEREPLAY, which the unattended runner uses): a short verdict box on the UI thread.</summary>
@@ -403,6 +426,7 @@ sealed class Replayer
             Say($"\n[replay {_i + 1}/{_steps.Count}] {s.Title}\n");
         }
         if (_mode == ReplayMode.Step && !_userNext) return;
+        if (_tdoc != null && !_tdoc.BeforeStep(_i, s, DateTime.Now)) return;   // Tdoc: the picture of the step is taken first
 
         if (s.Kind == "palette") { TickPalette(s); return; }
 
@@ -415,6 +439,7 @@ sealed class Replayer
         }
 
         if (!Execute(s)) return;
+        _tdoc?.AfterStep(_i, s, _result);   // Tdoc: a checkpoint's result goes into the manifest
         _result.Steps.Add(new StepResult { Index = _i + 1, Kind = s.Kind, Title = s.Title });
         _i++;
         _shown = false;
@@ -455,6 +480,7 @@ sealed class Replayer
                         return;
                     }
                     Log.Info($"autofill gave up on \"{step.DialogTitle}\": {_fill.Note ?? string.Join("; ", _fill.Results.Where(r => r.Status != FieldFillResult.Applied).Select(r => r.Label + " " + r.Status + (r.Message != null ? " (" + r.Message + ")" : "")))}");
+                    _tdoc?.EnsureShown();
                 }
                 var msg = DialogMessage(step);
                 if (!_announced) { _announced = true; Say("\n" + msg + "\n"); }
@@ -485,11 +511,17 @@ sealed class Replayer
             _doc.SendStringToExecute("\u0003\u0003", true, false, true);
             _notBefore = DateTime.Now.AddMilliseconds(400);
         }
-        if (_modalDepth > 0 || !Settled()) return;   // Done: wait until the command that owned the dialog has finished (a cancel arrives as an event first)
+        // Done, and the next recorded step is a dialog that is open already: the command showed it right after this one closed (a LISP alert
+        // after its DCL dialog). This step is done; the next one starts with its dialog open, so it is filled or waited for as its own step.
+        // Waiting here for the command to finish would wait for that dialog, which no step handles.
+        // Only when the open dialog is the one recorded next (its title): an unexpected warning keeps the old wait.
+        bool chained = d.Phase == DialogWaitPhase.Done && _modalDepth > 0 && _deferred == null && _i + 1 < _steps.Count && _steps[_i + 1].Kind == "dialog"
+            && Native.ForegroundOfThisProcess() is var open && open != IntPtr.Zero && FillMatcher.TitleMatches(_steps[_i + 1].DialogTitle, Native.TitleOf(open));
+        if (!chained && (_modalDepth > 0 || !Settled())) return;   // Done: wait until the command that owned the dialog has finished (a cancel arrives as an event first)
         var failed = d.Phase == DialogWaitPhase.Failed;
         var auto = !failed && _fill?.State == DialogAutoFiller.Phase.Clicked;   // the replay filled it and closed it: nobody waited
         var first = true;
-        while (_i < _steps.Count && _steps[_i].Kind == "dialog")
+        while (_i < _steps.Count && _steps[_i].Kind == "dialog" && (first || !chained))
         {
             _result.Steps.Add(new StepResult
             {
@@ -504,7 +536,7 @@ sealed class Replayer
         d.Reset(); _doneAt = DateTime.MinValue;
         _fill = null; _fillTried = false; _fillAnnounced = false;
         _announced = false; _cancelSent = false; _shown = false;
-        _notBefore = DateTime.Now.AddMilliseconds(400);
+        _notBefore = DateTime.Now.AddMilliseconds(chained ? 0 : 400);
     }
 
     /// <summary>"A dialog opens: X. Fill it in and confirm (see s.md, step N), then close it with OK." Step N is read from the script the engine wrote.</summary>
@@ -523,7 +555,12 @@ sealed class Replayer
         if (mode == AutoMode.None) return null;
         var main = IntPtr.Zero;
         try { main = Autodesk.AutoCAD.ApplicationServices.Application.MainWindow.Handle; } catch (Exception ex) { Log.Error("autofill main window", ex); }
-        return new DialogAutoFiller(mode, step.Values, step.DialogTitle, step.ValuesSource, main);
+        var tdoc = _tdoc;
+        var at = _i;
+        return new DialogAutoFiller(mode, step.Values, step.DialogTitle, step.ValuesSource, main)
+        {
+            BeforeClose = tdoc == null ? null : shot => tdoc.DialogReady(at, shot, DateTime.Now),   // Tdoc: the picture of the filled dialog comes before OK
+        };
     }
 
     void ScriptPosition(out string? file, out int? n)
@@ -768,7 +805,7 @@ sealed class Replayer
         catch (Exception ex) { Log.Error("TryClick", ex); return false; }
     }
 
-    static void ActivateTab(string? title)
+    internal static void ActivateTab(string? title)
     {
         if (string.IsNullOrEmpty(title)) return;
         try
