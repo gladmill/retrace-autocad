@@ -119,6 +119,32 @@ public static class EngineRunner
         Exporter.Export(steps, docx, xlsx, r, replace);
     });
 
+    /// <summary>The Tdoc training document: the Word file for a `tdoc.json` (<see cref="TrainingManifest"/>). Pictures are looked up beside the manifest;
+    /// a missing one becomes a note in the document and a warning here. Written through a temp file; when <paramref name="docxPath"/> is open in
+    /// Word, `... (new).docx` is written instead (warning). <see cref="EngineResult.Docx"/> is the file written.</summary>
+    public static EngineResult WriteTrainingDoc(string manifestPath, string docxPath) => Guard(r =>
+    {
+        var manifest = TrainingManifest.Read(manifestPath);
+        if (manifest == null) { r.Fail($"cannot read the training manifest: {manifestPath}"); return; }
+        var folder = Path.GetDirectoryName(Path.GetFullPath(manifestPath)) ?? "";
+        var target = Path.GetFullPath(docxPath);
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(target) ?? "");
+            (int Embedded, int Missing) counts = default;
+            var path = Exporter.WriteAtomic(target, t => counts = TrainingDocx.Build(manifest, folder, t), out var fell);
+            if (fell) r.Warn($"{Path.GetFileName(target)} is open in Word; wrote {Path.GetFileName(path)} instead (close the old one to get the usual name)");
+            if (counts.Missing > 0) r.Warn($"{counts.Missing} picture file(s) not found beside {Path.GetFileName(manifestPath)}; the document has a note in their place");
+            r.Docx = path;
+            r.Info($"docx:     {path} ({manifest.Tests.Count} test(s), {counts.Embedded} picture(s))");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException or NotSupportedException
+                                       or DocumentFormat.OpenXml.Packaging.OpenXmlPackageException)
+        {
+            r.Fail($"cannot write {Path.GetFileName(target)}: {ex.Message}");
+        }
+    });
+
     /// <summary>The recordings report: <c>&lt;output&gt;/recordings</c> (index.md with the most used buttons, hot sequences and ribbon coverage,
     /// and one page per test) and <c>&lt;output&gt;/data/recordings.json</c>. <paramref name="sourceMap"/> enables the coverage section.</summary>
     public static EngineResult AnalyzeRecordings(IReadOnlyList<string> inputs, string output, string? sourceMap = null, int ngram = 4, int top = 25) => Guard(r =>

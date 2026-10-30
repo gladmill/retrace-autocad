@@ -101,6 +101,24 @@ sealed class ShotService
         catch (Exception ex) { Log.Error("capture rect", ex); return null; }
     }
 
+    /// <summary>A picture of a window's visible frame and where its top-left corner is on the screen; null if the window is gone, hidden,
+    /// minimized or empty, or the capture fails. UI thread.</summary>
+    /// <param name="workArea">only the part on the monitor's work area: a maximized main window's frame reaches under the task bar</param>
+    public static (Picture Pic, int Left, int Top)? CaptureWindow(IntPtr hwnd, bool workArea = false)
+    {
+        try
+        {
+            if (hwnd == IntPtr.Zero || Win.IsIconic(hwnd) || !Win.IsWindowVisible(hwnd)) return null;
+            var b = Win.Bounds(hwnd);
+            if (workArea && Win.WorkArea(hwnd) is { } wa)
+                b = new Win.RECT { Left = Math.Max(b.Left, wa.Left), Top = Math.Max(b.Top, wa.Top), Right = Math.Min(b.Right, wa.Right), Bottom = Math.Min(b.Bottom, wa.Bottom) };
+            return Capture(b) is { } p ? (p, b.Left, b.Top) : null;
+        }
+        catch (Exception ex) { Log.Error("capture window", ex); return null; }
+    }
+
+    static Picture? Capture(Win.RECT r) => r.Width <= 0 || r.Height <= 0 ? null : new Picture(Win.CopyScreen(r), r.Width, r.Height);
+
     /// <summary>Writes a picture taken earlier as the `shot` of event <paramref name="n"/> (what: "palette").</summary>
     public void Write(int n, string kind, Picture p, string what)
     {
@@ -174,6 +192,18 @@ sealed class ShotService
         [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr o);
         [DllImport("gdi32.dll")] static extern IntPtr CreateDIBSection(IntPtr dc, ref BITMAPINFOHEADER bmi, uint usage, out IntPtr bits, IntPtr section, uint offset);
         [DllImport("gdi32.dll")] static extern bool BitBlt(IntPtr dst, int x, int y, int w, int h, IntPtr src, int sx, int sy, uint rop);
+
+        [StructLayout(LayoutKind.Sequential)] struct MONITORINFO { public int cbSize; public RECT rcMonitor, rcWork; public uint dwFlags; }
+        [DllImport("user32.dll")] static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+        [DllImport("user32.dll")] static extern bool GetMonitorInfo(IntPtr monitor, ref MONITORINFO info);
+
+        /// <summary>The work area (the screen without the task bar) of the monitor the window is mostly on; null if it cannot be read.</summary>
+        public static RECT? WorkArea(IntPtr hwnd)
+        {
+            var m = MonitorFromWindow(hwnd, 2);   // MONITOR_DEFAULTTONEAREST
+            var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+            return m != IntPtr.Zero && GetMonitorInfo(m, ref mi) && mi.rcWork.Width > 0 ? mi.rcWork : null;
+        }
 
         const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
         const uint SRCCOPY = 0x00CC0020;   // no CAPTUREBLT: it makes the cursor flicker on every capture

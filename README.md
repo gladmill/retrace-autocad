@@ -7,7 +7,7 @@ tells you pass or fail. It can also read your customization folder (`.cuix`, C#,
 write Markdown docs: ribbons, commands, dialogs, a source map, and an editable user guide with how-tos built from your recordings.
 And it maps each ribbon button to the LISP, C++, C# or VB.NET code it runs.
 
-Status: pre-1.0 (0.2.2). AutoCAD 2026 (R25.1), Windows x64. Written against the `AutoCAD.NET` 25.1.0 packages.
+Status: pre-1.0 (0.2.3). AutoCAD 2026 (R25.1), Windows x64. Written against the `AutoCAD.NET` 25.1.0 packages.
 Verified in AutoCAD only in part: see [Limitations](#limitations).
 
 ## Install
@@ -71,8 +71,9 @@ The guide palette needs the Microsoft Edge WebView2 Runtime (part of Windows 11 
 4. **Run the test.** Run test (`RETRACERUN`) asks for a `recording.jsonl`, opens a new drawing, replays the test and shows a verdict.
    Dialogs are filled in from the recorded values when possible, otherwise Retrace waits for you. Palette steps likewise: Retrace sets the values
    and presses the button in WinForms and WPF palettes, waiting for results of async calls; when it cannot, you do the step and click Next.
-5. **Build the docs.** Build docs (`RETRACEDOCS`) asks once for the folder with your code, CUIX and DCL files (setting `sourceFolder`), then runs in the background.
-6. **Read the guide.** Guide (`RETRACEGUIDE`) opens a palette with the pages. Edit a page and write outside the generated blocks; your text is kept on every rebuild.
+5. **Make a training document.** Training doc (`RETRACETDOC`): tick tests, give a title, Start. See [Training documents (Tdoc)](#training-documents-tdoc).
+6. **Build the docs.** Build docs (`RETRACEDOCS`) asks once for the folder with your code, CUIX and DCL files (setting `sourceFolder`), then runs in the background.
+7. **Read the guide.** Guide (`RETRACEGUIDE`) opens a palette with the pages. Edit a page and write outside the generated blocks; your text is kept on every rebuild.
 
 To practise, load `samples/Retrace.Samples` (see its README): a small plugin with `DRAWLINE`, `DRAWCIRCLE`, `DRAWRECT`, `DRAWLABEL` and `DRAWGRID`.
 
@@ -90,6 +91,8 @@ All are on the Retrace ribbon tab (panels Record, Test, Guide, Open, Tools) exce
 | `RETRACESTATUS` | Recording state, version, root, settings, docs and tests folders, Word / Excel export state. |
 | `RETRACESTEPS` | Open the steps of the newest test. |
 | `RETRACERUN` | Pick a recording, open a new drawing, replay it, show the verdict. Waits for a person at dialogs it cannot fill. |
+| `RETRACETDOC` | The Training doc window: tick the tests, order them, give a title, Start. Replays them one after another and writes a Word training document with pictures (see [Training documents (Tdoc)](#training-documents-tdoc)). While a run is active it says so; between two tests it ends the run. |
+| `-RETRACETDOC` | The same on the command line: asks for the title, then the tests (names or paths separated by `;`, `last`, or `@file` with one per line). Starts nothing if a name finds no test. Not on the ribbon. |
 | `RETRACESTEP` | Pick a recording and replay it one step at a time in the current drawing. |
 | `RETRACEREPLAY` | Pick a recording (Enter = file dialog, `last` = newest) and a mode, Auto or Step. Auto stops with `INCOMPLETE` at a dialog. Not on the ribbon. |
 | `RETRACESCR` | Write a `.scr` script next to the recording for its plain-command parts. Not on the ribbon. |
@@ -105,6 +108,17 @@ All are on the Retrace ribbon tab (panels Record, Test, Guide, Open, Tools) exce
 | `RETRACECLOSEALL` | Close every open drawing without saving (asks once). Handy between test runs. |
 
 Set the environment variable `RETRACE_AUTOSTART=1` to start recording (test name `auto`) at the first idle moment after AutoCAD starts.
+
+## Training documents (Tdoc)
+
+Tdoc replays a list of recorded tests and writes a Word document that teaches the steps: for each test a chapter, for each step the sentences to follow and a picture of AutoCAD, and for each checkpoint a picture of the drawing with its result.
+Details, file layout and limits: [docs/tdoc.md](docs/tdoc.md).
+
+1. Ribbon Retrace > Test > Training doc (`RETRACETDOC`). Tick the tests (newest first; Move up / Move down set the order), give the document a title, press Start. Or use `-RETRACETDOC` on the command line.
+2. Retrace runs each test the way Run test does (a new drawing, dialogs filled in from the recording) and takes the pictures. Leave AutoCAD alone until it is done: it brings windows to the front, and a click would end up in a picture. Stop in the replay window ends the whole run; the document is still written, with the tests done so far, and its title ends in "(incomplete)".
+3. The document is `C:\temp\retrace\docs\training\<stamp>_<title>.docx`; beside it a folder of the same name holds `tdoc.json` and `pictures\`.
+
+Three settings (Settings window, group "Training documents (Tdoc)"; `-RETRACESETTINGS` asks for them last): `tdocBringToFront`, `tdocAnnotate`, `tdocStepDelayMs` (see Settings).
 
 ## Ribbon map
 
@@ -145,6 +159,7 @@ C:\temp\retrace\
       results\                        one file per run, 2026-10-10_03-15-02_PASS.json, and latest.json
   captures\                           real dialog pictures, <Stem>__<Name>.png + .json
   docs\                               the generated docs (see below)
+    training\                         Tdoc output: <stamp>_<title>.docx, and a folder <stamp>_<title>\ with tdoc.json and pictures\
   cache\webview\                      WebView2 data of the guide palette
   cache\native\<version>\             the extracted native WebView2 loader
 ```
@@ -164,9 +179,12 @@ Recordings hold drawing names, typed text, coordinates and object handles. Treat
 | `editorPath` | empty | Program for "Open in editor". Empty = VS Code if found, else `notepad.exe`. |
 | `screenshots` | `true` | Take screenshots while recording. |
 | `dialogValues` | `true` | Record which fields you change in dialogs and in palette sets, and the buttons you click in palette sets. |
-| `autoFillDialogs` | `true` | `RETRACERUN` fills dialogs from the recorded values and closes them. |
+| `autoFillDialogs` | `true` | `RETRACERUN` fills dialogs from the recorded values and closes them. An edit box gets the notifications a person's typing gives (so a DCL `action_tile` runs); a message box closed with OK is pressed when it has no input fields; a dialog its command shows right after the previous one closed (a LISP alert after a DCL dialog) is handled as its own step. |
 | `reviewCheckpoints` | `true` | Open the Checkpoints window after `RETRACESTOP` when the test has checkpoints. |
 | `showDrivenUi` | `true` | Run test opens a rolled-up or auto-hidden palette before it drives it, by resting the mouse on it as a person would (and putting the mouse back after), so the run can be watched. Off: the palette is filled while it stays hidden. Recording never moves the mouse. |
+| `tdocBringToFront` | `true` | Tdoc run (training document): before every picture, bring the UI of the step to the front (AutoCAD's window, the dialog being filled, the palette), move a dialog that is off screen onto it and keep Retrace's own replay window out of the picture. |
+| `tdocAnnotate` | `true` | Tdoc run: draw green numbered boxes on the pictures where the reader gives input (the ribbon button, the command line for typed answers, each dialog field that is filled, the button that closes the dialog, palette controls). The legend under the picture says what each number is. |
+| `tdocStepDelayMs` | `1500` | Tdoc run: milliseconds to wait before each picture and between steps, so the screen has repainted (tool tips gone, dialogs drawn). 0 to 10000; a value outside that range is clamped when the settings are read. |
 | `exportDocx` | `false` | Also write `steps.docx` when a recording stops. |
 | `exportXlsx` | `false` | Also write `steps.xlsx` when a recording stops. |
 | `checkpointKey` | `Ctrl+Shift+K` | Shortcut for a checkpoint while recording, e.g. `Ctrl+Shift+J` or `F13`. Ctrl and Shift plus A-Z, 0-9 or F1-F24; a letter or digit needs Ctrl. No Alt (letting it go opens the ribbon's key tips). While recording Retrace takes the key from AutoCAD, so pick one AutoCAD does not use: F1-F12, `Ctrl+1` (Properties) and `Ctrl+C`/`V`/`Z`/`S` are AutoCAD's. Pressed during a command, the checkpoint is taken when that command ends. `None` or empty = off. An invalid value falls back to the default and is logged. While a dialog is open the key goes to the dialog. Set it in Settings (click the box, press the keys) or with `-RETRACESETTINGS`. |
@@ -207,7 +225,7 @@ Recordings hold drawing names, typed text, coordinates and object handles. Treat
   are asked through WinForms itself. Other owner-drawn controls, list views, trees and password fields are not read. A dialog that opens a nested dialog still needs a person.
 - AutoCAD's security prompt is never answered by a replay: the run stops with `INCOMPLETE` and says what to do. A recording does not replay a security prompt either.
 - Docs scanners are heuristic: they find less rather than something wrong, and report what they missed under Warnings in `docs\README.md`. Wireframes are drawn from the source, not captured from AutoCAD.
-- Not tested in AutoCAD yet: a full `RETRACERUN` (only up to its file picker), the Open test window, `RETRACECAPTUREDCL`, and plain AutoCAD for anything but the ribbon map (AutoCAD Electrical was used).
+- Not tested in AutoCAD yet: the Open test window, the Training doc window (`RETRACETDOC` was run from `-RETRACETDOC`), `RETRACECAPTUREDCL`, and Tdoc with palettes, WPF dialogs, several monitors or display scaling above 100 %. `RETRACERUN` and Tdoc ran in plain AutoCAD 2026 (October 2026: a LISP command with a DCL dialog and its alert, a ribbon button, typed prompts, checkpoints).
 
 ## Build and test
 

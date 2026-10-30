@@ -314,6 +314,21 @@ If anything fails the person gets the pause message with what is left (`Filled 2
 The command line shows `CHECK n PASS` / `CHECK n FAIL: <differences>` per checkpoint and ends with one line,
 `RETRACEREPLAY: PASS 3/3 checkpoints (session x)`.
 
+## Training manifest (`tdoc.json`)
+
+Not a recording: what a Tdoc run (`RETRACETDOC`, see [tdoc.md](tdoc.md)) produced. It sits in `<docs folder>\training\<yyyy-MM-dd_HH-mm-ss>_<title>\` with `pictures\`, and `Engine/Recordings/TrainingDocx.cs` turns it into the Word file beside that folder.
+One JSON object, camelCase, UTF-8, written through a temp file. Readers tolerate missing and unknown fields.
+
+| Field | |
+|---|---|
+| `title`, `createdUtc`, `retraceVersion` | The title typed for the run (ends in "(incomplete)" when it was stopped), ISO 8601 UTC, the plugin version. |
+| `tests[]` | One per replayed test: `name`, `folder` (the test folder), `verdict` (`PASS`, `FAIL`, `INCOMPLETE`, `ERROR`) and `message` of its replay result, and `steps[]`. |
+| `steps[]` | `number` (1-based in the replay plan; ribbon tab clicks are not in it), `kind` (`ribbon`, `command`, `lisp`, `dialog`, `palette`, `mark`, `open`, `tab`, `other`), `title`, `instructions[]` (sentences for the reader), `pictures[]`, and for `mark` a `checkpoint`. |
+| `pictures[]` | `file` (relative to the manifest, `/` separators: `pictures/t1-s3-1.png`), `caption`, `callouts[]`: `number` and `text` of each numbered box on the picture. |
+| `checkpoint` | `index`, `note`, `pass` (`true`, `false`, or left out when not verified) and `differences[]`. |
+
+A picture that failed to write is still listed; the Word file shows a note in its place.
+
 ## Example
 
 ```jsonl

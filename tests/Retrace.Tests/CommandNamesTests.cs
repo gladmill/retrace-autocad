@@ -11,7 +11,7 @@ public class CommandNamesTests
     static readonly string[] Expected =
     {
         "-RETRACEMAP", "-RETRACEMARK", "-RETRACESETTINGS", "RETRACECAPTUREDCL", "RETRACECAPTURERIBBON", "RETRACECHECKPOINTS", "RETRACECLOSEALL", "RETRACEDOCS", "RETRACEFOLDER", "RETRACEGUIDE", "RETRACEMAP", "RETRACEMARK", "RETRACEOPEN",
-        "RETRACERECORD", "RETRACEREPLAY", "RETRACERUN", "RETRACESCR", "RETRACESETTINGS", "RETRACESTATUS", "RETRACESTEP", "RETRACESTEPS", "RETRACESTOP",
+        "RETRACERECORD", "RETRACEREPLAY", "RETRACERUN", "RETRACESCR", "RETRACESETTINGS", "RETRACESTATUS", "RETRACESTEP", "RETRACESTEPS", "RETRACESTOP", "RETRACETDOC", "-RETRACETDOC",
     };
 
     static string Source(string file) => File.ReadAllText(Path.Combine(LayerRulesTests.SourceRoot(), "AutoCad", file));
@@ -39,7 +39,7 @@ public class CommandNamesTests
     {
         var tab = Source("RetraceTab.cs");
         var buttons = Regex.Matches(tab, @"\bButton\(""([^""]+)"", ""([^""]+)"", ""[a-z]+"", ""\^C\^C_([A-Z]+)( [A-Za-z]+)? "", ""[^""]*""\)").ToList();
-        Assert.Equal(18, buttons.Count);
+        Assert.Equal(19, buttons.Count);
         Assert.All(buttons, b =>
         {
             Assert.Contains(b.Groups[3].Value, Expected);               // the macro runs a registered command
@@ -49,7 +49,7 @@ public class CommandNamesTests
         Assert.Equal(buttons.Count, buttons.Select(b => b.Groups[1].Value).Distinct().Count());   // ids are unique
         var labels = buttons.Select(b => b.Groups[2].Value).ToList();
         Assert.Equal(
-            new[] { "Record", "Checkpoint", "Stop", "Name checkpoints", "Steps", "Status", "Run test", "Step", "Guide", "Build docs", "Map", "Settings", "Open test", "Tests", "Captures", "Docs", "Capture DCL dialogs", "Close all drawings" },
+            new[] { "Record", "Checkpoint", "Stop", "Name checkpoints", "Steps", "Status", "Run test", "Training doc", "Step", "Guide", "Build docs", "Map", "Settings", "Open test", "Tests", "Captures", "Docs", "Capture DCL dialogs", "Close all drawings" },
             labels);
         // the folder buttons pass the keyword the command asks for
         Assert.Contains(buttons, b => b.Groups[3].Value == "RETRACEFOLDER" && b.Groups[4].Value == " Tests");
@@ -65,10 +65,10 @@ public class CommandNamesTests
         Assert.Equal(OwnCommands.TabId, own.Id);
         Assert.Equal("Retrace", own.Title);
         Assert.Equal(new[] { "Record", "Test", "Guide", "Open", "Tools" }, own.Panels.Select(p => p.Title));
-        Assert.Equal(new[] { 6, 2, 4, 4, 2 }, own.Panels.Select(p => Linker.Walk(own).Count(x => x.panel == p && x.item.Kind == RibbonItemKind.Button)));
+        Assert.Equal(new[] { 6, 3, 4, 4, 2 }, own.Panels.Select(p => Linker.Walk(own).Count(x => x.panel == p && x.item.Kind == RibbonItemKind.Button)));
         var buttons = Buttons(own);
         Assert.Equal(
-            new[] { "Record", "Checkpoint", "Stop", "Name checkpoints", "Steps", "Status", "Run test", "Step", "Guide", "Build docs", "Map", "Settings", "Open test", "Tests", "Captures", "Docs", "Capture DCL dialogs", "Close all drawings" },
+            new[] { "Record", "Checkpoint", "Stop", "Name checkpoints", "Steps", "Status", "Run test", "Training doc", "Step", "Guide", "Build docs", "Map", "Settings", "Open test", "Tests", "Captures", "Docs", "Capture DCL dialogs", "Close all drawings" },
             buttons.Select(b => b.Text));
         Assert.All(buttons, b => { Assert.False(string.IsNullOrWhiteSpace(b.Macro)); Assert.Equal(Retrace.Engine.Scan.Cuix.CuixReader.ParseCommand(b.Macro), b.Command); });   // the handler sends the macro
 

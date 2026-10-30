@@ -33,16 +33,20 @@ src/Retrace/
     Map/           the ribbon map: RibbonMapper (every ribbon item -> the code it runs), RibbonMapWriter (md / csv / json), MacroText (what a macro runs),
                    LiveRibbon (plain copy of the live ribbon), RibbonMapModel (options, rows, result)
     Emit/          markdown, SVG wireframes, sourcemap.json, guide, manual test plans; DocsLayout.cs names every path in the docs folder
-    Recordings/    recording.jsonl reader, steps.md / docx / xlsx writers, picture naming, recordings analysis and pages
+    Recordings/    recording.jsonl reader, steps.md / docx / xlsx writers, picture naming, recordings analysis and pages;
+                   TrainingManifest (tdoc.json) and TrainingDocx (the Tdoc Word file)
     Util/          CodeText (comments, braces, arguments), Rx (regex with a timeout), font metrics, SVG helpers
     EngineRunner.cs  the entry points
   Core/          plugin logic with no AutoCAD, WPF or WinForms: Paths, RetraceSettings, SessionWriter, Plan,
                  ReplayResult, DrawingDigest, ShotPolicy, DialogWait, DialogFillCore, SecurityPrompt, RibbonTabPosition, GuideModel, EngineJobs,
-                 MapFolders (every folder given to the Map window, newest first), EditorLaunch (the arguments that open a file at a line in the editor)
+                 MapFolders (every folder given to the Map window, newest first), EditorLaunch (the arguments that open a file at a line in the editor),
+                 Tdoc: TdocPlan (instruction sentences and numbered legend lines per step), TdocNaming (folder, docx and picture names), TdocTestList (the -RETRACETDOC list),
+                 TdocGeometry (move a dialog onto the screen), Annotate (green numbered boxes on BGRA pixels)
   AutoCad/       everything that touches AutoCAD: RetraceApp (IExtensionApplication and every [CommandMethod]), Commands (partial: Commands.Map is RETRACEMAP),
                  RetraceTab (ribbon), Recorder, Replayer, DialogWatch / DialogFill (dialog values), ShotService, DrawingState, DclCapture, Native / Win32, Log,
-                 LiveRibbonReader (copies the live ribbon into the engine's LiveTab records)
-  Ui/            WPF windows and the guide palette: SettingsWindow, ReplayWindow, OpenTestWindow, MapWindow (with MapRowView, its display text), GuidePalette, GuideControl, MarkdownPage, ScriptViewer, WebPreview
+                 LiveRibbonReader (copies the live ribbon into the engine's LiveTab records),
+                 Tdoc: TdocRun (the queue of tests; one at a time through RETRACERUN), TdocCapture (the pictures of one test, called by the Replayer), TdocTargets (where a box goes), Commands.Tdoc
+  Ui/            WPF windows and the guide palette: SettingsWindow, ReplayWindow, OpenTestWindow, TdocWindow, MapWindow (with MapRowView, its display text), GuidePalette, GuideControl, MarkdownPage, ScriptViewer, WebPreview
   Embedded/      Dependencies.cs
 ```
 
@@ -64,6 +68,7 @@ Namespaces follow folders (`Retrace.Engine.Scan`, `Retrace.Core`, `Retrace.AutoC
 | `WriteSteps(recording, docx, xlsx, sourceMap)` | `recording.jsonl` -> `steps.md` beside it, pictures renamed after the steps, optional Word and Excel. |
 | `Export(path, docx, xlsx)` | Word / Excel from an existing `steps.md` (a recording or test folder is accepted). |
 | `AnalyzeRecordings(inputs, output, sourceMap)` | The recordings report alone: `recordings/` and `data/recordings.json`. |
+| `WriteTrainingDoc(manifestPath, docxPath)` | The Tdoc Word file from a `tdoc.json` (pictures beside it). `EngineResult.Docx` is the file written. See [docs/tdoc.md](docs/tdoc.md). |
 | `MapRibbon(RibbonMapOptions, CancellationToken)` | Read the chosen folders (CUIX / CUI files, ribbon code, LISP, C++, C#, VB.NET) and map every ribbon item to the code it runs, also for the live ribbon the plugin copied (`LiveRibbonReader`). `EngineResult.RibbonMap` holds the rows; with `Output`, `ribbon-map.md`, `.csv` and `.json` are written there. Format: [docs/ribbon-map.md](docs/ribbon-map.md). |
 
 `Retrace.Core.EngineJobs` runs engine jobs one at a time, first in first out (a job started while another runs waits; a second docs build, or a second ribbon map, is refused while one runs or waits), on a thread-pool thread so AutoCAD stays usable. `Cancel()` cancels the running job and drops the waiting ones (their `onDone` gets a cancelled result); `Cancel("map")` does that for the jobs of one kind only (the Map window's Cancel). Every accepted job gets `onDone` exactly once, on that thread. Callers marshal to the UI thread themselves (`Dispatcher.BeginInvoke`); `Commands.StartMap` does it for the Map window and `-RETRACEMAP`. `EngineJobs.DocsOptions(settings)` builds the options from the settings.
@@ -112,6 +117,12 @@ Scripts for a Windows machine or VM that you can reach over ssh, with AutoCAD 20
 The scripts live in `C:\retrace-vm\` on the VM. See `tools/vm/README.md` for each script and the lessons learned (session 0 has no desktop, COM calls hang at a prompt, simulated mouse clicks may not reach a VM).
 `tools/dialog-capture` (Win32 `.rc` dialog captures, run on Windows) is documented in its own README.
 
+### Tdoc hooks in the Replayer
+
+A Tdoc run (`AutoCad/TdocRun.cs`) is the RETRACERUN path with a `TdocCapture` handed to `Replayer.Start`. Every hook is a no-op while that field is null, so a plain RETRACERUN / RETRACEREPLAY behaves as before; keep it so.
+`Replayer`: `BeforeStep` (a gate in `Tick`, before the step runs), `AfterStep` (a checkpoint's result), `DialogReady` (the `DialogAutoFiller.BeforeClose` gate: the picture of the filled dialog is taken before OK is pressed; the UI Automation fill stops before the click when it is set) and the `finished` callback at the end of `Finish`.
+Gates return false until ready and are asked again on the next 200 ms tick; nothing blocks the UI thread, and UI Automation runs on a pool thread only. See [docs/tdoc.md](docs/tdoc.md).
+
 ## Tests worth knowing
 
 | File | What it protects |
@@ -126,3 +137,5 @@ The scripts live in `C:\retrace-vm\` on the VM. See `tools/vm/README.md` for eac
 | `RibbonMapperTests` | The ribbon map end to end on synthetic folders: CUIX, CUI and code ribbons, the live ribbon and loaded customization, statuses, the three files. |
 | `MapFoldersTests` | The Map window's folder list: newest first, ticks, remove, the options, a broken file. |
 | `SecurityPromptTests`, `DialogFillTests`, `DialogValuesTests` | Security prompts, dialog auto-fill and dialog values. |
+| `TdocPlanTests`, `TdocNamingTests`, `TdocTestListTests` | Tdoc: instruction sentences and callout numbering, safe title / stamp / picture names and the geometry that moves a dialog onto the screen, the `-RETRACETDOC` list (names, `@file`, paths). |
+| `AnnotateTests`, `TrainingDocTests` | Tdoc: the green numbered boxes on pixels; `tdoc.json` and the Word file. |

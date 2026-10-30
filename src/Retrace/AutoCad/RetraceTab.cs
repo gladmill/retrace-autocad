@@ -47,6 +47,7 @@ public static class RetraceTab
         var src = new RibbonPanelSource();
         src.Title = "Test";
         src.Items.Add(Button("RETRACERUN", "Run test", "play", "^C^C_RETRACERUN ", "Pick recording.jsonl in a test folder, open a new drawing, replay it there and show the verdict."));
+        src.Items.Add(Button("RETRACETDOC", "Training doc", "tdoc", "^C^C_RETRACETDOC ", "Pick tests and replay them one after another; the pictures go into a Word training document with green numbered boxes where the user gives input."));
         src.Items.Add(Button("RETRACESTEP", "Step", "step", "^C^C_RETRACESTEP ", "Pick a recording and replay it one step at a time in this drawing."));
         return Wrap(src);
     }
