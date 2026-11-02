@@ -6,6 +6,7 @@ using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
 using Retrace.AutoCad;
+using Retrace.Core;
 using Retrace.Engine.Recordings;
 
 namespace Retrace.Ui;
@@ -28,7 +29,7 @@ sealed class CheckpointsWindow : Window
     readonly TextBlock _heading = new() { FontSize = 20, FontWeight = FontWeights.SemiBold, Text = "Name your checkpoints" };
     readonly TextBlock _sub = new() { Foreground = Muted, Margin = new Thickness(0, 2, 0, 0) };
     readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap, Foreground = Muted, VerticalAlignment = VerticalAlignment.Center };
-    readonly Button _save = new() { Content = "Save names", Padding = new Thickness(14, 4, 14, 4), Margin = new Thickness(8, 0, 0, 0), FontWeight = FontWeights.SemiBold, IsEnabled = false };
+    readonly Button _save = new() { Content = "Save", Padding = new Thickness(14, 4, 14, 4), Margin = new Thickness(8, 0, 0, 0), FontWeight = FontWeights.SemiBold, IsEnabled = false };
     readonly Button _steps = new() { Content = "Open steps", Padding = new Thickness(14, 4, 14, 4), Margin = new Thickness(8, 0, 0, 0) };
     readonly Button _close = new() { Content = "Close", Padding = new Thickness(14, 4, 14, 4), Margin = new Thickness(8, 0, 0, 0) };
     readonly List<Card> _list = new();
@@ -44,10 +45,15 @@ sealed class CheckpointsWindow : Window
     {
         public required CheckpointInfo Info;
         public required TextBox Box;
-        public required Button Reset;
+        public required Button Reset { get; set; }
         public string Saved = "";   // the name on disk
         public string Wanted => Checkpoints.Clean(Box.Text);
-        public bool Dirty => Wanted.Length > 0 ? Wanted != Saved : Saved != Info.AutoName;   // empty = back to the automatic name
+        public bool NameDirty => Wanted.Length > 0 ? Wanted != Saved : Saved != Info.AutoName;   // empty = back to the automatic name
+        public CheckpointChecksEditor? Editor;   // null = the recording has no behavior checks for this mark
+        public TextBlock? BehaviorHeader;
+        public readonly Dictionary<string, (CheckBox Box, TextBlock Source)> BehaviorRows = new();
+        public bool ChecksDirty => Editor?.Dirty == true;
+        public bool Dirty => NameDirty || ChecksDirty;
     }
 
     public CheckpointsWindow(Commands core, string recording, bool afterStop)
@@ -90,7 +96,7 @@ sealed class CheckpointsWindow : Window
         _save.Click += (_, _) => Save(closeAfter: false);
         _steps.Click += (_, _) => _core.CheckpointsOpenSteps(Recording, Say);
         _close.Click += (_, _) => Close();
-        _save.ToolTip = "Rename the checkpoints and write steps.md (and the Word / Excel files) again. Ctrl+S";
+        _save.ToolTip = "Save the new names and behavior checks, and write steps.md (and the Word / Excel files) again. Ctrl+S";
         _steps.ToolTip = "Read the steps with the current names.";
         PreviewKeyDown += OnKey;
         Closing += OnClosing;
@@ -208,12 +214,17 @@ sealed class CheckpointsWindow : Window
         if (c.Near != null) right.Children.Add(Line(c.Near));
         right.Children.Add(Line(c.State != null ? "Checks that " + c.State : "The drawing could not be read at this checkpoint, so it is not checked."));
 
+        var card = new Card { Info = c, Box = box, Reset = null!, Saved = c.Name };
+        if (c.Checks != null) card.Editor = new CheckpointChecksEditor(c.Checks, () => c.Snapshot == null ? null : BehaviorSnapshot.Read(c.Snapshot));
+        if (card.Editor == null) right.Children.Add(Line(CheckpointChecksEditor.NoChecksText));
+        else right.Children.Add(BehaviorsFor(card));
+
         var reset = new Button { Content = "Use the automatic name", Padding = new Thickness(8, 2, 8, 2), Margin = new Thickness(0, 8, 0, 0), HorizontalAlignment = HorizontalAlignment.Left };
         right.Children.Add(reset);
         Grid.SetColumn(right, 1);
         grid.Children.Add(right);
 
-        var card = new Card { Info = c, Box = box, Reset = reset, Saved = c.Name };
+        card.Reset = reset;
         _list.Add(card);
         box.TextChanged += (_, _) => UpdateState();
         box.GotKeyboardFocus += (_, _) => box.SelectAll();
@@ -225,6 +236,62 @@ sealed class CheckpointsWindow : Window
             Child = grid, Background = CardBack, BorderBrush = CardLine, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6),
             Padding = new Thickness(12), Margin = new Thickness(0, 0, 0, 10),
         };
+    }
+
+    /// <summary>The behaviors one checkpoint verifies: a header line ("Also checks: ...") and, expanded, one tick per behavior with its source.
+    /// Unticking removes it; ticking restores what the checkpoint had or adds it as manual with the stored data; a behavior with no stored
+    /// data is disabled. The rows are built once, on first expand (that is when the stored snapshot is read); ticks only update them.</summary>
+    UIElement BehaviorsFor(Card card)
+    {
+        var list = new StackPanel { Margin = new Thickness(0, 4, 0, 0) };
+        var header = new TextBlock { Foreground = Muted, TextWrapping = TextWrapping.Wrap, Text = "Also checks: " + card.Editor!.Summary() };
+        var ex = new Expander { Header = header, Content = list, Margin = new Thickness(0, 4, 0, 0) };
+        card.BehaviorHeader = header;
+        var built = false;
+        ex.Expanded += (_, _) =>
+        {
+            if (built) return;
+            built = true;
+            foreach (var r in card.Editor.Rows())
+            {
+                var source = new TextBlock { Foreground = Changed };
+                var text = new StackPanel { Orientation = Orientation.Horizontal };
+                text.Children.Add(new TextBlock { Text = r.Label });
+                text.Children.Add(source);
+                text.Children.Add(new TextBlock { Text = "  " + r.Description, Foreground = Muted });
+                var cb = new CheckBox { Content = text, Margin = new Thickness(0, 2, 0, 0) };
+                var id = r.Id;
+                cb.Click += (_, _) => TickBehavior(card, id, cb.IsChecked == true);
+                card.BehaviorRows[id] = (cb, source);
+                list.Children.Add(cb);
+            }
+            RefreshBehaviors(card);
+        };
+        return ex;
+    }
+
+    /// <summary>Updates the existing rows (tick, enabled, source text, tooltip) in place so keyboard focus stays where it is.</summary>
+    void RefreshBehaviors(Card card)
+    {
+        if (card.Editor == null) return;
+        card.BehaviorHeader!.Text = "Also checks: " + card.Editor.Summary();
+        if (card.BehaviorRows.Count == 0) return;
+        foreach (var r in card.Editor.Rows())
+        {
+            if (!card.BehaviorRows.TryGetValue(r.Id, out var row)) continue;
+            row.Box.IsChecked = r.Ticked;
+            row.Box.IsEnabled = r.Enabled;
+            row.Box.ToolTip = r.Tooltip ?? r.Description;
+            row.Source.Text = r.Source != null ? $" ({r.Source})" : "";
+        }
+    }
+
+    void TickBehavior(Card card, string id, bool ticked)
+    {
+        if (card.Editor == null) return;
+        if (!card.Editor.Tick(id, ticked)) Say("That behavior's stored data could not be read, so it was not added.");
+        RefreshBehaviors(card);
+        UpdateState();
     }
 
     static TextBlock Line(string text) => new() { Text = text, Foreground = Muted, Margin = new Thickness(0, 2, 0, 0), TextWrapping = TextWrapping.Wrap };
@@ -241,12 +308,12 @@ sealed class CheckpointsWindow : Window
     {
         foreach (var c in _list)
         {
-            c.Box.BorderBrush = c.Dirty ? Changed : CardLine;
+            c.Box.BorderBrush = c.NameDirty ? Changed : CardLine;
             c.Reset.Visibility = Checkpoints.Clean(c.Box.Text) == c.Info.AutoName ? Visibility.Collapsed : Visibility.Visible;
         }
         var n = _list.Count(c => c.Dirty);
         _save.IsEnabled = !_busy && n > 0;
-        _save.Content = n > 0 ? $"Save names ({n})" : "Save names";
+        _save.Content = n > 0 ? $"Save ({n})" : "Save";
         Title = "Retrace: checkpoints" + (n > 0 ? " (not saved)" : "");
     }
 
@@ -266,17 +333,19 @@ sealed class CheckpointsWindow : Window
     void Save(bool closeAfter)
     {
         if (_busy) return;
-        var names = _list.Where(c => c.Dirty).ToDictionary(c => c.Info.N, c => c.Wanted);
-        if (names.Count == 0) { if (closeAfter) { _closing = true; Close(); } return; }
+        var names = _list.Where(c => c.NameDirty).ToDictionary(c => c.Info.N, c => c.Wanted);
+        var checks = _list.Where(c => c.ChecksDirty).ToDictionary(c => c.Info.N, c => c.Editor!.Edits());
+        if (names.Count == 0 && checks.Count == 0) { if (closeAfter) { _closing = true; Close(); } return; }
         _busy = true;
         UpdateState();
-        Say("Saving the names and writing the steps again...");
-        var started = _core.CheckpointsSave(Recording, names, (ok, message) =>
+        Say("Saving and writing the steps again...");
+        var started = _core.CheckpointsSave(Recording, names, checks, (ok, message) =>
         {
             _busy = false;
             if (ok)
             {
                 // The names that were sent are saved; a box edited again while saving keeps its new text and stays unsaved.
+                foreach (var c in _list.Where(c => checks.ContainsKey(c.Info.N))) c.Editor!.MarkSaved(checks[c.Info.N]);
                 foreach (var c in _list.Where(c => names.ContainsKey(c.Info.N)))
                 {
                     var sent = names[c.Info.N];
@@ -296,7 +365,7 @@ sealed class CheckpointsWindow : Window
     {
         if (_closing || !AnyDirty) return;
         if (_busy) { e.Cancel = true; Say("Saving... the window closes when you click Close again."); return; }
-        var a = MessageBox.Show(this, "Save the new checkpoint names?", "Retrace", MessageBoxButton.YesNoCancel, MessageBoxImage.Question, MessageBoxResult.Yes);
+        var a = MessageBox.Show(this, "Save the changes to the checkpoints?", "Retrace", MessageBoxButton.YesNoCancel, MessageBoxImage.Question, MessageBoxResult.Yes);
         if (a == MessageBoxResult.Cancel) { e.Cancel = true; return; }
         if (a == MessageBoxResult.Yes) { e.Cancel = true; Save(closeAfter: true); }
     }

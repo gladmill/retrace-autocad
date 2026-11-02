@@ -15,6 +15,28 @@ public sealed class CheckpointResult
     [JsonPropertyName("differences")] public List<string> Differences { get; set; } = new();
     [JsonPropertyName("expected")] public DrawingDigest? Expected { get; set; }
     [JsonPropertyName("actual")] public DrawingDigest? Actual { get; set; }
+
+    /// <summary>Behavior checks (schema 3): "auto" or "manual"; left out when the checkpoint recorded no checks.</summary>
+    [JsonPropertyName("checkMode")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? CheckMode { get; set; }
+    /// <summary>Behavior ids that were verified; left out when the checkpoint recorded no checks.</summary>
+    [JsonPropertyName("checkedBehaviors")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public List<string>? CheckedBehaviors { get; set; }
+    /// <summary>What differed in the behavior checks (see <see cref="BehaviorChecks.Compare"/>); left out when the checkpoint recorded no checks, empty when they matched.</summary>
+    [JsonPropertyName("checkDifferences")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public List<string>? CheckDifferences { get; set; }
+
+    /// <summary>Verifies <paramref name="checks"/> against what the drawing holds now and records it here. Does nothing when there are no checks (null).
+    /// A difference makes <see cref="Pass"/> false (also when the digest matched). Matching NON-EMPTY checks leave Pass as the digest compare set it, and
+    /// make it true when it is null (the mark has no digest but has checks: the checks verify it). EMPTY checks verify nothing: they record the mode and
+    /// leave Pass alone (a null Pass stays "not verified"); <paramref name="actual"/> may then be an empty snapshot. The Replayer must call this for
+    /// every mark that has checks, also when `Step.State` is null.</summary>
+    public void ApplyChecks(BehaviorChecks? checks, BehaviorSnapshot actual)
+    {
+        if (checks == null) return;
+        CheckMode = checks.Mode;
+        CheckedBehaviors = checks.Behaviors.Keys.ToList();
+        CheckDifferences = BehaviorChecks.Compare(checks, actual);
+        if (CheckDifferences.Count > 0) Pass = false;
+        else if (checks.Behaviors.Count > 0) Pass ??= true;
+    }
 }
 
 /// <summary>One replayed step. `status`: "ok", "failed" (a dialog step that did not happen as recorded) or "needs-person" (unattended run stopped here).</summary>
@@ -89,13 +111,7 @@ public sealed class ReplayResult
         return File.Exists(p) ? p : null;
     }
 
-    static void WriteAtomic(string path, string json)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var tmp = path + ".tmp";
-        File.WriteAllText(tmp, json, new System.Text.UTF8Encoding(false));
-        File.Move(tmp, path, true);
-    }
+    static void WriteAtomic(string path, string json) => AtomicFile.WriteText(path, json);
 
     /// <summary>Writes the result (temp file, then move, so a poller never reads half of it): `results/&lt;stamp&gt;_&lt;VERDICT&gt;.json` (earlier runs stay)
     /// and a copy as `results/latest.json`. Returns the new run's file, or null if nothing worked (the error goes to <paramref name="onError"/>).</summary>

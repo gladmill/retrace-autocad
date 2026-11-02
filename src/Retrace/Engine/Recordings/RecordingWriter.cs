@@ -1,6 +1,7 @@
 // Recordings ingest, part 4: write <docs>/recordings/{index.md, <test>.md, images/<test>/} and <docs>/data/recordings.json.
 using System.Text;
 using System.Text.Json;
+using Retrace.Core;
 using Retrace.Engine.Emit;
 using Retrace.Engine.Util;
 
@@ -245,6 +246,17 @@ public sealed class RecordingWriter(RecordingAnalysis a, string outRoot)
 
     static object StateJson(RecordingState st) => new { summary = st.Summary(), count = st.Count, byType = st.ByType, byLayer = st.ByLayer, layers = st.Layers, hash = st.Hash, v = st.Version };
 
+    /// <summary>A checkpoint's behavior checks for recordings.json: mode, and per behavior its source, scope and item counts. The items themselves are
+    /// left out on purpose: a manual check holds every item of the behavior (thousands of lines for symbols or xdata) and recording.jsonl keeps them.</summary>
+    static object ChecksJson(BehaviorChecks c) => new
+    {
+        mode = c.Mode,
+        behaviors = c.Behaviors.ToDictionary(kv => kv.Key, kv => (object)new
+        {
+            source = kv.Value.Source, scope = kv.Value.Scope, items = kv.Value.Items.Count, absent = kv.Value.Items.Count(i => i.Value == null),
+        }),
+    };
+
     object Machine() => new
     {
         schema = "retrace/recordings@1",
@@ -255,7 +267,7 @@ public sealed class RecordingWriter(RecordingAnalysis a, string outRoot)
             steps = s.Steps.Count, ribbonClicks = s.Steps.Count(x => x.Kind == "ribbon"),
             autocad = s.HeaderStr("autocad"), product = s.HeaderStr("product"), workspace = s.HeaderStr("workspace"),
             startState = s.InitialState == null ? null : StateJson(s.InitialState),
-            checkpoints = s.Steps.Where(x => x.Kind == "mark").Select((x, i) => new { index = i + 1, note = x.Note, state = x.State == null ? null : StateJson(x.State) }),
+            checkpoints = s.Steps.Where(x => x.Kind == "mark").Select((x, i) => new { index = i + 1, note = x.Note, state = x.State == null ? null : StateJson(x.State), checks = x.Checks == null ? null : ChecksJson(x.Checks) }),
         }),
         ribbon = a.Ribbon.Select(r => new
         {

@@ -204,6 +204,8 @@ public sealed class RecordingStep
     public long? N { get; init; }
     /// <summary>mark: the drawing state at the checkpoint (null in sessions recorded before checkpoints carried state).</summary>
     public RecordingState? State { get; set; }
+    /// <summary>mark: the behaviors the checkpoint verifies (`checks`, schema 3), or null (older recording).</summary>
+    public Retrace.Core.BehaviorChecks? Checks { get; set; }
     // set by the joiner
     public JoinResult? Join { get; set; }
     public FormMatch? Form { get; set; }
@@ -496,7 +498,8 @@ public static class RecordingReader
                     break;
                 }
                 case "mark":
-                    s.Steps.Add(new RecordingStep { Kind = "mark", T = e.T, N = e.N, Note = e.Str("note"), Description = e.Str("near"), State = e.Raw.TryGetProperty("state", out var ms) ? RecordingState.From(ms) : null });
+                    s.Steps.Add(new RecordingStep { Kind = "mark", T = e.T, N = e.N, Note = e.Str("note"), Description = e.Str("near"), State = e.Raw.TryGetProperty("state", out var ms) ? RecordingState.From(ms) : null,
+                        Checks = e.Raw.TryGetProperty("checks", out var mc) ? Retrace.Core.BehaviorChecks.FromJson(mc) : null });
                     break;
                 case "state": // the drawing as it was when recording started; not a step
                     if (s.InitialState == null && e.Raw.TryGetProperty("state", out var st0)) s.InitialState = RecordingState.From(st0);

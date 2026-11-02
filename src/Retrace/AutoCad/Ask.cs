@@ -52,6 +52,20 @@ static class Ask
         catch (Exception ex) { Log.Error("Ask.ScriptRuns", ex); return true; }
     }
 
+    /// <summary>A script or LISP is known to run the command (CMDACTIVE 4 / 32). Unlike <see cref="ScriptRuns"/>, a failed read counts as NO script:
+    /// this decides whether to take a file dialog or the Checkpoints window away, and a person at the keyboard must not lose it because a
+    /// system variable could not be read. (<see cref="ScriptRuns"/> keeps the safe default for prompt style: the command line.)</summary>
+    public static bool ScriptKnown()
+    {
+        try
+        {
+            var active = Convert.ToInt32(AcApp.GetSystemVariable("CMDACTIVE"));
+            Log.Info($"CMDACTIVE={active} (script bits 4/32 {((active & (4 | 32)) != 0 ? "set" : "not set")})");   // the log shows whether COM / SCRIPT / LISP are detected
+            return (active & (4 | 32)) != 0;
+        }
+        catch (Exception ex) { Log.Error("Ask.ScriptKnown", ex); return false; }
+    }
+
     /// <summary>Whether to ask in the window: the setting says "ui", FILEDIA is on, no script or LISP runs the command (CMDACTIVE 4 / 32),
     /// and no command-line form asked for the command line.</summary>
     public static bool InWindow() => _commandLineOnly == 0 && UiSetting() && FileDialogsOn() && !ScriptRuns();

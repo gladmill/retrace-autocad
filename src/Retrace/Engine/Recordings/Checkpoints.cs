@@ -2,6 +2,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Retrace.Core;
 using Retrace.Engine.Emit;
 
 namespace Retrace.Engine.Recordings;
@@ -16,7 +17,10 @@ namespace Retrace.Engine.Recordings;
 /// <param name="State">what the drawing held ("12 POINT", "the drawing is empty"), or null when the recorder could not read it</param>
 /// <param name="Picture">full path of its screenshot, or null</param>
 /// <param name="Near">what the checkpoint shortcut found at the cursor (mark `near`), or null</param>
-public sealed record CheckpointInfo(long N, int Index, int Step, string Name, string AutoName, string? After, string? State, string? Picture, string? Near = null)
+/// <param name="Checks">the behaviors this checkpoint verifies (mark `checks`), or null in a recording without them</param>
+/// <param name="Snapshot">full path of the stored snapshot (snapshots/mark-n.json); the file may not exist. Not read here: windows load it when needed</param>
+public sealed record CheckpointInfo(long N, int Index, int Step, string Name, string AutoName, string? After, string? State, string? Picture, string? Near = null,
+    BehaviorChecks? Checks = null, string? Snapshot = null)
 {
     public bool Renamed => !string.Equals(Name, AutoName, StringComparison.Ordinal);
 }
@@ -172,9 +176,32 @@ public static class Checkpoints
             var name = string.IsNullOrWhiteSpace(st.Note) ? auto : Clean(st.Note);
             var pic = st.Shots.Select(x => x.Abs).FirstOrDefault(File.Exists);
             var state = st.State == null ? null : StepWording.StateText(st.State);
-            list.Add(new CheckpointInfo(n, index, step, name, auto, last?.Describe(), state, pic, st.Description));
+            var snapshot = st.Checks == null ? null : BehaviorSnapshot.MarkPath(Path.GetDirectoryName(Path.GetFullPath(recording)) ?? "", (int)n);
+            list.Add(new CheckpointInfo(n, index, step, name, auto, last?.Describe(), state, pic, st.Description, st.Checks, snapshot));
         }
         return list;
+    }
+
+    /// <summary>Changes only the listed behaviors inside the mark's raw `checks` object (null = remove, else the check replaces it). Every other
+    /// behavior, field and unknown property stays as written. A mark with no `checks` gets an auto one. True when something changed.</summary>
+    static bool ApplyEdits(JsonObject mark, CheckEdits edits)
+    {
+        if (edits.Count == 0) return false;
+        var created = mark["checks"] is not JsonObject;
+        var checks = mark["checks"] as JsonObject ?? new JsonObject { ["mode"] = BehaviorChecks.ModeAuto };
+        var behaviors = checks["behaviors"] as JsonObject;
+        var newBehaviors = behaviors == null;
+        behaviors ??= new JsonObject();
+        var changed = false;
+        foreach (var (id, check) in edits)
+        {
+            if (check == null) { if (behaviors.Remove(id)) changed = true; continue; }
+            var node = JsonNode.Parse(JsonSerializer.Serialize(check, BehaviorSnapshot.JsonOptions));
+            if (!JsonNode.DeepEquals(behaviors[id], node)) { behaviors[id] = node; changed = true; }
+        }
+        if (newBehaviors && behaviors.Count > 0) checks["behaviors"] = behaviors;
+        if (created && changed) mark["checks"] = checks;
+        return changed;
     }
 
     static readonly JsonSerializerOptions Relaxed = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
@@ -182,11 +209,18 @@ public static class Checkpoints
     /// <summary>Sets the `note` of the `mark` events named in <paramref name="names"/> (event n -> new name; empty = back to its automatic name)
     /// and writes recording.jsonl again through a temporary file. Every other line stays byte for byte. Returns how many changed.
     /// Throws <see cref="InvalidDataException"/> when an n is not a checkpoint of this recording; IO errors pass through.</summary>
-    public static int Rename(string recording, IReadOnlyDictionary<long, string> names)
+    public static int Rename(string recording, IReadOnlyDictionary<long, string> names) => Update(recording, names, null);
+
+    /// <summary>Like <see cref="Rename"/>, and also sets the `checks` of the `mark` events named in <paramref name="checks"/> (event n -> the whole
+    /// new value; stored as is, even with no behaviors). One temporary-file write for both; every other line and field stays byte for byte.
+    /// Returns how many marks changed.</summary>
+    public static int Update(string recording, IReadOnlyDictionary<long, string>? names, IReadOnlyDictionary<long, CheckEdits>? checks)
     {
+        names ??= new Dictionary<long, string>();
+        checks ??= new Dictionary<long, CheckEdits>();
         var bytes = File.ReadAllBytes(recording);
         var lines = new UTF8Encoding(false).GetString(bytes).Split('\n');
-        var left = new HashSet<long>(names.Keys);
+        var left = new HashSet<long>(names.Keys.Concat(checks.Keys));
         int changed = 0;
         for (int i = 0; i < lines.Length; i++)
         {
@@ -196,14 +230,25 @@ public static class Checkpoints
             try { o = JsonNode.Parse(line.TrimEnd('\r')) as JsonObject; }
             catch (JsonException) { continue; }
             if (o == null || o["type"]?.GetValueKind() != JsonValueKind.String || (string?)o["type"] != "mark") continue;
-            if (o["n"] is not JsonValue nv || !nv.TryGetValue<long>(out var n) || !names.TryGetValue(n, out var wanted)) continue;
+            if (o["n"] is not JsonValue nv || !nv.TryGetValue<long>(out var n)) continue;
+            var hasName = names.TryGetValue(n, out var wanted);
+            var hasChecks = checks.TryGetValue(n, out var newChecks);
+            if (!hasName && !hasChecks) continue;
             left.Remove(n);
-            var auto = o["autoName"]?.GetValueKind() == JsonValueKind.String ? Clean((string?)o["autoName"]) : "";
-            var name = Clean(wanted);
-            if (name.Length == 0) name = auto;   // cleared in the window: back to the automatic name (older recordings: no note)
-            var old = o["note"]?.GetValueKind() == JsonValueKind.String ? (string?)o["note"] : null;
-            if (old == name) continue;
-            o["note"] = name;
+            var dirty = false;
+            if (hasName)
+            {
+                var auto = o["autoName"]?.GetValueKind() == JsonValueKind.String ? Clean((string?)o["autoName"]) : "";
+                var name = Clean(wanted);
+                if (name.Length == 0) name = auto;   // cleared in the window: back to the automatic name (older recordings: no note)
+                var old = o["note"]?.GetValueKind() == JsonValueKind.String ? (string?)o["note"] : null;
+                if (old != name) { o["note"] = name; dirty = true; }
+            }
+            if (hasChecks)
+            {
+                if (ApplyEdits(o, newChecks!)) dirty = true;
+            }
+            if (!dirty) continue;
             lines[i] = o.ToJsonString(Relaxed) + (line.EndsWith('\r') ? "\r" : "");
             changed++;
         }

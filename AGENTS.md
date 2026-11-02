@@ -43,10 +43,10 @@ src/Retrace/
                  Tdoc: TdocPlan (instruction sentences and numbered legend lines per step), TdocNaming (folder, docx and picture names), TdocTestList (the -RETRACETDOC list),
                  TdocGeometry (move a dialog onto the screen), Annotate (green numbered boxes on BGRA pixels)
   AutoCad/       everything that touches AutoCAD: RetraceApp (IExtensionApplication and every [CommandMethod]), Commands (partial: Commands.Map is RETRACEMAP),
-                 RetraceTab (ribbon), Recorder, Replayer, DialogWatch / DialogFill (dialog values), ShotService, DrawingState, DclCapture, Native / Win32, Log,
+                 RetraceTab (ribbon), Recorder, Replayer, BehaviorCapture (behavior snapshot of the drawing, read-only; pure parts in Core/BehaviorKeys), DialogWatch / DialogFill (dialog values), ShotService, DrawingState, DclCapture, Native / Win32, Log,
                  LiveRibbonReader (copies the live ribbon into the engine's LiveTab records),
                  Tdoc: TdocRun (the queue of tests; one at a time through RETRACERUN), TdocCapture (the pictures of one test, called by the Replayer), TdocTargets (where a box goes), Commands.Tdoc
-  Ui/            WPF windows and the guide palette: SettingsWindow, ReplayWindow, OpenTestWindow, TdocWindow, MapWindow (with MapRowView, its display text), GuidePalette, GuideControl, MarkdownPage, ScriptViewer, WebPreview
+  Ui/            WPF windows and the guide palette: SettingsWindow (with SysvarWindow), ReplayWindow, OpenTestWindow, TdocWindow, MapWindow (with MapRowView, its display text), GuidePalette, GuideControl, MarkdownPage, ScriptViewer, WebPreview
   Embedded/      Dependencies.cs
 ```
 
@@ -113,9 +113,14 @@ Do not add a dependency without embedding it, adding its name to the list in `pa
 ## VM test scripts (`tools/vm`)
 
 Scripts for a Windows machine or VM that you can reach over ssh, with AutoCAD 2026 and the Retrace bundle installed. They start AutoCAD in the interactive session, send commands over COM, take screenshots and replay a recorded test unattended
-(`tools/vm/run-test.sh <test folder> [--new-drawing] [--run]`). They are a developer aid, not part of the plugin. The ssh host comes from `RETRACE_VM_HOST` (default `retrace-vm`, an example alias for `~/.ssh/config`).
+(`tools/vm/run-test.sh <test folder> [--new-drawing] [--run]`). A script that records stops with `-RETRACESTOP`, never `RETRACESTOP` (that one opens the Checkpoints window). They are a developer aid, not part of the plugin. The ssh host comes from `RETRACE_VM_HOST` (default `retrace-vm`, an example alias for `~/.ssh/config`).
 The scripts live in `C:\retrace-vm\` on the VM. See `tools/vm/README.md` for each script and the lessons learned (session 0 has no desktop, COM calls hang at a prompt, simulated mouse clicks may not reach a VM).
+`tools/vm/fixtures.sh` builds fixture drawings (`fx-*.dwg`: layers, layouts, viewports, xdata, extension dictionaries, symbol tables, sysvars, named views, attributes), one-change mutation scripts and a dump query on the VM; see "Fixtures" in the README.
 `tools/dialog-capture` (Win32 `.rc` dialog captures, run on Windows) is documented in its own README.
+
+### Commands for scripts
+
+A `-` command is the form a script, LISP or COM automation may run (COM `SendCommand` is not detected by `Ask.ScriptKnown()`: CMDACTIVE is 1 there): command line only, no window, no message box (`-RETRACEMARK`, `-RETRACESTOP`, `-RETRACESETTINGS`, `-RETRACETDOC`, `-RETRACEMAP`). When a stop-path or other command gets a new window, give the `-` form a way around it (`Core/StopReview.cs` decides the Checkpoints window). File pickers are skipped when `Ask.ScriptRuns()` (CMDACTIVE 4 / 32).
 
 ### Tdoc hooks in the Replayer
 
@@ -133,6 +138,7 @@ Gates return false until ready and are asked again on the next 200 ms tick; noth
 | `TestFolderTests`, `RecordingTests`, `RecordingShotTests` | Test folder layout, reading recordings, picture naming. |
 | `ScriptTests`, `ExportTests` | `steps.md`, docx and xlsx. |
 | `SettingsTests` | Settings keys and defaults. |
+| `BehaviorChecksTests`, `BehaviorKeysTests` | Behavior checks: canonical values, snapshots, picking, compare; entity ids, viewport order, xdata groups, NOD filter. |
 | `LispScannerTests`, `MacroTextTests` | LISP commands and functions found in `.lsp` / `.mnl` (comments and strings skipped, line numbers right); what a ribbon macro runs (commands, LISP calls, loads, DIESEL). |
 | `RibbonMapperTests` | The ribbon map end to end on synthetic folders: CUIX, CUI and code ribbons, the live ribbon and loaded customization, statuses, the three files. |
 | `MapFoldersTests` | The Map window's folder list: newest first, ticks, remove, the options, a broken file. |

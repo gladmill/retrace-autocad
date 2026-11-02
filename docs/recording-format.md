@@ -1,4 +1,4 @@
-# Recording format, schema version 1
+# Recording format, schema version 2
 
 A recording is one JSON Lines file, `recording.jsonl`, in its own test folder. UTF-8, one JSON object per line, flushed after every line:
 a crash loses at most the line being written, and readers skip an unparsable last line. Fields with no value are left out, never `null`.
@@ -18,6 +18,8 @@ The **tests folder** (setting `testsFolder`, default `C:\temp\retrace\tests`) ho
     .steps.docx.retrace, .steps.xlsx.retrace   hidden: the size and time of the file as Retrace wrote it, or "kept" (below)
     screenshots\                        PNGs; every `shot` event's `file` is relative to recording.jsonl ("screenshots/step-02-click.png")
       unused\                           pictures steps.md does not show (kept, out of the way)
+    snapshots\                          what the drawing held for each behavior at the start and at each checkpoint (schema 3, see "Behavior checks")
+      start.json, mark-<n>.json         <n> = the `n` of the `mark` event
     results\
       <yyyy-MM-dd_HH-mm-ss>_<VERDICT>.json   one per replay run (see "Result file")
       latest.json                       copy of the newest run, for scripts
@@ -47,12 +49,24 @@ The **tests folder** (setting `testsFolder`, default `C:\temp\retrace\tests`) ho
 - It rewrites `file` in the matching `shot` lines of `recording.jsonl` (temp file, then replace; every other line and byte stays) and only renames when the name differs,
   so running it again changes nothing. If a line cannot be rewritten nothing is renamed and a warning is printed.
 
+## Schema versions
+
+| Version | Change |
+|---|---|
+| 1 | The original format. |
+| 2 | Drawing digests carry `layerState` and `currentLayer` (see "Drawing digest"). Nothing else changed: a schema 1 recording is valid schema 2 with digests that lack these fields. |
+| 3 | Behavior checks: `mark.checks`, the `snapshots` folder (see "Behavior checks"). Written by the recorder since it records behavior checks (the header says 3); the readers understand `checks` in any recording. In a mark that has `checks`, the digest's `layerState` is not compared (the `layers` behavior owns it). |
+
+Schema 1 and 2 recordings replay as before, with one exception: the current layer (`currentLayer`) is no longer compared in any recording; a test fails on it only if it checks `CLAYER` in the `sysvars` behavior. The field is still read.
+
+Nothing in the plugin rejects a schema value; readers ignore fields they do not know and tolerate missing ones.
+
 ## Header (first line)
 
 | Field | Meaning |
 |---|---|
 | `type` | `"header"` |
-| `schema` | `1` |
+| `schema` | `3` (recordings made before layer state was added say `1`; readers accept 1, 2, 3 and a missing value) |
 | `name` | test name given to `RETRACERECORD`, with every character other than letters, digits, `-` and `_` replaced by `-` (`test` if empty) |
 | `started` | local start time, ISO 8601 |
 | `autocad` | `Application.Version`, e.g. `25.1.0.0` |
@@ -85,7 +99,7 @@ Every event has `t` (ms since the recording started), `n` (the event's number: 1
 | `native_select` | `palette`, `set`, `control` (`combo`), `index`, `id`, `value` (the entry now shown) | the person clicked a drop-down list in a native palette, and its list has closed showing another entry |
 | `doc_active`, `doc_created`, `doc_closing` | `doc_created`: `path` (full path of a drawing opened from a file) | `DocumentActivated`, `DocumentCreated`, `DocumentToBeDestroyed` |
 | `state` | `state` (a drawing digest) | `RETRACERECORD`: written right after the header, the drawing as it was when recording started. Readers treat it as session metadata, not a step |
-| `mark` | `note` (the checkpoint's name: the automatic one, or what the person typed in the Checkpoints window or at `-RETRACEMARK`; empty in older recordings), `autoName` (the automatic name, `checkpoint<n>` plus where the last action happened: `_<dialog title>_button_<ok\|cancel>`, `_<ribbon panel>_button_<button text>`, `_<palette>_button_<button text>` (`_<palette>_palette` when only values changed) or `_cmd_<command>` (`_open_<file name>` after a drawing opened outside a command), in lowercase words joined by `_`; with the checkpoint shortcut and the cursor on a palette control or a ribbon item, `_<palette or panel>_<control>` instead; missing in older recordings), `state` (a drawing digest, left out if the drawing could not be read), `near` (the shortcut only: what was at the cursor, in a sentence: the control under it or nearest it, its value, and up to three controls near it; left out when the cursor was not on a palette or the ribbon) | `RETRACEMARK`, `-RETRACEMARK`, the checkpoint shortcut (setting `checkpointKey`) |
+| `mark` | `note` (the checkpoint's name: the automatic one, or what the person typed in the Checkpoints window or at `-RETRACEMARK`; empty in older recordings), `autoName` (the automatic name, `checkpoint<n>` plus where the last action happened: `_<dialog title>_button_<ok\|cancel>`, `_<ribbon panel>_button_<button text>`, `_<palette>_button_<button text>` (`_<palette>_palette` when only values changed) or `_cmd_<command>` (`_open_<file name>` after a drawing opened outside a command), in lowercase words joined by `_`; with the checkpoint shortcut and the cursor on a palette control or a ribbon item, `_<palette or panel>_<control>` instead; missing in older recordings), `state` (a drawing digest, left out if the drawing could not be read), `checks` (schema 3: what the checkpoint verifies besides the digest, see "Behavior checks"; left out when none were captured), `near` (the shortcut only: what was at the cursor, in a sentence: the control under it or nearest it, its value, and up to three controls near it; left out when the cursor was not on a palette or the ribbon) | `RETRACEMARK`, `-RETRACEMARK`, the checkpoint shortcut (setting `checkpointKey`) |
 | `shot` | `for` (the `n` of the event the picture belongs to), `file` (path of the PNG relative to the recording file, forward slashes: `screenshots/012-ribbon.png` as recorded, `screenshots/step-02-click.png` after the steps are written, `screenshots/unused/004-prompt.png` for a picture the steps do not show), `what` (`window` = AutoCAD's main window, `dialog` = the dialog in front, shortly after it opened; `dialog-after` = the same dialog at the moment OK or Enter was pressed, file `NNN-dialog-after.png`, one per dialog, only while dialog values are on) | a screenshot taken after the event, see below. Written some 100 to 300 ms after the event it belongs to, so it sits later in the file |
 | `session_end` | | `RETRACESTOP` |
 
@@ -236,7 +250,17 @@ A fingerprint of model space and the layer table, computed read-only (`StartOpen
 | `byLayer` | entity count per layer name |
 | `layers` | every layer in the layer table, sorted |
 | `hash` | first 16 hex chars of SHA-256 over the sorted entity keys |
-| `v` | key rules: `2` (text, blocks and dimensions, below); missing = `1` (every entity keyed on its extents) |
+| `v` | key rules: `2` (text, blocks and dimensions, below); missing = `1` (every entity keyed on its extents). Says nothing about layer state |
+| `layerState` | optional (schema 2): object keyed by layer name (sorted, ordinal) of the layer's properties, each optional, left out when it could not be read: `on` (bool, false = turned off), `frozen` (bool), `locked` (bool), `plot` (bool, plottable), `color` (string: ACI number `"7"`, `"rgb:r,g,b"` for true colour, `"Book$Name"` for a colour book colour), `linetype` (name), `lineweight` (string: millimetres with up to two decimals, `"0.25"`, or `"ByLayer"` / `"ByBlock"` / `"Default"`) |
+| `currentLayer` | optional (schema 2): the current layer (`CLAYER`) |
+
+```json
+{"count":3,"byType":{"CIRCLE":1,"LINE":2},"byLayer":{"0":3},"layers":["0","DIM"],"hash":"3fa9c2b01d4e7a55","v":2,"currentLayer":"0","layerState":{"0":{"on":true,"frozen":false,"locked":false,"plot":true,"color":"7","linetype":"Continuous","lineweight":"Default"},"DIM":{"on":true,"frozen":false,"locked":true,"plot":true,"color":"1","linetype":"DASHED","lineweight":"0.25"}}}
+```
+
+Layers that come from an external reference (names like `XREF|WALLS`) are listed in `layers` but left out of `layerState`: they change when the xref reloads. A malformed `layerState` or `currentLayer` (wrong type, a layer that is not an object) is ignored piece by piece and never invalidates the rest of the digest.
+Layer state is not part of `hash` and does not change `v`: a reader detects it by the field being present. Digests without it (every schema 1
+recording) are valid and compare as before.
 
 An entity key is `dxf|layer|min x,y,z-max x,y,z|extra`: the geometric extents rounded to 1e-4 (`noext` if reading them throws), and
 `extra` where cheap: `len=<rounded length>` for any `Curve` (`block=<name>` for a table).
@@ -259,8 +283,102 @@ A v1 expected digest containing any of these types that no longer matches report
 Order of creation, handles and colors do not matter. The comparison (`DrawingDigest.Compare`, no AutoCAD references) reports
 `LINE: expected 2, got 3`, `layer DIM missing`, `layer TMP unexpected`, `layer 0: expected 2 entities, got 3`, and
 `geometry hash differs` when counts and layers agree but the hash does not.
+Layer state is compared only for a mark without `checks` (`DrawingDigest.Compare(..., compareLayerState: step.Checks == null)`); a mark with `checks` verifies layers through the `layers` behavior ("Behavior checks"). The current layer (`currentLayer`) is never compared: a test fails on it only through an explicit `sysvars` check of `CLAYER`. The field is still read.
 
 A recording without `state` events or `mark.state` still replays; its checkpoints are reported as not verified.
+
+## Behavior checks (schema 3: `mark.checks`, `snapshots\`)
+
+Besides the drawing digest (model-space entities: always verified, as before) a checkpoint can verify **behaviors**: parts of the drawing that are not model-space entities.
+Setting `autoDetectBehavior` (default on) chooses how:
+
+- **auto**: at each checkpoint Retrace works out what changed since the previous checkpoint (the first one: since recording started) and verifies exactly those items.
+- **manual** (setting off): the behaviors in setting `checkBehaviors` (default `layers`, `layouts`, `symbols`) are verified whole. The Checkpoints window can change the list for one checkpoint.
+
+### Behaviors
+
+Ids are stable. An item is a key and a value; keys are opaque text. An entity id is the entity's digest key (`DrawingDigest.Key` / `PlacedKey`), with `#2`, `#3`... appended for duplicates. It is never a handle (handles differ between a recording and a replay).
+
+| id | label | item key -> value |
+|---|---|---|
+| `layers` | Layer state | layer name -> `on`, `frozen`, `locked`, `plot`, `color`, `linetype`, `lineweight` (layers that depend on an xref are left out) |
+| `layouts` | Paper space and layouts | layout name -> tab order, and the layout's entity digest (`count`, `byType`, `hash`) |
+| `viewports` | Viewports | `<layout>\|<n>` -> paper-space viewport: center, size, view center / target / direction, scale, on, locked, frozen layers |
+| `xdata` | XData | `<entity id>\|<regapp>` -> canonical xdata |
+| `xdicts` | Extension dictionaries | `<owner id>\|<entry path>` -> entry type and canonical data (Xrecords); the owner is `NOD` for the named object dictionary |
+| `symbols` | Symbol tables | `<TABLE>:<name>` -> canonical record (linetypes, text styles, dimension styles, block definitions with their entity hash, UCS, registered applications). Layers and views have their own behaviors |
+| `sysvars` | System variables | variable name -> value (`CLAYER` -> `DIM`) |
+| `views` | Named views | view name -> center, height, width, direction, target, paper-space flag, layout |
+| `psattributes` | Attributes on paper-space inserts | `<layout>\|<insert id>\|<TAG>` -> text |
+
+### Canonical values
+
+A value with several parts is a list of `name=value` fields in a fixed order, joined by `;`: `on=1;frozen=0;color=7`. In names and values `\` is written `\\`, `;` is written `\;` and `=` is written `\=`. A compare names the fields that differ. `sysvars` and `psattributes` values are plain text.
+
+### `mark.checks`
+
+```json
+{"type":"mark","n":13,"note":"layer dim frozen","state":{},"checks":{"mode":"auto","behaviors":{"layers":{"source":"auto","scope":"items","items":{"DIM":"on=1;frozen=1;locked=0;plot=1;color=1;linetype=Continuous;lineweight=Default","TMP":null}}}}}
+```
+
+| Field | Meaning |
+|---|---|
+| `mode` | `auto` or `manual`: the setting when the checkpoint was made |
+| `behaviors` | by behavior id (ordinal order); only the verified behaviors |
+| `source` | `auto` (picked from what changed) or `manual` (picked from the list) |
+| `scope` | `items`: only the listed items must match; a `null` value means "must be absent". `all`: the behavior's whole item map must equal `items` exactly: a missing, an unexpected and a changed item all fail |
+| `items` | item key -> value (or `null`), ordinal order |
+
+Auto picks every behavior with a change, `scope items`: added and changed items with their value now, removed items with `null`. Manual picks the chosen behaviors with `scope all` and every item. A behavior that could not be read at recording time is not picked. Marks without `checks` verify only the digest.
+
+### Snapshots
+
+`snapshots\start.json` (taken when recording starts) and `snapshots\mark-<n>.json` (`n` = the mark event's `n`) hold the full snapshot, so the Checkpoints window can add a behavior after recording:
+
+```json
+{"v":1,"behaviors":{"layers":{"0":"on=1;frozen=0;...","DIM":"on=1;frozen=1;..."},"sysvars":{"CLAYER":"DIM","LTSCALE":"1"}}}
+```
+
+Behaviors by id, items by key, both in ordinal order. A behavior missing from a snapshot was not captured (it could not be read); that is not the same as no items. Files are written to a temp file and moved.
+
+### Capture details
+
+`AutoCad/BehaviorCapture*.cs` reads the snapshot read-only (one `StartOpenCloseTransaction`) in command / timer context, never in an event handler. Each behavior has its own try/catch: one that throws is left out of the snapshot (= could not be read) and logged once; one that takes more than 200 ms is logged with its time.
+Numbers are `DrawingDigest.Num` (4 decimals), points `x,y,z`, booleans `1` / `0`, colours as in the layer state (`7`, `rgb:r,g,b`, `Book$Name`). Field order below is fixed. The pure parts (ids, ordering, groups) are `Core/BehaviorKeys.cs`.
+
+| behavior | item key | value fields, in order |
+|---|---|---|
+| `layers` | layer name (xref-dependent layers skipped) | `on frozen locked plot color linetype lineweight transparency description` (transparency: alpha 0-90, `ByLayer` or `ByBlock`) |
+| `layouts` | layout name (not Model) | `tab count types hash device media scale` (`types` = `LINE:2,TEXT:1` sorted; `hash` = digest hash of the layout's entity keys; `scale` = standard scale name or `num:den`) |
+| `viewports` | `<layout>\|<n>`; n from 1 by (centre Y descending, centre X ascending); the layout's overall viewport is not an item (see "Overall viewport") | `center width height viewcenter viewtarget viewdirection customscale on locked frozenlayers` (sorted names joined by `,`) |
+| `xdata` | `<entity id>\|<regapp>` | fields `0`, `1`... one per group, each `code:value` (1005 handles and object ids are `*`, binary chunks `bin:<length>`) |
+| `xdicts` | `<owner id>\|<entry path>`; owner = entity id, `LAYER:<name>`, `BLOCK:<name>` or `NOD` | `type` (DXF name: `DICTIONARY`, `XRECORD`, or the object's), then for an Xrecord fields `0`, `1`... as `code:value`. Nested dictionaries: path `A/B/C`, every entry is an item; `\` and `/` inside an entry name are written `\\` and `\/` |
+| `symbols` | `LTYPE:<name>`, `STYLE:<name>`, `DIMSTYLE:<name>`, `BLOCK:<name>`, `UCS:<name>`, `APPID:<name>` | LTYPE `description length dashes`; STYLE `font bigfont typeface height width oblique`; DIMSTYLE `dimscale dimlfac dimtxt dimasz dimexe dimexo dimgap dimdec dimlunit dimaunit dimtad dimclrd dimclre dimclrt dimtxsty`; BLOCK `origin count hash xref path`; UCS `origin xaxis yaxis`; APPID empty |
+| `sysvars` | variable name, upper case | text (`x,y,z` for points, numbers rounded); a name AutoCAD does not know is skipped; at replay only the recorded names are compared (see "Compare at replay") |
+| `views` | view name | `center height width direction target ps layout category` |
+| `psattributes` | `<layout>\|<insert id>\|<TAG>` (`#2` for a second attribute with the tag) | the attribute text (multiline attributes: their contents; invisible attributes included) |
+
+**Entity ids.** `MS:` or `PS:<layout>:` plus the entity's digest key, with `#2`, `#3`... for repeats in the same space. Repeats are numbered in creation order (the order of the owner's block table record), so one edit does not renumber the others and data swapped between identical entities is detected. Limit: if a replay creates identical entities in another order than the recording, numbering follows creation order. Only entities that have the data are keyed, so numbering counts those only (xdata / xdicts: entities with xdata or an extension dictionary; psattributes: inserts with attributes). An INSERT is keyed without its attribute values (otherwise editing an attribute would rename the insert and show as one removal and one addition). Handles are never used.
+**xdata** covers model space and every paper-space layout; **xdicts** the same entities plus layers and non-anonymous, non-xref block definitions.
+**Named object dictionary rule.** Top-level entries whose names start `ACAD_`, `AcDb`, `AEC_` or `ASDK_` (without case) are AutoCAD's own (groups, layouts, styles, scale list, plot settings, variable dictionary) and are skipped; an add-in's own dictionary is kept.
+**symbols** skips xref-dependent records and, for blocks, layouts, anonymous blocks and names starting `*`. Layers and views have their own behaviors.
+**Digest.** The digest no longer carries layer state or the current layer in new recordings (the `layers` and `sysvars` behaviors own them). Replay still reads layer state for an older mark that has no `checks` but recorded one, so such a mark is compared as before.
+**Overall viewport.** Every layout that has been current once has an overall paper-space viewport, which AutoCAD resizes and gives records (xdata `ACAD`, an `ASDK_XREC_ANNOTATION_SCALE_INFO` Xrecord) when the layout is first made current. It is AutoCAD's, not the user's: it is left out of `viewports`, of the layout's `count`, `types` and `hash`, and of the `xdata` and `xdicts` owners. It is the first id of `Layout.GetViewports()`. The collection is empty on a layout that was never made current; that layout has no overall viewport and nothing is left out. (Not the first viewport of the block table record, not the one with `Number` 1, and not "the biggest one at the origin": each was wrong on a layout built by a program, after a paper-space zoom or with a user viewport larger than the sheet.) If `GetViewports()` throws, `layouts`, `viewports`, `xdata` and `xdicts` count as not readable for that capture. A viewport of a layout that was never current reads `on` as 0 and reads 1 once the layout has been current, so a test that first visits such a layout after the baseline shows `viewport <layout>|<n> on: expected 0, got 1`. A person who visited the layout before the checkpoint is not affected.
+**One pass.** layouts, viewports, psattributes, xdata and xdicts are read together in one pass over model space and each paper-space layout. At replay only the behaviors a mark's checks name are read, and a mark with empty checks reads nothing.
+**Recording.** `snapshots\start.json` is written when recording starts, `snapshots\mark-<n>.json` at each mark (`n` = the mark event's `n`, known once the event is written); `checks` come from `AutoPick(previous snapshot, now)` (previous = the last mark's, or the start snapshot) or `ManualPick`. A mark whose snapshot could not be read has no `checks`. Snapshots are kept per drawing: a mark in drawing B is compared with B's previous snapshot. A drawing the recording first sees (activated or opened) has no snapshot until the next idle moment with no command running (the activate / open handlers only note the need, they never read the drawing); a mark in it before that has empty `checks` (`{"mode":"auto","behaviors":{}}`), which verify nothing. A snapshot file that cannot be written is logged and recording goes on.
+
+### Compare at replay
+
+`BehaviorChecks.Compare(checks, snapshotNow)` returns one line per difference, ordered by behavior id then key; none means the checks passed. Lines:
+`sysvar CLAYER: expected DIM, got 0`, `layer DIM frozen: expected 1, got 0` (canonical values: the field is named, one line per differing field; a field on one side only shows `(none)`),
+`xdata <id>|ACAD missing`, `symbols STYLE:Notes unexpected`, `layout Sheet1 count: expected 4, got 5`.
+`sysvars` is compared by the names recorded only: a variable missing from the replay's snapshot (the user's list changed, or the variable is unknown on this AutoCAD) is skipped, and extra variables are ignored (the variable list is the user's and can change after recording). Empty checks verify nothing: a mark with empty checks and no digest stays "not verified", and no capture is made for it. A behavior the replay could not read gives one line, `<label>: could not be read`. A behavior id this build does not know (a newer recording) is skipped. A checkpoint with no digest but with checks passes when the checks match. The lines go into the checkpoint result (`checkDifferences`).
+
+### System variables
+
+The `sysvars` behavior reads a list of drawing-saved variables worth checking after a test: units, current layer / linetype / color / lineweight, text, dimension, multiline, multileader and table styles, scales, point and polyline settings and the drafting modes the drawing stores (`SysVarDefaults.Default`).
+It leaves out variables a person toggles without a command (`ORTHOMODE`, `SNAPMODE`, `GRIDMODE`, `POLARMODE`, `OSMODE`, `DYNMODE`, `LWDISPLAY`, `ANNOALLVISIBLE`, `CTAB`, `TILEMODE`, `UCSNAME`: add them with `sysvarsAdd` to check them) and volatile variables (`DATE`, `CDATE`, `TDUSRTIMER`, `TDINDWG`, `TDUPDATE`, `DBMOD`, `VIEWCTR`, `VIEWSIZE`, `VIEWDIR`, `LASTPOINT`, `CMDACTIVE`, cursor, selection and other temporary variables, file paths).
+The list used = default + setting `sysvarsAdd` - setting `sysvarsRemove`, names compared without case. A name AutoCAD does not know is skipped when reading.
 
 ## Result file (`results\<yyyy-MM-dd_HH-mm-ss>_<VERDICT>.json`, `results\latest.json`)
 
@@ -292,7 +410,7 @@ If the results folder cannot be written the error goes to `retrace.log`.
 | `verdict` | `PASS`: the run completed and every checkpoint matched (at least one). `FAIL`: a checkpoint differed. `INCOMPLETE`: the run stopped before the end (a dialog needs a person, the user pressed Stop, the plugin was shut down), or a checkpoint has no recorded state, or the session has no checkpoints. `ERROR`: a command failed or was unknown, or the replay threw. Precedence: `ERROR`, `FAIL`, `INCOMPLETE`, `PASS` |
 | `stepsTotal`, `stepsRun` | steps in the plan, steps started before the run ended |
 | `startStateMatches` | the drawing at the start against the session's initial `state`; left out when the session has none. A mismatch only warns, the replay goes on |
-| `checkpoints[]` | one per `mark` step reached: `index` (1-based), `note`, `pass` (`true`, `false`, or `null` = no recorded state, not verified), `differences`, `expected` (recorded digest), `actual` (digest at replay time) |
+| `checkpoints[]` | one per `mark` step reached: `index` (1-based), `note`, `pass` (`true`, `false`, or `null` = no recorded state, not verified), `differences`, `expected` (recorded digest), `actual` (digest at replay time); with behavior checks also `checkMode` (`auto` / `manual`), `checkedBehaviors` (ids) and `checkDifferences` (lines as in "Behavior checks", empty = matched); a difference there makes `pass` false. These three are left out for a checkpoint without checks. |
 | `message` | why the run ended early, plus warnings (start state differs, unverified checkpoints, failed steps) |
 | `interactive` | `true` for `RETRACERUN`: at a dialog step the replay waits for a person (below). `false` for `RETRACEREPLAY` and Step mode: a dialog ends an Auto run with `INCOMPLETE` |
 | `steps[]` | one per step started: `index` (1-based, in the plan), `kind` (`ribbon`, `command`, `lisp`, `mark`, `dialog`; `security-prompt` for AutoCAD's security prompt the run stopped at, with `title` = the prompt's title), `title`, `status` (`ok`; `failed` for a dialog step that did not happen; `needs-person` for the dialog an unattended run stopped at; `blocked` for a security prompt: the run ends at once, verdict `INCOMPLETE`, `message` says what to do), `waitedForPerson` (a person handled a dialog while the replay waited; only ever true in an interactive run; false when auto-fill did it), `message` (why it failed), `autoFilled` (dialog steps; only present, as `true`, when the replay filled the dialog in and closed it itself), `fields` (dialog steps where auto-fill tried recorded values; only present then): one entry per recorded value, in recording order: `label`, `status` (`applied`: set and read back equal; `notFound`: no live control matched by label or stock id; `failed`: the control refused, or the value read back differs) and, unless applied, `message` |
@@ -363,7 +481,7 @@ and `SendStringToExecute` with `\n` replays typed and picked points, keywords an
 
 ## Renaming checkpoints
 
-The Checkpoints window (`RETRACECHECKPOINTS`, and after `RETRACESTOP`) changes only the `note` of `mark` lines in `recording.jsonl`: the file is
+The Checkpoints window (`RETRACECHECKPOINTS`, and after `RETRACESTOP`) changes only the `note` and, for a recording with behavior checks, the `checks` of `mark` lines in `recording.jsonl` (per checkpoint it lists the behaviors, marked auto or manual; unticking removes one, ticking adds it as manual with the data of `snapshots\mark-<n>.json`, disabled when that file lacks it; the whole `checks` value is rewritten, an empty one kept as `{"mode":..,"behaviors":{}}`): the file is
 written to `recording.jsonl.tmp` and moved over the original, and every other line stays byte for byte. An empty name means the `autoName`. Then
 `steps.md` is written again (and `steps.docx` / `steps.xlsx`, when the settings ask for them or they already exist). Results of earlier runs keep the
 old name. A checkpoint of an older recording without `autoName` is shown with a name worked out the same way, and written only when renamed.

@@ -3,7 +3,7 @@ using System.Globalization;
 
 namespace Retrace.Engine.Recordings;
 
-/// <summary>Names and discovery of test folders: `&lt;tests folder&gt;\&lt;yyyy-MM-dd_HHmm&gt;_&lt;name&gt;\{recording.jsonl, steps.md, screenshots\, results\}`.
+/// <summary>Names and discovery of test folders: `&lt;tests folder&gt;\&lt;yyyy-MM-dd_HHmm&gt;_&lt;name&gt;\{recording.jsonl, steps.md, screenshots\, results\, snapshots\}`.
 /// Only test folders (and an explicit recording.jsonl path) are read.  The one implementation, used by the engine and by the plugin (Core).</summary>
 public static class TestFolders
 {
@@ -12,6 +12,7 @@ public static class TestFolders
     public const string ScreenshotsDir = "screenshots";
     public const string UnusedDir = "unused";
     public const string ResultsDir = "results";
+    public const string SnapshotsDir = "snapshots";
     public const string LatestResult = "latest.json";
 
     /// <summary>True for `.../recording.jsonl`: a recording inside a test folder.</summary>
