@@ -75,11 +75,12 @@ public static class EngineRunner
     /// steps.xlsx when <paramref name="docx"/> / <paramref name="xlsx"/> ask for them or they exist. A Word or Excel file changed after Retrace
     /// wrote it (a tester may have filled in results) is kept and named in a warning. Fails only when the names could not be saved; when
     /// writing the steps or files fails afterwards, the names are saved and the result carries a warning.</summary>
-    public static EngineResult RenameCheckpoints(string recording, IReadOnlyDictionary<long, string> names, bool docx = false, bool xlsx = false) => Guard(r =>
+    public static EngineResult RenameCheckpoints(string recording, IReadOnlyDictionary<long, string> names, bool docx = false, bool xlsx = false,
+        IReadOnlyDictionary<long, Retrace.Core.CheckEdits>? checks = null) => Guard(r =>
     {
         if (!File.Exists(recording)) { r.Fail($"not found: {recording}"); return; }
         int changed;
-        try { changed = Checkpoints.Rename(recording, names); }
+        try { changed = Checkpoints.Update(recording, names, checks); }
         catch (InvalidDataException ex) { r.Fail(ex.Message); return; }
         r.Info($"renamed:  {changed} checkpoint(s)");
         var dir = Path.GetDirectoryName(recording) ?? "";

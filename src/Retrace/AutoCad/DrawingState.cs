@@ -1,4 +1,5 @@
 using Autodesk.AutoCAD.ApplicationServices;
+using Autodesk.AutoCAD.Colors;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
 
@@ -12,40 +13,100 @@ static class DrawingState
 {
     /// <summary>Digest of the document, or null if it cannot be read (the reason goes to retrace.log).
     /// Takes a DocumentLock unless a command is running (a command already holds one).</summary>
-    public static DrawingDigest? Read(Document doc)
+    /// <param name="withLayerState">false (recording, and replaying a mark with checks): no layer state or current layer in the digest, the `layers`
+    /// and `sysvars` behaviors own them. true only to replay an older mark that has no checks but recorded layer state.</param>
+    public static DrawingDigest? Read(Document doc, bool withLayerState = false)
     {
         try
         {
             DocumentLock? dl = string.IsNullOrEmpty(doc.CommandInProgress) ? doc.LockDocument() : null;
-            try { return ReadLocked(doc.Database); }
+            try { return ReadLocked(doc.Database, withLayerState); }
             finally { dl?.Dispose(); }
         }
         catch (Exception ex) { Log.Error("DrawingState.Read", ex); return null; }
     }
 
-    static DrawingDigest ReadLocked(Database db)
+    static DrawingDigest ReadLocked(Database db, bool withLayerState)
     {
         var ents = new List<(string, string, string)>();
         var layers = new List<string>();
+        var layerState = new Dictionary<string, LayerProps>(StringComparer.Ordinal);
         using var tr = db.TransactionManager.StartOpenCloseTransaction();
+        var layerReader = new LayerReader(tr);
 
         var lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
         foreach (ObjectId id in lt)
-            if (tr.GetObject(id, OpenMode.ForRead) is LayerTableRecord ltr) layers.Add(ltr.Name);
+            if (tr.GetObject(id, OpenMode.ForRead) is LayerTableRecord ltr)
+            {
+                layers.Add(ltr.Name);
+                if (withLayerState && !ltr.IsDependent) layerState[ltr.Name] = layerReader.Of(ltr);   // xref layers change outside the test: not in layerState
+            }
 
         var keys = new Keys(tr);
         var ms = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForRead);
         foreach (ObjectId id in ms)
             if (tr.GetObject(id, OpenMode.ForRead) is Entity ent) ents.Add(keys.Of(ent));
+        string? current = null;
+        if (withLayerState) try
+        {
+            if (tr.GetObject(db.Clayer, OpenMode.ForRead) is LayerTableRecord cur) current = cur.Name;
+        }
+        catch { /* leave currentLayer out */ }
         tr.Commit();
-        return DrawingDigest.Build(ents, layers);
+        return withLayerState ? DrawingDigest.Build(ents, layers, layerState, current) : DrawingDigest.Build(ents, layers);
     }
 
-    static string P(Point3d p) => DrawingDigest.Pt(p.X, p.Y, p.Z);
-    static string N(double d) => DrawingDigest.Num(d);
+    /// <summary>Reads layer properties inside one transaction. A property that throws is left out (null) and never fails the digest;
+    /// the first failure of a digest read goes to retrace.log. Linetype names are cached by id (one open per linetype).</summary>
+    sealed class LayerReader(Transaction tr)
+    {
+        readonly Dictionary<ObjectId, string> linetypes = new();
+        bool logged;
+
+        void Fail(string what, Exception ex)
+        {
+            if (logged) return;
+            logged = true;
+            Log.Error("DrawingState layer " + what + " (first failure of this read; layer state may be incomplete)", ex);
+        }
+
+        public LayerProps Of(LayerTableRecord ltr)
+        {
+            var p = new LayerProps();
+            try { p.On = !ltr.IsOff; } catch (Exception ex) { Fail("on", ex); }
+            try { p.Frozen = ltr.IsFrozen; } catch (Exception ex) { Fail("frozen", ex); }
+            try { p.Locked = ltr.IsLocked; } catch (Exception ex) { Fail("locked", ex); }
+            try { p.Plot = ltr.IsPlottable; } catch (Exception ex) { Fail("plot", ex); }
+            try
+            {
+                p.Color = ColorText(ltr.Color);
+            }
+            catch (Exception ex) { Fail("color", ex); }
+            try
+            {
+                var id = ltr.LinetypeObjectId;
+                if (!linetypes.TryGetValue(id, out var name))
+                    linetypes[id] = name = ((LinetypeTableRecord)tr.GetObject(id, OpenMode.ForRead)).Name;
+                p.Linetype = name;
+            }
+            catch (Exception ex) { Fail("linetype", ex); }
+            try { p.Lineweight = DrawingDigest.LineweightText((int)ltr.LineWeight); } catch (Exception ex) { Fail("lineweight", ex); }
+            return p;
+        }
+    }
+
+    internal static string ColorText(Color c) => c.ColorMethod switch
+    {
+        ColorMethod.ByColor when !string.IsNullOrEmpty(c.BookName) => $"{c.BookName}${c.ColorName}",
+        ColorMethod.ByColor => $"rgb:{c.Red},{c.Green},{c.Blue}",
+        _ => c.ColorIndex.ToString(System.Globalization.CultureInfo.InvariantCulture),
+    };
+
+    internal static string P(Point3d p) => DrawingDigest.Pt(p.X, p.Y, p.Z);
+    internal static string N(double d) => DrawingDigest.Num(d);
 
     /// <summary>Entity keys inside one transaction. Caches the content hash of each block definition.</summary>
-    sealed class Keys(Transaction tr)
+    internal sealed class Keys(Transaction tr)
     {
         readonly Dictionary<ObjectId, string> defs = new();
 
@@ -100,9 +161,21 @@ static class DrawingState
             return null;
         }
 
+        /// <summary>Entity id key for behavior items: the digest key, but an INSERT without its attribute values (so editing an attribute
+        /// does not rename the insert).</summary>
+        public string IdKey(Entity ent)
+        {
+            if (ent is BlockReference b && ent is not Table)
+            {
+                try { return DrawingDigest.PlacedKey("INSERT", ent.Layer, InsertPlacement(b), InsertContent(b, false)); }
+                catch { /* fall back to the digest key */ }
+            }
+            return Of(ent).Key;
+        }
+
         /// <summary>Block name (dynamic blocks: the definition's), a hash of what the definition (for a dynamic block, its current
-        /// anonymous one) contains, dynamic property values, and each attribute's value, placement and visibility.</summary>
-        string InsertContent(BlockReference b)
+        /// anonymous one) contains, dynamic property values, and (when <paramref name="withAttributes"/>) each attribute's value, placement and visibility.</summary>
+        string InsertContent(BlockReference b, bool withAttributes = true)
         {
             var named = (BlockTableRecord)tr.GetObject(b.IsDynamicBlock ? b.DynamicBlockTableRecord : b.BlockTableRecord, OpenMode.ForRead);
             var s = $"block={named.Name} def={Def(b.BlockTableRecord)}";
@@ -114,6 +187,7 @@ static class DrawingState
                 props.Sort(StringComparer.Ordinal);
                 s += " dyn=" + string.Join(";", props);
             }
+            if (!withAttributes) return s;
             var attrs = new List<string>();
             foreach (ObjectId aid in b.AttributeCollection)
             {
@@ -131,7 +205,7 @@ static class DrawingState
 
         /// <summary>Short hash of the keys of a block definition's entities (same rules, recursive, once per definition);
         /// "xref" for external references, which can be large and change outside the test.</summary>
-        string Def(ObjectId btrId)
+        public string Def(ObjectId btrId)
         {
             if (defs.TryGetValue(btrId, out var known)) return known;
             defs[btrId] = "cycle";   // a block that (wrongly) contains itself

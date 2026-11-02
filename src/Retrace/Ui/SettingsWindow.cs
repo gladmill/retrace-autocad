@@ -42,6 +42,11 @@ sealed class SettingsWindow : Window
     readonly List<string> _tabPosValues = new();
     readonly TextBox _key = new() { Width = 180, IsReadOnly = true, IsReadOnlyCaretVisible = false, Padding = new Thickness(3), Margin = new Thickness(8, 0, 0, 0), ToolTip = "Click here, then press the keys. Backspace or Delete turns the shortcut off." };
     readonly TextBlock _keyMsg = new() { Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+    readonly CheckBox _autoDetect = new() { Content = "Auto-detect test behavior", ToolTip = "On: at each checkpoint Retrace works out what changed (layers, layouts, styles...) and verifies exactly that. Off: you pick the behaviors below." };
+    readonly TextBlock _behaviorNote = new() { Foreground = Brushes.DimGray, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 4) };
+    readonly List<(string Id, CheckBox Box)> _behaviorBoxes = new();
+    readonly TextBlock _sysvarSummary = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), Foreground = Brushes.DimGray };
+    List<string> _sysAdd = new(), _sysRemove = new();   // edited in the dialog, written to Result on Save only
     string _keyValue = KeyChord.Default;   // "None" = off; always valid
     public RetraceSettings Result { get; private set; }
     public bool Saved { get; private set; }
@@ -50,7 +55,7 @@ sealed class SettingsWindow : Window
     {
         Result = current.Clone();
         Title = "Retrace settings";
-        Width = 820; SizeToContent = SizeToContent.Height; ResizeMode = ResizeMode.NoResize;
+        Width = 820; SizeToContent = SizeToContent.Height; ResizeMode = ResizeMode.NoResize; // the content scrolls when the screen is short
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         ShowInTaskbar = false;
 
@@ -111,6 +116,8 @@ sealed class SettingsWindow : Window
         tdoc.Children.Add(delayRow);
         root.Children.Add(new GroupBox { Header = "Training documents (Tdoc)", Margin = new Thickness(0, 12, 0, 0), Content = tdoc });
 
+        root.Children.Add(BuildBehaviorGroup(current));
+
         var posRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
         posRow.Children.Add(new TextBlock { Text = "Ribbon tab position", VerticalAlignment = VerticalAlignment.Center });
         FillTabPositions(current.RibbonTabPosition);
@@ -133,8 +140,56 @@ sealed class SettingsWindow : Window
         var cancel = Btn("Cancel"); cancel.IsCancel = true; cancel.Click += (_, _) => { Saved = false; Close(); };
         buttons.Children.Add(reset); buttons.Children.Add(save); buttons.Children.Add(cancel);
         root.Children.Add(buttons);
-        Content = root;
+        Content = new ScrollViewer { Content = root, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        MaxHeight = Math.Max(400, SystemParameters.WorkArea.Height - 40);
     }
+
+    GroupBox BuildBehaviorGroup(RetraceSettings current)
+    {
+        var panel = new StackPanel { Margin = new Thickness(6) };
+        _autoDetect.IsChecked = current.AutoDetectBehavior;
+        panel.Children.Add(_autoDetect);
+        panel.Children.Add(_behaviorNote);
+
+        var fixedRow = new CheckBox { Content = BehaviorSettingsModel.ModelSpaceLabel, IsChecked = true, IsEnabled = false, Margin = new Thickness(0, 2, 0, 0), ToolTip = BehaviorSettingsModel.ModelSpaceDescription };
+        panel.Children.Add(fixedRow);
+        foreach (var r in BehaviorSettingsModel.Rows(current.AutoDetectBehavior, current.CheckBehaviors))
+        {
+            var box = new CheckBox { Margin = new Thickness(0, 2, 0, 0), IsChecked = r.Ticked, ToolTip = r.Description };
+            var text = new StackPanel { Orientation = Orientation.Horizontal };
+            text.Children.Add(new TextBlock { Text = r.Label });
+            text.Children.Add(new TextBlock { Text = "  " + r.Description, Foreground = Brushes.DimGray });
+            box.Content = text;
+            _behaviorBoxes.Add((r.Id, box));
+            panel.Children.Add(box);
+        }
+
+        _sysAdd = new List<string>(current.SysvarsAdd ?? new());
+        _sysRemove = new List<string>(current.SysvarsRemove ?? new());
+        var sysRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 0) };
+        var edit = Btn("Edit system variables..."); edit.Margin = new Thickness(0);
+        edit.ToolTip = "The system variables the System variables behavior reads.";
+        edit.Click += (_, _) => { var d = new SysvarWindow(_sysAdd, _sysRemove) { Owner = this }; if (d.ShowDialog() == true) { _sysAdd = d.Add; _sysRemove = d.Remove; ShowSysvarSummary(); } };
+        sysRow.Children.Add(edit);
+        sysRow.Children.Add(_sysvarSummary);
+        panel.Children.Add(sysRow);
+
+        _autoDetect.Checked += (_, _) => RefreshBehaviors();
+        _autoDetect.Unchecked += (_, _) => RefreshBehaviors();
+        RefreshBehaviors();
+        ShowSysvarSummary();
+        return new GroupBox { Header = "Behavior checks", Margin = new Thickness(0, 12, 0, 0), Content = panel };
+    }
+
+    /// <summary>Auto-detect on: the list is shown disabled with the one-line explanation; off: the ticks are editable.</summary>
+    void RefreshBehaviors()
+    {
+        var auto = _autoDetect.IsChecked == true;
+        _behaviorNote.Text = BehaviorSettingsModel.Explanation(auto);
+        foreach (var (_, box) in _behaviorBoxes) box.IsEnabled = !auto;
+    }
+
+    void ShowSysvarSummary() => _sysvarSummary.Text = SysvarListEdit.Summary(_sysAdd, _sysRemove);
 
     /// <summary>Entries: Right of Home (default), First, Last, one "Right of title" per visible ribbon tab; the stored value is kept as an extra entry if none matches.</summary>
     void FillTabPositions(string stored)
@@ -269,6 +324,13 @@ sealed class SettingsWindow : Window
         _docx.IsChecked = false;
         _xlsx.IsChecked = false;
         _tabPos.SelectedIndex = 0;
+        var dflt = new RetraceSettings();
+        _autoDetect.IsChecked = dflt.AutoDetectBehavior;
+        var defaults = new HashSet<string>(dflt.CheckBehaviors);
+        foreach (var (id, box) in _behaviorBoxes) box.IsChecked = defaults.Contains(id);
+        SysvarListEdit.Reset(_sysAdd, _sysRemove);
+        ShowSysvarSummary();
+        RefreshBehaviors();
         _tdocFront.IsChecked = true;
         _tdocAnnotate.IsChecked = true;
         _tdocDelay.Text = new RetraceSettings().TdocStepDelayMs.ToString();
@@ -305,6 +367,10 @@ sealed class SettingsWindow : Window
         var pos = _tabPos.SelectedIndex >= 0 ? _tabPosValues[_tabPos.SelectedIndex] : RibbonTabPosition.AfterHome;
         s.RibbonTabPosition = pos == RibbonTabPosition.AfterHome ? "" : pos;
         s.CheckpointKey = _keyValue;
+        s.AutoDetectBehavior = _autoDetect.IsChecked == true;
+        s.CheckBehaviors = BehaviorSettingsModel.FromTicks(_behaviorBoxes.Where(b => b.Box.IsChecked == true).Select(b => b.Id), s.CheckBehaviors);
+        s.SysvarsAdd = new List<string>(_sysAdd);
+        s.SysvarsRemove = new List<string>(_sysRemove);
         s.TdocBringToFront = _tdocFront.IsChecked == true;
         s.TdocAnnotate = _tdocAnnotate.IsChecked == true;
         s.TdocStepDelayMs = delay;

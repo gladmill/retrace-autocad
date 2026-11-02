@@ -9,7 +9,7 @@ namespace Retrace.Core;
 /// <summary>Crash-safe JSONL writer: one event per line, flushed after every line.</summary>
 public sealed class SessionWriter : IDisposable
 {
-    public const int SchemaVersion = 1;
+    public const int SchemaVersion = 3;   // 3 = the recorder writes behavior checks and snapshots, see docs/recording-format.md "Schema versions"
     static readonly JsonSerializerOptions Json = new() { WriteIndented = false, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     readonly StreamWriter _out;

@@ -56,6 +56,10 @@ public sealed class Recorder
     DrawingOpen.Tracker _startup = new();   // which LISP is a drawing's start-up (not the person's): no checkpoint name from it
     int _ctxCmdDepth, _ctxLispDepth;        // commands / LISP running, as the events say: a drawing opened inside one is that step's
     int _marks;
+    // Behavior snapshot per document: the start (or first sight) of it, then its last checkpoint. What the next checkpoint in THAT document auto-detects against.
+    readonly Dictionary<Document, BehaviorSnapshot> _snaps = new();
+    // Documents the recording saw (activated / opened) that have no snapshot yet. Handlers only add here; OnIdle takes the snapshot (never in a handler).
+    readonly HashSet<Document> _needSnap = new();
 
     // origin attribution: the last ribbon click that has not been matched to a command yet
     long _lastRibbonT = -100000;
@@ -114,6 +118,15 @@ public sealed class Recorder
             var doc = AcApp.DocumentManager.MdiActiveDocument;
             var digest = doc == null ? null : DrawingState.Read(doc);
             if (digest != null) Emit("state", CurDoc(), ("state", digest));
+        });
+        _snaps.Clear(); _needSnap.Clear();
+        Log.Safe("initial behaviors", () =>
+        {
+            var doc = AcApp.DocumentManager.MdiActiveDocument;
+            var snap = doc == null ? null : Capture(doc, RetraceSettings.Load());
+            if (snap == null || doc == null) return;
+            _snaps[doc] = snap;
+            WriteSnapshot(snap, BehaviorSnapshot.StartPath(Path.GetDirectoryName(_w!.Path)!));
         });
         Subscribe();
         SnapshotDocs();
@@ -307,7 +320,7 @@ public sealed class Recorder
             ComponentManager.ItemExecuted -= OnItemExecuted;
             AcApp.PreTranslateMessage -= OnPreTranslate;
             foreach (var d in _hooked.ToList()) UnhookDocument(d);
-            UnhookRibbon();
+            UnhookRibbon(); _snaps.Clear(); _needSnap.Clear();
             _modalTimer?.Stop();
             _modalTimer = null;
             _shotTimer?.Stop();
@@ -323,6 +336,19 @@ public sealed class Recorder
         if (_w == null) return;
         if (_shots.NeedsMainWindow) Log.Safe("main window", () => _shots.SetMainWindow(MainWindowHandle()));
         Log.Safe("shot idle", () => _shots.Pump(_w.ElapsedMs));
+        if (_needSnap.Count > 0) Log.Safe("first behavior snapshot", TakeNeededSnapshot);
+    }
+
+    /// <summary>Idle context: the first snapshot of the active document when the recording first saw it, taken only while no command runs
+    /// (a checkpoint taken first has already made one).</summary>
+    void TakeNeededSnapshot()
+    {
+        var doc = AcApp.DocumentManager.MdiActiveDocument;
+        if (doc == null || !_needSnap.Contains(doc)) return;
+        if (_snaps.ContainsKey(doc)) { _needSnap.Remove(doc); return; }
+        if (!string.IsNullOrEmpty(doc.CommandInProgress) || _w == null) return;
+        _needSnap.Remove(doc);
+        if (Capture(doc, RetraceSettings.Load()) is { } snap) _snaps[doc] = snap;
     }
 
     // ---- ribbon ------------------------------------------------------------------------------
@@ -421,10 +447,16 @@ public sealed class Recorder
 
     // ---- documents and commands --------------------------------------------------------------
 
-    void OnDocActivated(object? s, DocumentCollectionEventArgs e) => Log.Safe("DocActivated", () => { HookDocument(e.Document); Emit("doc_active", DocName(e.Document)); });
+    void OnDocActivated(object? s, DocumentCollectionEventArgs e) => Log.Safe("DocActivated", () => { HookDocument(e.Document); NeedSnapshot(e.Document); Emit("doc_active", DocName(e.Document)); });
     // path: the full path of a drawing opened from a file (null for a new, never saved one), so a replay can open it again
-    void OnDocCreated(object? s, DocumentCollectionEventArgs e) => Log.Safe("DocCreated", () => { HookDocument(e.Document); Emit("doc_created", DocName(e.Document), ("path", DocPath(e.Document))); });
-    void OnDocToBeDestroyed(object? s, DocumentCollectionEventArgs e) => Log.Safe("DocToBeDestroyed", () => { Emit("doc_closing", DocName(e.Document)); UnhookDocument(e.Document); });
+    void OnDocCreated(object? s, DocumentCollectionEventArgs e) => Log.Safe("DocCreated", () => { HookDocument(e.Document); NeedSnapshot(e.Document); Emit("doc_created", DocName(e.Document), ("path", DocPath(e.Document))); });
+    void OnDocToBeDestroyed(object? s, DocumentCollectionEventArgs e) => Log.Safe("DocToBeDestroyed", () => { Emit("doc_closing", DocName(e.Document)); UnhookDocument(e.Document); _snaps.Remove(e.Document); _needSnap.Remove(e.Document); });
+
+    /// <summary>Handler-safe: only notes that this document has no behavior snapshot yet (<see cref="OnIdle"/> takes it).</summary>
+    void NeedSnapshot(Document? d)
+    {
+        if (d != null && !_snaps.ContainsKey(d)) _needSnap.Add(d);
+    }
 
     void HookDocument(Document d)
     {
@@ -817,16 +849,42 @@ public sealed class Recorder
     /// <summary>Writes a checkpoint. Its automatic name (see <see cref="Checkpoints.AutoName"/>) is stored as `autoName`, and as the `note`
     /// unless <paramref name="note"/> gives one. Returns the name used, or null when the event could not be written (nothing counted).</summary>
     /// <param name="at">what the checkpoint shortcut found at the cursor (<see cref="CursorContext"/>): names the checkpoint before the last action does</param>
-    public string? Mark(string? note, DrawingDigest? state, Checkpoints.CheckpointContext? at = null)
+    /// <summary>The behavior snapshot of the drawing (command / timer context only). Null when it could not be read at all.</summary>
+    public BehaviorSnapshot? Capture(Document doc, RetraceSettings settings) => BehaviorCapture.Read(doc, settings);
+
+    /// <summary>Snapshot files are a convenience for the Checkpoints window: a failure is logged and never stops the recording.</summary>
+    static void WriteSnapshot(BehaviorSnapshot snap, string path)
     {
+        if (!snap.Write(path, out var err)) Log.Info($"snapshot not written ({path}): {err}");
+    }
+
+    /// <param name="doc">the document the checkpoint is for; its behaviors are captured now (command / timer context) and compared with ITS previous
+    /// snapshot (a drawing the recording has not seen before has none: its first checkpoint then has empty `checks`). Null = no checks.</param>
+    public string? Mark(string? note, DrawingDigest? state, Checkpoints.CheckpointContext? at = null, Document? doc = null)
+    {
+        var settings = RetraceSettings.Load();
+        var snapshot = doc == null ? null : Capture(doc, settings);
         // values set in a palette just before the checkpoint (the shortcut pressed while still in it) come first
         if (_w is { } w) Log.Safe("mark palette", () => { EmitPalette(_pal.Flush(w.ElapsedMs, drop: false)); NativeTick(true); });
         MarkPending = false;   // any checkpoint (the ribbon button too) answers a pending shortcut press
         var auto = Checkpoints.AutoName(_marks + 1, at ?? _lastCtx);
         var name = Checkpoints.Clean(note);
         if (name.Length == 0) name = auto;
-        if (Emit("mark", CurDoc(), ("note", name), ("autoName", auto), ("state", state), ("near", at?.Description)) == 0) return null;
+        BehaviorChecks? checks = null;
+        if (snapshot != null)
+        {
+            _snaps.TryGetValue(doc!, out var previous);
+            checks = settings.AutoDetectBehavior ? BehaviorChecks.AutoPick(previous, snapshot) : BehaviorChecks.ManualPick(settings.EffectiveCheckBehaviors(), snapshot);
+        }
+        var n = Emit("mark", CurDoc(), ("note", name), ("autoName", auto), ("state", state), ("checks", checks), ("near", at?.Description));
+        if (n == 0) return null;
         _marks++;
+        if (snapshot != null && _w is { } sw)
+        {
+            _snaps[doc!] = snapshot;
+            _needSnap.Remove(doc!);
+            WriteSnapshot(snapshot, BehaviorSnapshot.MarkPath(Path.GetDirectoryName(sw.Path)!, n));
+        }
         return name;
     }
 }

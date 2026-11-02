@@ -81,6 +81,26 @@ public sealed class RetraceSettings
     /// a window on top of AutoCAD with a Browse button and recent places. Scripts, LISP and FILEDIA 0 always get the command line.</summary>
     [JsonPropertyName("promptStyle")] public string PromptStyle { get; set; } = PromptStyles.CommandLine;
 
+    /// <summary>Behavior checks: true (default) = at each checkpoint Retrace works out what changed since the previous checkpoint and verifies exactly
+    /// that; false = the behaviors in <see cref="CheckBehaviors"/> are verified whole. Model-space entities are verified either way.</summary>
+    [JsonPropertyName("autoDetectBehavior")] public bool AutoDetectBehavior { get; set; } = true;
+
+    /// <summary>Behavior ids (see <see cref="BehaviorCatalog"/>) verified when <see cref="AutoDetectBehavior"/> is off.</summary>
+    [JsonPropertyName("checkBehaviors")] public List<string> CheckBehaviors { get; set; } = new(BehaviorCatalog.DefaultManual);
+
+    /// <summary>System variable names added to <see cref="SysVarDefaults.Default"/> for the `sysvars` behavior.</summary>
+    [JsonPropertyName("sysvarsAdd")] public List<string> SysvarsAdd { get; set; } = new();
+
+    /// <summary>System variable names taken out of <see cref="SysVarDefaults.Default"/>.</summary>
+    [JsonPropertyName("sysvarsRemove")] public List<string> SysvarsRemove { get; set; } = new();
+
+    /// <summary>The system variables to read: default + add - remove, without case. Names AutoCAD does not know are skipped at capture.</summary>
+    public List<string> EffectiveSysvars() => SysVarDefaults.Effective(SysvarsAdd, SysvarsRemove);
+
+    /// <summary>The manual-mode behavior ids: <see cref="CheckBehaviors"/> without unknown ids and duplicates, in the order given. Ids match without case and come back as the catalog id.</summary>
+    public List<string> EffectiveCheckBehaviors() =>
+        (CheckBehaviors ?? new()).Select(id => BehaviorCatalog.Find((id ?? "").Trim(), true)?.Id).OfType<string>().Distinct(StringComparer.Ordinal).ToList();
+
     /// <summary>The prompt style asked for: true for "ui" (any case), false for anything else.</summary>
     [JsonIgnore] public bool UiPrompts => string.Equals(Clean(PromptStyle), PromptStyles.Ui, StringComparison.OrdinalIgnoreCase);
 
@@ -178,7 +198,14 @@ public sealed class RetraceSettings
             try { Directory.CreateDirectory(d); } catch (Exception) { }
     }
 
-    public RetraceSettings Clone() => (RetraceSettings)MemberwiseClone();
+    public RetraceSettings Clone()
+    {
+        var c = (RetraceSettings)MemberwiseClone();
+        c.CheckBehaviors = new List<string>(CheckBehaviors ?? new());
+        c.SysvarsAdd = new List<string>(SysvarsAdd ?? new());
+        c.SysvarsRemove = new List<string>(SysvarsRemove ?? new());
+        return c;
+    }
 
     /// <summary>Store "" when the text equals the default (or is "default" or "."), so a default stays a default.</summary>
     public static string Normalize(string text, string dflt)

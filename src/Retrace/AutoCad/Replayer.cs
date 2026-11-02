@@ -263,7 +263,7 @@ sealed class Replayer
     {
         var ed = _doc.Editor;
         if (initial == null) { ed.WriteMessage("\nNote: the session has no recorded start state (older recording); the start drawing is not checked.\n"); return; }
-        var now = DrawingState.Read(_doc);
+        var now = DrawingState.Read(_doc, withLayerState: initial.LayerState != null);   // a schema 2 recording keeps its start layer compare
         if (now == null) { _result.StartStateMatches = false; _warnings.Add("start state could not be read"); ed.WriteMessage("\nWARNING: could not read the drawing to compare with the start state.\n"); return; }
         var diffs = DrawingDigest.Compare(initial, now);
         _result.StartStateMatches = diffs.Count == 0;
@@ -757,19 +757,42 @@ sealed class Replayer
         var cp = new CheckpointResult { Index = ++_checks, Note = s.Note ?? "", Expected = s.State };
         _result.Checkpoints.Add(cp);
         var label = string.IsNullOrEmpty(cp.Note) ? "" : $" ({cp.Note})";
-        if (s.State == null)
+        var emptyChecks = s.Checks is { IsEmpty: true };
+        if (s.State == null && (s.Checks == null || emptyChecks))
         {
+            if (s.Checks != null) cp.ApplyChecks(s.Checks, new BehaviorSnapshot());   // records the mode; verifies nothing
             cp.Differences.Add("no state recorded for this checkpoint");
             Say($"\n  CHECK {cp.Index} SKIPPED{label}: no recorded state (older recording). EXPECTED: {s.Note}\n");
             _win.Show("Check " + cp.Index, "No recorded state. Expected: " + s.Note, false);
             return;
         }
-        cp.Actual = DrawingState.Read(_doc);
-        if (cp.Actual == null) { cp.Pass = false; cp.Differences.Add("could not read the drawing"); }
-        else { cp.Differences = DrawingDigest.Compare(s.State, cp.Actual); cp.Pass = cp.Differences.Count == 0; }
-        var line = cp.Pass == true ? $"CHECK {cp.Index} PASS" : $"CHECK {cp.Index} FAIL: {string.Join("; ", cp.Differences)}";
+        if (s.State != null)
+        {
+            // an older mark without checks keeps its layer-state compare, so it reads the layer state too
+            cp.Actual = DrawingState.Read(_doc, withLayerState: s.Checks == null && s.State.LayerState != null);
+            if (cp.Actual == null) { cp.Pass = false; cp.Differences.Add("could not read the drawing"); }
+            else { cp.Differences = DrawingDigest.Compare(s.State, cp.Actual, compareLayerState: s.Checks == null); cp.Pass = cp.Differences.Count == 0; }
+        }
+        var checkLines = new List<string>();
+        if (s.Checks != null && emptyChecks) cp.ApplyChecks(s.Checks, new BehaviorSnapshot());   // nothing to verify: no capture, cannot fail
+        else if (s.Checks != null)
+        {
+            // only the behaviors the checks name are read
+            var actual = BehaviorCapture.Read(_doc, RetraceSettings.Load(), s.Checks.Behaviors.Keys.ToList());
+            if (actual == null)
+            {
+                cp.Pass = false;
+                cp.CheckMode = s.Checks.Mode;
+                cp.CheckedBehaviors = s.Checks.Behaviors.Keys.ToList();
+                cp.CheckDifferences = new List<string> { "could not read the drawing's behaviors" };
+            }
+            else cp.ApplyChecks(s.Checks, actual);
+            checkLines = cp.CheckDifferences ?? checkLines;
+        }
+        var all = cp.Differences.Concat(checkLines).ToList();
+        var line = cp.Pass == true ? $"CHECK {cp.Index} PASS" : $"CHECK {cp.Index} FAIL: {string.Join("; ", all)}";
         Say($"\n  {line}{label}\n");
-        _win.Show("Check " + cp.Index + (cp.Pass == true ? " PASS" : " FAIL"), (cp.Note.Length > 0 ? cp.Note + "\n" : "") + string.Join("\n", cp.Differences), false);
+        _win.Show("Check " + cp.Index + (cp.Pass == true ? " PASS" : " FAIL"), (cp.Note.Length > 0 ? cp.Note + "\n" : "") + string.Join("\n", all), false);
     }
 
     void RunStep(Step s)

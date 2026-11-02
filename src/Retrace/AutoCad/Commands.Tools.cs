@@ -51,7 +51,7 @@ public sealed partial class Commands
         var dir = RetraceSettings.Load().Tests;
         Directory.CreateDirectory(dir);
         if (Ask.InWindow()) return AskSession(ed);
-        if (!FileDialogsOn())
+        if (!FileDialogsOn() || Ask.ScriptKnown())   // FILEDIA 0, or a script: the command-line path prompt (a script's next line answers it)
         {
             var r = Ask.String(ed, "\nRecording ('last' = newest): ");
             if (r.Status != PromptStatus.OK) return null;

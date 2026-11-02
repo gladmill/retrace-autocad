@@ -1,3 +1,4 @@
+using Retrace.Core;
 using Retrace.Engine;
 using Retrace.Engine.Recordings;
 using Retrace.Ui;
@@ -51,14 +52,13 @@ public sealed partial class Commands
         _checkpointsWins.Clear();
     }
 
-    /// <summary>After RETRACESTOP wrote the steps: opens the window if the setting is on and the recording has checkpoints (checked off the UI thread).</summary>
+    /// <summary>After RETRACESTOP wrote the steps: opens the window if the recording has checkpoints (checked off the UI thread). Whether to ask for it (reviewCheckpoints, scripted stop) was decided at stop time in StopCore.</summary>
     void ReviewAfterStop(string recording)
     {
-        if (!RetraceSettings.Load().ReviewCheckpoints) return;
         var disp = Dispatcher.CurrentDispatcher;
         Task.Run(() =>
         {
-            try { return File.ReadLines(recording).Any(l => l.Contains("\"type\":\"mark\"", StringComparison.Ordinal)); }
+            try { return StopReview.HasCheckpoint(File.ReadLines(recording)); }
             catch (IOException) { return false; }
             catch (UnauthorizedAccessException) { return false; }
         }).ContinueWith(t =>
@@ -69,7 +69,7 @@ public sealed partial class Commands
 
     /// <summary>Renames in the background, then writes the steps (and Word / Excel when the settings ask for them or the files exist).
     /// <paramref name="done"/> runs on the window's thread with (ok, message). False when the job could not start (the message was shown).</summary>
-    internal bool CheckpointsSave(string recording, IReadOnlyDictionary<long, string> names, Action<bool, string> done)
+    internal bool CheckpointsSave(string recording, IReadOnlyDictionary<long, string> names, IReadOnlyDictionary<long, CheckEdits>? checks, Action<bool, string> done)
     {
         _checkpointsWins.TryGetValue(Path.GetFullPath(recording), out var win);
         var disp = win?.UiDispatcher ?? Dispatcher.CurrentDispatcher;
@@ -77,7 +77,8 @@ public sealed partial class Commands
         if (Recorder.Instance.Writer is { } w && string.Equals(Path.GetFullPath(w.Path), Path.GetFullPath(recording), StringComparison.OrdinalIgnoreCase))
         { Done(false, "This test is still being recorded. Stop it first (RETRACESTOP)."); return false; }
         var copy = names.ToDictionary(kv => kv.Key, kv => kv.Value);
-        if (!EngineJobs.Start(_ => { var s = RetraceSettings.Load(); return EngineRunner.RenameCheckpoints(recording, copy, s.ExportDocx, s.ExportXlsx); }, r =>
+        var checksCopy = checks?.ToDictionary(kv => kv.Key, kv => kv.Value);
+        if (!EngineJobs.Start(_ => { var s = RetraceSettings.Load(); return EngineRunner.RenameCheckpoints(recording, copy, s.ExportDocx, s.ExportXlsx, checksCopy); }, r =>
             {
                 if (r.Success)
                 {

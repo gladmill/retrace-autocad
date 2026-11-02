@@ -71,16 +71,21 @@ public sealed partial class Commands
         catch (Exception ex) { Log.Error("RETRACERECORD", ex); ed.WriteMessage($"\nRETRACERECORD failed: {ex.Message}\n"); }
     }
 
-    public void Stop()
+    public void Stop() => StopCore(scripted: false);
+
+    /// <summary>-RETRACESTOP: the same, for scripts and automation. Never opens the Checkpoints window; everything it says goes to the command line.</summary>
+    public void StopScripted() => StopCore(scripted: true);
+
+    void StopCore(bool scripted)
     {
         var ed = Ed;
         try
         {
             var r = Recorder.Instance.Stop();
             ed?.WriteMessage(r == null ? "\nNot recording.\n" : $"\nRetrace recording stopped: {r.Value.Events} events, {r.Value.Ms / 1000.0:0.#} s\n  {r.Value.Path}\n");
-            if (r != null) BuildScript(r.Value.Path, openWhenDone: false, reviewWhenDone: true);
+            if (r != null) BuildScript(r.Value.Path, openWhenDone: false, reviewWhenDone: StopReview.ShouldOpenWindow(scripted || Ask.ScriptKnown(), RetraceSettings.Load().ReviewCheckpoints));
         }
-        catch (Exception ex) { Log.Error("RETRACESTOP", ex); }
+        catch (Exception ex) { var cmd = scripted ? "-RETRACESTOP" : "RETRACESTOP"; Log.Error(cmd, ex); ed?.WriteMessage($"\n{cmd} failed: {ex.Message}\n"); }
     }
 
     /// <summary>RETRACEMARK: a checkpoint at once, with no prompt, so it does not interrupt the test. It is named automatically
@@ -108,7 +113,7 @@ public sealed partial class Commands
         }
         rec.MarkPending = false;
         var state = DrawingState.Read(doc);
-        var name = Recorder.Instance.Mark(null, state, at);
+        var name = Recorder.Instance.Mark(null, state, at, doc);
         var msg = name == null ? "Checkpoint NOT saved: the recording could not be written (see retrace.log)."
                 : state == null ? $"Checkpoint saved: {name} (drawing state could not be read)." : $"Checkpoint saved: {name} ({state.Summary()}).";
         doc.Editor.WriteMessage("\n" + msg + "\n");
@@ -132,7 +137,7 @@ public sealed partial class Commands
             // read the drawing here, in the command (never inside a prompt event handler)
             var doc = AcApp.DocumentManager.MdiActiveDocument;
             var state = doc == null ? null : DrawingState.Read(doc);
-            var name = Recorder.Instance.Mark(note, state);
+            var name = Recorder.Instance.Mark(note, state, null, doc);
             if (name == null) { ed.WriteMessage("\nCheckpoint NOT saved: the recording could not be written (see retrace.log).\n"); return; }
             ed.WriteMessage(state == null ? $"\nCheckpoint saved: {name} (drawing state could not be read).\n" : $"\nCheckpoint saved: {name} ({state.Summary()}). You can rename it when you stop.\n");
         }
@@ -167,6 +172,7 @@ public sealed partial class Commands
         var s = r.StringResult?.Trim().Trim('"') ?? "";
         if (s.Equals("last", StringComparison.OrdinalIgnoreCase)) return TestFolders.Newest(tests);
         if (s.Length > 0) return s;
+        if (Ask.ScriptKnown()) return null;   // a script has nobody to use a file dialog: its answer above was the whole answer ("No recording chosen." if empty)
         var dlg = new Microsoft.Win32.OpenFileDialog { Title = "Choose recording.jsonl in a test folder", Filter = RecordingFilter, InitialDirectory = Directory.Exists(tests) ? tests : null };
         return dlg.ShowDialog() == true ? dlg.FileName : null;
     }

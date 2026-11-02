@@ -23,6 +23,10 @@ public sealed class Step
     public int ButtonIndex = 1;         // palette: which of the palette's buttons with that text (1 = the first)
     public string? Note;
     public DrawingDigest? State;        // mark: the drawing state recorded at the checkpoint (null in older sessions)
+    /// <summary>mark: what the checkpoint verifies beyond <see cref="State"/> (schema 3); null = none (older sessions, or checks not recorded). Replay: <see cref="BehaviorChecks.Compare"/>.</summary>
+    public BehaviorChecks? Checks;
+    /// <summary>mark: the `n` of the mark event; names the snapshot file <see cref="BehaviorSnapshot.MarkPath"/>. 0 = unknown.</summary>
+    public int EventN;
     public long T;
     public bool HadDialog;
     /// <summary>dialog / palette: the fields the person changed while it was open; null = the session has no `dialog_values` event for it.</summary>
@@ -90,7 +94,10 @@ public static class Plan
         return null;
     }
 
-    public static long Num(JsonElement e, string key) => e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt64() : 0;
+    /// <summary>The event number `n` as a positive int; 0 when missing, not an integer or out of range. Never throws.</summary>
+    static int EventNumber(JsonElement e) => e.TryGetProperty("n", out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var i) && i > 0 ? i : 0;
+
+    public static long Num(JsonElement e, string key) => e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var l) ? l : 0;
 
     public static List<Step> Build(IEnumerable<JsonElement> events)
     {
@@ -288,7 +295,8 @@ public static class Plan
                 {
                     var note = Str(e, "note") ?? "";
                     var state = e.TryGetProperty("state", out var st) ? DrawingDigest.FromJson(st) : null;
-                    steps.Add(new Step { Kind = "mark", T = t, Note = note, State = state, Title = note.Length == 0 ? "Checkpoint" : "Check: " + note });
+                    var checks = e.TryGetProperty("checks", out var ck) ? BehaviorChecks.FromJson(ck) : null;
+                    steps.Add(new Step { Kind = "mark", T = t, Note = note, State = state, Checks = checks, EventN = EventNumber(e), Title = note.Length == 0 ? "Checkpoint" : "Check: " + note });
                     break;
                 }
             }
