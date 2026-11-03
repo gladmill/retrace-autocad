@@ -59,11 +59,35 @@ public static class SelectionReplay
 
     /// <summary>true for a selection result whose typed text already ends with the Enter that closes the selection (an empty last line).</summary>
     static bool ClosesSelection(Answer a) =>
-        a is { Kind: "selection", Status: "OK", Value: { } v } && TypedLines(v) is { Count: > 0 } lines && lines[^1].Length == 0;
+        a is { Kind: "selection", Status: "OK", Value: { } v } && (TypedLines(v) ?? (UseClicks(v) ? ClickLines(v) : null)) is { Count: > 0 } lines && lines[^1].Length == 0;
 
     /// <summary>The text the person typed for this selection (`typed` of the recorded value), as lines; null if the recording has none.</summary>
     public static List<string>? TypedLines(JsonElement value) =>
         value.ValueKind == JsonValueKind.Object && value.TryGetProperty("typed", out var t) && t.ValueKind == JsonValueKind.String ? TypedInput.Lines(t.GetString()) : null;
+
+    /// <summary>The text of the mouse clicks of this selection (`clicks` of the recorded value: the keys and the clicks as point lines), as lines; null if the recording has none.</summary>
+    public static List<string>? ClickLines(JsonElement value) =>
+        value.ValueKind == JsonValueKind.Object && value.TryGetProperty("clicks", out var t) && t.ValueKind == JsonValueKind.String ? TypedInput.Lines(t.GetString()) : null;
+
+    /// <summary>Whether a mouse selection replays from its clicks instead of its handles. Handles are the first choice for a mouse selection (they do not depend on the view,
+    /// the pickbox or the window size); the clicks are used only where the handles cannot say what was selected: a handle that repeats (the insert of each attribute that
+    /// -ATTEDIT selects), a sub-entity (an attribute) in the list, or a list the recorder cut short (`count` above the handles kept). False when there are no clicks.</summary>
+    public static bool UseClicks(JsonElement value)
+    {
+        if (ClickLines(value) == null) return false;
+        if (value.ValueKind != JsonValueKind.Object || !value.TryGetProperty("handles", out var hs) || hs.ValueKind != JsonValueKind.Array) return true;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        int n = 0;
+        foreach (var h in hs.EnumerateArray())
+        {
+            n++;
+            var handle = h.ValueKind == JsonValueKind.String ? h.GetString() : null;
+            if (string.IsNullOrEmpty(handle) || handle == "?" || !seen.Add(handle)) return true;
+        }
+        if (value.TryGetProperty("dxf", out var ds) && ds.ValueKind == JsonValueKind.Array
+            && ds.EnumerateArray().Any(x => x.ValueKind == JsonValueKind.String && x.GetString() is "ATTRIB" or "ATTDEF")) return true;
+        return value.TryGetProperty("count", out var c) && c.ValueKind == JsonValueKind.Number && c.TryGetInt32(out var cnt) && cnt > n;
+    }
 
     /// <summary>Last resort: handles as `(handent "..")`, one line each, then the Enter that ends the selection. A handle that
     /// <paramref name="exists"/> says is missing in the drawing, or that holds another kind of object than recorded, is left out (typing a

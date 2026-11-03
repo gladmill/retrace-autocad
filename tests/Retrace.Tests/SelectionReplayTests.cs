@@ -141,30 +141,100 @@ public class SelectionReplayTests
 
     // ---- review fixes ----
 
-    static string? Typed(Action<TypedSelection> act)
+    static (string? Typed, string? Clicks) Both(Action<TypedSelection> act)
     {
         var t = new TypedSelection();
         act(t);
         return t.Take();
     }
+    static string? Typed(Action<TypedSelection> act) => Both(act).Typed;
     static void Keys(TypedSelection t, string keys) { foreach (var c in keys) t.Key(c == '\n' ? '\r' : c); }
     static readonly double[] P1 = { 0, 0, 0 }, P2 = { 5, 5, 0 };
+    /// <summary>A point typed at the keyboard: its line, Enter, then the point result (what the recorder sees).</summary>
+    static void TypedPt(TypedSelection t, double[] p) { Keys(t, $"{p[0]},{p[1]}\n"); t.Point(p); }
+    /// <summary>A point clicked in the drawing window.</summary>
+    static void Click(TypedSelection t, double[] p) => t.Point(p, TypedSelection.PointLine(p[0], p[1], p[2]), click: true);
+
+    [Fact]
+    public void Clicks_are_stored_in_their_own_field_as_the_point_lines_that_type_them_and_typed_stays_typed()
+    {
+        // mouse window (two clicks) ended with Enter: no `typed`, the clicks text
+        var w = Both(t => { Click(t, P1); Click(t, P2); Keys(t, "\n"); });
+        Assert.Null(w.Typed);
+        Assert.Equal("0,0\n5,5\n\n", w.Clicks);
+        // two real clicks at the same spot are two points
+        Assert.Equal("5,5\n5,5\n\n", Both(t => { Click(t, P2); Click(t, P2); Keys(t, "\n"); }).Clicks);
+        // one pick
+        Assert.Equal("1.5,2\n\n", Both(t => { Click(t, new[] { 1.5, 2, 0 }); Keys(t, "\n"); }).Clicks);
+        // the last click completes the selection (-ATTEDIT, ERASE): the Enter comes later as its own selection result
+        Assert.Equal("0,0\n5,5\n", Both(t => { Click(t, P1); Click(t, P2); }).Clicks);
+        // "w" typed, corners clicked: the clicks text holds both, `typed` is empty
+        var mixed = Both(t => { Keys(t, "w\n"); Click(t, P1); Click(t, P2); Keys(t, "\n"); });
+        Assert.Null(mixed.Typed);
+        Assert.Equal("w\n0,0\n5,5\n\n", mixed.Clicks);
+        // a point typed, then one clicked
+        Assert.Equal("1,1\n5,5\n", Both(t => { TypedPt(t, new[] { 1.0, 1, 0 }); Click(t, P2); }).Clicks);
+        // a typed selection has no clicks field
+        Assert.Null(Both(t => { Keys(t, "w\n"); TypedPt(t, P1); TypedPt(t, P2); Keys(t, "\n"); }).Clicks);
+    }
+
+    [Fact]
+    public void Clicks_are_dropped_when_they_cannot_stand_for_the_selection()
+    {
+        // a Shift / Ctrl click (deselect, sub-object, cycling pick)
+        Assert.Null(Both(t => { Click(t, P1); t.ClickModifier(); Click(t, P2); Keys(t, "\n"); }).Clicks);
+        // a half-typed line before a click
+        Assert.Null(Both(t => { Keys(t, "w"); Click(t, P1); Click(t, P2); Keys(t, "\n"); }).Clicks);
+        // a transparent command inside the prompt
+        Assert.Equal((null, null), Both(t => { Click(t, P1); t.CommandStart(true); Keys(t, "\n"); }));
+        // a point that is neither typed nor clicked (LISP, noise) spoils both
+        Assert.Equal((null, null), Both(t => { Click(t, P1); t.Point(P2); Keys(t, "\n"); }));
+        // a click, then a bad text is dropped and the next selection is clean
+        var x = new TypedSelection();
+        x.ClickModifier();
+        Assert.Null(x.Take().Clicks);
+        Click(x, P1);
+        Assert.Equal("0,0\n", x.Take().Clicks);
+    }
+
+    [Fact]
+    public void Point_lines_are_fixed_notation_never_an_exponent()
+    {
+        Assert.Equal("0,0.1", TypedSelection.PointLine(0, 0.1, 0));
+        Assert.Equal("0,0", TypedSelection.PointLine(1e-10, -1e-10, 0));   // rounded to 1e-8, no "1E-10", no "-0"
+        Assert.Equal("0.00001,-0.00002", TypedSelection.PointLine(0.00001, -0.00002, 0));
+        Assert.Equal("123456789012345,-98765432109876.5", TypedSelection.PointLine(123456789012345, -98765432109876.5, 0));
+        Assert.Equal("100000000000000000000,1", TypedSelection.PointLine(1e20, 1, 0));
+        Assert.Equal("1.5,2,3.25", TypedSelection.PointLine(1.5, 2, 3.25));
+        Assert.Equal("1,2", TypedSelection.PointLine(1, 2, 1e-12));
+        foreach (var v in new[] { 1e-300, 1e-7, 3.3e-9, 1.23456789e15, 4.5e25, -2.2e-6 })
+            Assert.DoesNotContain("E", TypedSelection.PointLine(v, v, v), StringComparison.OrdinalIgnoreCase);
+        Assert.True(TypedInput.IsPointLine(TypedSelection.PointLine(1e-300, 4.5e25, 0)));
+    }
 
     [Fact]
     public void Typed_text_is_stored_only_when_it_alone_makes_the_whole_selection()
     {
         // typed window: two corners typed
-        Assert.Equal("w\n0,0\n5,5\n", Typed(t => { Keys(t, "w\n0,0\n5,5\n"); t.Point(P1); t.Point(P2); t.Point(P2); }));
-        // mouse window ended with Enter: two points arrived, none typed
+        Assert.Equal("w\n0,0\n5,5\n", Typed(t => { Keys(t, "w\n"); TypedPt(t, P1); TypedPt(t, P2); }));
+        // a point with no typed line and no click behind it: not reproducible
         Assert.Null(Typed(t => { Keys(t, "\n"); t.Point(P1); t.Point(P2); }));
-        // keys and mouse mixed: "w" typed, the corners clicked
         Assert.Null(Typed(t => { Keys(t, "w\n"); t.Point(P1); t.Point(P2); }));
-        // mouse pick, Enter
-        Assert.Null(Typed(t => { Keys(t, "\n"); t.Point(P1); }));
         // typed "all" needs no points
         Assert.Equal("all\n\n", Typed(t => Keys(t, "all\n\n")));
         // nothing typed at all
         Assert.Null(Typed(_ => { }));
+    }
+
+    [Fact]
+    public void A_point_is_typed_exactly_when_the_keys_since_the_last_point_end_with_a_point_line()
+    {
+        // click, then typed point: both known, in order
+        Assert.Equal("0,0\n5,5\n", Both(t => { Click(t, P1); TypedPt(t, P2); }).Clicks);
+        // typed point, then a click that follows a keyword line
+        Assert.Equal("0,0\nw\n5,5\n", Both(t => { TypedPt(t, P1); Keys(t, "w\n"); Click(t, P2); }).Clicks);
+        // a click is not mistaken for the typed point of an earlier line
+        Assert.Equal("0,0\n5,5\n", Both(t => { TypedPt(t, P1); Click(t, P2); }).Clicks);
     }
 
     [Fact]
@@ -175,27 +245,26 @@ public class SelectionReplayTests
         Assert.Equal("w\n0,0\n5,5\n", t.Text);
         Assert.Equal(new[] { "w", "0,0", "5,5" }, TypedInput.Lines(t.Text));
         Assert.Null(TypedInput.Lines("w\n0,0\n5,"));   // half a line left over: no replay from it
-        Assert.Equal("w\n0,0\n5,5\n", Typed(x => { foreach (var c in "w 0,0 5,5 ") x.Key(c); x.Point(P1); x.Point(P2); }));
+        Assert.Equal("w\n0,0\n5,5\n", Typed(x => { foreach (var c in "w 0,0 ") x.Key(c); x.Point(P1); foreach (var c in "5,5 ") x.Key(c); x.Point(P2); }));
     }
 
     [Fact]
     public void A_LISP_expression_starts_the_text_over_but_one_typed_inside_a_prompt_spoils_it()
     {
         // (ssget) typed at the command line, then the selection keys
-        Assert.Equal("w\n0,0\n5,5\n", Typed(t => { Keys(t, "(ssget)\n"); t.LispStart(nested: false); Keys(t, "w\n0,0\n5,5\n"); t.Point(P1); t.Point(P2); }));
+        Assert.Equal("w\n0,0\n5,5\n", Typed(t => { Keys(t, "(ssget)\n"); t.LispStart(nested: false); Keys(t, "w\n"); TypedPt(t, P1); TypedPt(t, P2); }));
         // a (handent ..) typed at "Select objects:" inside ERASE
-        Assert.Null(Typed(t => { Keys(t, "w\n"); t.LispStart(nested: true); Keys(t, "0,0\n5,5\n"); t.Point(P1); t.Point(P2); }));
+        Assert.Null(Typed(t => { Keys(t, "w\n"); t.LispStart(nested: true); TypedPt(t, P1); TypedPt(t, P2); }));
     }
 
     [Fact]
     public void A_point_that_is_not_selection_input_ends_the_text()
     {
         var t = new TypedSelection();
-        Keys(t, "0,0\n");
-        t.Point(P1);
+        TypedPt(t, P1);
         t.OtherAnswer();   // "Specify base point:" is not part of a selection
-        Keys(t, "w\n0,0\n5,5\n"); t.Point(P1); t.Point(P2);
-        Assert.Equal("w\n0,0\n5,5\n", t.Take());
+        Keys(t, "w\n"); TypedPt(t, P1); TypedPt(t, P2);
+        Assert.Equal("w\n0,0\n5,5\n", t.Take().Typed);
         Assert.False(SelectionReplay.IsSelectionInput(new Answer("point", "OK", null, null, "Specify base point:")));
         Assert.True(SelectionReplay.IsSelectionInput(new Answer("point", "OK", null, null, "Select objects:")));
     }
@@ -203,16 +272,53 @@ public class SelectionReplayTests
     [Fact]
     public void A_transparent_or_own_command_inside_the_prompt_spoils_the_outer_text_and_never_half_of_it_is_replayed()
     {
-        Assert.Null(Typed(t => { Keys(t, "w\n"); t.CommandStart(nested: true); Keys(t, "1\n"); Keys(t, "0,0\n5,5\n"); t.Point(P1); t.Point(P2); }));
-        Assert.Null(Typed(t => { Keys(t, "w\n0,0\n"); t.Point(P1); t.OwnCommandStart(nested: true); t.Point(P2); Keys(t, "5,5\n"); }));
+        Assert.Null(Typed(t => { Keys(t, "w\n"); t.CommandStart(nested: true); Keys(t, "1\n"); TypedPt(t, P1); TypedPt(t, P2); }));
+        Assert.Null(Typed(t => { Keys(t, "w\n"); TypedPt(t, P1); t.OwnCommandStart(nested: true); Keys(t, "5,5\n"); t.Point(P2); }));
         // an own command at the command prompt (nothing running) changes nothing, and a top-level command starts clean
-        Assert.Equal("w\n0,0\n5,5\n", Typed(t => { Keys(t, "-RETRACEMARK\n"); t.OwnCommandStart(nested: false); t.CommandStart(nested: false); Keys(t, "w\n0,0\n5,5\n"); t.Point(P1); t.Point(P2); }));
+        Assert.Equal("w\n0,0\n5,5\n", Typed(t => { Keys(t, "-RETRACEMARK\n"); t.OwnCommandStart(nested: false); t.CommandStart(nested: false); Keys(t, "w\n"); TypedPt(t, P1); TypedPt(t, P2); }));
         // a bad text is dropped, the next selection is clean again
         var x = new TypedSelection();
         x.CommandStart(nested: true);
-        Assert.Null(x.Take());
+        Assert.Null(x.Take().Typed);
         Keys(x, "all\n\n");
-        Assert.Equal("all\n\n", x.Take());
+        Assert.Equal("all\n\n", x.Take().Typed);
+    }
+
+    // ---- which way a mouse selection replays ----
+
+    static JsonElement Val(string json) => JsonDocument.Parse(json).RootElement;
+
+    [Fact]
+    public void A_mouse_selection_replays_from_its_handles_unless_handles_cannot_express_it()
+    {
+        // plain handles: clicks present but not used (the view, pickbox and window size must not matter)
+        var plain = Val("""{"count":2,"handles":["8E","8A"],"dxf":["LINE","LINE"],"clicks":"0,0\n5,5\n\n"}""");
+        Assert.False(SelectionReplay.UseClicks(plain));
+        Assert.Equal(new[] { "(handent \"8E\")", "(handent \"8A\")", "" }, Plan.TypedLines(new Answer("selection", "OK", plain, null, null)));
+        // -ATTEDIT: the insert's handle once per attribute: the clicks
+        var att = Val("""{"count":3,"handles":["145","145","145"],"dxf":["INSERT","INSERT","INSERT"],"clicks":"0,0\n11,8.5\n"}""");
+        Assert.True(SelectionReplay.UseClicks(att));
+        Assert.Equal(new[] { "0,0", "11,8.5" }, Plan.TypedLines(new Answer("selection", "OK", att, null, null)));
+        // an attribute in the list; a list cut short; no handles at all
+        Assert.True(SelectionReplay.UseClicks(Val("""{"count":1,"handles":["9A"],"dxf":["ATTRIB"],"clicks":"1,1\n"}""")));
+        Assert.True(SelectionReplay.UseClicks(Val("""{"count":300,"handles":["1","2"],"dxf":["LINE","LINE"],"clicks":"1,1\n3,3\n"}""")));
+        Assert.True(SelectionReplay.UseClicks(Val("""{"count":2,"clicks":"1,1\n3,3\n"}""")));
+        // no clicks (older recordings, Shift / Ctrl, a half-typed line): handles, as before, repeats dropped
+        var none = Val("""{"count":3,"handles":["145","145","145"],"dxf":["INSERT","INSERT","INSERT"]}""");
+        Assert.False(SelectionReplay.UseClicks(none));
+        Assert.Equal(new[] { "(handent \"145\")", "" }, Plan.TypedLines(new Answer("selection", "OK", none, null, null)));
+        // typed text wins over everything
+        var typed = Val("""{"count":3,"handles":["145","145","145"],"dxf":["INSERT","INSERT","INSERT"],"typed":"w\n0,0\n5,5\n","clicks":"1,1\n"}""");
+        Assert.Equal(new[] { "w", "0,0", "5,5" }, Plan.TypedLines(new Answer("selection", "OK", typed, null, null)));
+    }
+
+    [Fact]
+    public void The_guide_never_prints_click_coordinates()
+    {
+        var a = new Answer("selection", "OK", Val("""{"count":3,"handles":["145","145","145"],"dxf":["INSERT","INSERT","INSERT"],"clicks":"0.5,2\n11,8.5\n\n"}"""), null, null);
+        Assert.Equal("select the objects and press Enter", TdocPlan.AnswerAction(a));
+        var s = new Step { Kind = "command", Command = "-ATTEDIT", Answers = new List<Answer> { a } };
+        Assert.DoesNotContain("0.5", TdocPlan.CommandLineText(s));
     }
 
     [Fact]

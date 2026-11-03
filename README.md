@@ -7,7 +7,7 @@ tells you pass or fail. It can also read your customization folder (`.cuix`, C#,
 write Markdown docs: ribbons, commands, dialogs, a source map, and an editable user guide with how-tos built from your recordings.
 And it maps each ribbon button to the LISP, C++, C# or VB.NET code it runs.
 
-Status: pre-1.0 (0.3.1). AutoCAD 2026 (R25.1), Windows x64. Written against the `AutoCAD.NET` 25.1.0 packages.
+Status: pre-1.0 (0.3.2). AutoCAD 2026 (R25.1), Windows x64. Written against the `AutoCAD.NET` 25.1.0 packages.
 Verified in AutoCAD only in part: see [Limitations](#limitations).
 
 ## Install
