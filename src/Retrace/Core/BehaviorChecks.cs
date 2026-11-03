@@ -161,6 +161,8 @@ public sealed class BehaviorChecks
             if (!actual.Behaviors.TryGetValue(id, out var act)) { lines.Add($"{BehaviorCatalog.LabelOf(id)}: could not be read"); continue; }
             var noun = info.Noun;
             var canonical = info.Canonical;
+            // Fields that older recordings do not have, or have with another meaning (see FieldRules): only these are tolerated, nothing else.
+            var rules = FieldRules.For(id);
             foreach (var (key, want) in check.Items)
             {
                 var present = act.TryGetValue(key, out var got);
@@ -168,7 +170,7 @@ public sealed class BehaviorChecks
                 if (id == BehaviorCatalog.SysVars && !present) continue;
                 if (want == null) { if (present) lines.Add($"{noun} {key} unexpected"); }
                 else if (!present) lines.Add($"{noun} {key} missing");
-                else if (!string.Equals(want, got, StringComparison.Ordinal)) AddValueDiff(lines, noun, key, want, got!, canonical);
+                else if (!string.Equals(want, got, StringComparison.Ordinal)) AddValueDiff(lines, noun, key, want, got!, canonical, rules);
             }
             if (check.Scope == BehaviorCheck.ScopeAll && id != BehaviorCatalog.SysVars)   // sysvars: names that were not recorded are ignored
                 foreach (var key in act.Keys)
@@ -177,19 +179,48 @@ public sealed class BehaviorChecks
         return lines;
     }
 
-    static void AddValueDiff(List<string> lines, string noun, string key, string want, string got, bool canonical)
+    /// <summary>The only tolerance of <see cref="Compare"/> for older recordings, by behavior. <c>Dropped</c>: a field a recording may still hold that
+    /// is no longer read (viewports `on`: it read false until the layout had been current in the session, so its recorded value means nothing now);
+    /// it is ignored. <c>New</c>: a field older recordings do not have (layouts `psltscale`, viewports `off`): skipped when the recording lacks it;
+    /// when the recording has it and this capture does not (entget unavailable), the line is `could not be read`, never a quiet pass.
+    /// Every other field is strict, including `expected (none)` lines.</summary>
+    sealed class FieldRules(string[] dropped, string[] added)
+    {
+        public readonly string[] Dropped = dropped, New = added;
+        static readonly FieldRules None = new(Array.Empty<string>(), Array.Empty<string>());
+        public static FieldRules For(string behaviorId) => behaviorId switch
+        {
+            BehaviorCatalog.Layouts => new(Array.Empty<string>(), new[] { "psltscale" }),
+            BehaviorCatalog.Viewports => new(new[] { "on" }, new[] { "off" }),
+            _ => None,
+        };
+        public bool IsDropped(string field) => Array.IndexOf(Dropped, field) >= 0;
+        public bool IsNew(string field) => Array.IndexOf(New, field) >= 0;
+    }
+
+    static void AddValueDiff(List<string> lines, string noun, string key, string want, string got, bool canonical, FieldRules rules)
     {
         if (canonical && CanonicalValue.TryParse(want, out var wf) && CanonicalValue.TryParse(got, out var gf) && wf != null && gf != null)
         {
             var before = lines.Count;
+            var tolerated = false;
             var gotBy = gf.GroupBy(f => f.Name).ToDictionary(g => g.Key, g => g.First().Value, StringComparer.Ordinal);
             var wantBy = wf.GroupBy(f => f.Name).ToDictionary(g => g.Key, g => g.First().Value, StringComparer.Ordinal);
             foreach (var (name, w) in wf.DistinctBy(f => f.Name))
-                if (!gotBy.TryGetValue(name, out var g) || g != w)
-                    lines.Add($"{noun} {key} {name}: expected {w}, got {(gotBy.ContainsKey(name) ? g : "(none)")}");
+            {
+                if (rules.IsDropped(name)) { tolerated = true; continue; }
+                if (!gotBy.TryGetValue(name, out var g))
+                    lines.Add(rules.IsNew(name) ? $"{noun} {key} {name}: could not be read" : $"{noun} {key} {name}: expected {w}, got (none)");
+                else if (g != w) lines.Add($"{noun} {key} {name}: expected {w}, got {g}");
+            }
             foreach (var (name, g) in gf.DistinctBy(f => f.Name))
-                if (!wantBy.ContainsKey(name)) lines.Add($"{noun} {key} {name}: expected (none), got {g}");
+            {
+                if (wantBy.ContainsKey(name)) continue;
+                if (rules.IsNew(name)) tolerated = true;   // an older recording: not checked
+                else lines.Add($"{noun} {key} {name}: expected (none), got {g}");
+            }
             if (lines.Count > before) return;
+            if (tolerated) return;   // the values differ only by fields that are tolerated: not a difference
         }
         lines.Add($"{noun} {key}: expected {want}, got {got}");
     }

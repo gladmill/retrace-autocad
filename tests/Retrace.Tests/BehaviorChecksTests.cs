@@ -148,10 +148,82 @@ public class BehaviorChecksTests : IDisposable
     [Fact]
     public void Compare_handles_field_set_changes_and_non_canonical_values()
     {
-        var checks = Items("viewports", ("S|1", "a=1;b=2"), ("S|2", "plain"));
-        var actual = Snap(("viewports", new[] { ("S|1", "a=1;c=3"), ("S|2", "other") }));
-        Assert.Equal(new[] { "viewport S|1 b: expected 2, got (none)", "viewport S|1 c: expected (none), got 3", "viewport S|2: expected plain, got other" },
+        var checks = Items("symbols", ("S|1", "a=1;b=2"), ("S|2", "plain"));
+        var actual = Snap(("symbols", new[] { ("S|1", "a=1;c=3"), ("S|2", "other") }));
+        Assert.Equal(new[] { "symbols S|1 b: expected 2, got (none)", "symbols S|1 c: expected (none), got 3", "symbols S|2: expected plain, got other" },
             BehaviorChecks.Compare(checks, actual));
+    }
+
+    [Fact]
+    public void Compare_old_recordings_pass_on_an_unchanged_drawing()
+    {
+        // a 0.3.0 viewport value: `on` was read through the session-dependent Viewport.On (0 on a layout not yet current) and there is no `off`.
+        // The new capture has `off` and no `on`. The old, meaningless on=0 must be ignored, and `off` (new) is not checked against the old recording.
+        var old = Items("viewports", ("A|1", "width=3;on=0;locked=0"));
+        Assert.Empty(BehaviorChecks.Compare(old, Snap(("viewports", new[] { ("A|1", "width=3;off=0;locked=0") }))));
+        Assert.Empty(BehaviorChecks.Compare(old, Snap(("viewports", new[] { ("A|1", "width=3;off=1;locked=0") }))));   // off is not in the old recording: not checked
+        // an old layout value without psltscale
+        var oldLayout = Items("layouts", ("A", "tab=1;count=2"));
+        Assert.Empty(BehaviorChecks.Compare(oldLayout, Snap(("layouts", new[] { ("A", "tab=1;count=2;psltscale=1") }))));
+        // manual mode (scope all) is the same
+        var all = BehaviorChecks.ManualPick(new[] { "layouts", "viewports" }, Snap(("layouts", new[] { ("A", "tab=1;count=2") }), ("viewports", new[] { ("A|1", "width=3;on=0;locked=0") })));
+        Assert.Empty(BehaviorChecks.Compare(all, Snap(("layouts", new[] { ("A", "tab=1;count=2;psltscale=1") }), ("viewports", new[] { ("A|1", "width=3;off=0;locked=0") }))));
+        // but what else differs is still reported, with the tolerated fields left out of the lines
+        Assert.Equal(new[] { "viewport A|1 width: expected 3, got 4" },
+            BehaviorChecks.Compare(old, Snap(("viewports", new[] { ("A|1", "width=4;off=0;locked=0") }))));
+        Assert.Equal(new[] { "layout A count: expected 2, got 3" },
+            BehaviorChecks.Compare(oldLayout, Snap(("layouts", new[] { ("A", "tab=1;count=3;psltscale=0") }))));
+    }
+
+    [Fact]
+    public void Compare_new_fields_are_compared_when_recorded_and_never_pass_quietly_when_unreadable()
+    {
+        var rec = Items("viewports", ("A|1", "width=3;off=0;locked=0"));
+        Assert.Equal(new[] { "viewport A|1 off: expected 0, got 1" },
+            BehaviorChecks.Compare(rec, Snap(("viewports", new[] { ("A|1", "width=3;off=1;locked=0") }))));
+        // entget unavailable now: the field is missing from the capture
+        Assert.Equal(new[] { "viewport A|1 off: could not be read" },
+            BehaviorChecks.Compare(rec, Snap(("viewports", new[] { ("A|1", "width=3;locked=0") }))));
+        var lay = Items("layouts", ("A", "tab=1;psltscale=0"));
+        Assert.Equal(new[] { "layout A psltscale: expected 0, got 1" },
+            BehaviorChecks.Compare(lay, Snap(("layouts", new[] { ("A", "tab=1;psltscale=1") }))));
+        Assert.Equal(new[] { "layout A psltscale: could not be read" },
+            BehaviorChecks.Compare(lay, Snap(("layouts", new[] { ("A", "tab=1") }))));
+    }
+
+    [Fact]
+    public void Compare_tolerance_is_limited_to_the_named_fields()
+    {
+        // any other field missing on either side still shows (none), in layouts and viewports too
+        Assert.Equal(new[] { "viewport A|1 locked: expected 0, got (none)" },
+            BehaviorChecks.Compare(Items("viewports", ("A|1", "width=3;locked=0")), Snap(("viewports", new[] { ("A|1", "width=3") }))));
+        Assert.Equal(new[] { "viewport A|1 extra: expected (none), got 1" },
+            BehaviorChecks.Compare(Items("viewports", ("A|1", "width=3")), Snap(("viewports", new[] { ("A|1", "width=3;extra=1") }))));
+        Assert.Equal(new[] { "layout A hash: expected (none), got x" },
+            BehaviorChecks.Compare(Items("layouts", ("A", "tab=1")), Snap(("layouts", new[] { ("A", "tab=1;hash=x") }))));
+        // `on` is only dropped for viewports, `off` / `psltscale` only where they belong
+        Assert.Equal(new[] { "layout A on: expected 1, got (none)" },
+            BehaviorChecks.Compare(Items("layouts", ("A", "tab=1;on=1")), Snap(("layouts", new[] { ("A", "tab=1") }))));
+    }
+
+    [Fact]
+    public void Dxf_groups_give_the_saved_viewport_and_layout_flags()
+    {
+        // what entget returns for a layout: the first 70 (plot settings) must not be taken
+        var layout = new (int, object?)[] { (0, "LAYOUT"), (100, "AcDbPlotSettings"), (1, ""), (70, (short)688), (100, "AcDbLayout"), (1, "A-101"), (70, (short)1), (71, (short)2) };
+        Assert.Equal(1, DxfGroups.LayoutFlags(layout));
+        Assert.True(DxfGroups.LayoutPsltscale(1));
+        Assert.False(DxfGroups.LayoutPsltscale(0));
+        Assert.True(DxfGroups.LayoutPsltscale(3));   // bit 2 is LIMCHECK
+        Assert.False(DxfGroups.LayoutPsltscale(2));
+        Assert.Null(DxfGroups.LayoutFlags(new (int, object?)[] { (0, "LAYOUT"), (100, "AcDbPlotSettings"), (70, (short)688) }));
+
+        var vp = new (int, object?)[] { (0, "VIEWPORT"), (100, "AcDbEntity"), (90, 5), (100, "AcDbViewport"), (68, (short)0), (69, (short)3), (90, 950304), (1, "") };
+        Assert.Equal(950304, DxfGroups.ViewportFlags(vp));   // not the 90 of another subclass
+        Assert.True(DxfGroups.ViewportOff(950304));          // 0x20000 set
+        Assert.False(DxfGroups.ViewportOff(819232));
+        Assert.False(DxfGroups.ViewportOff(835616));
+        Assert.Null(DxfGroups.ViewportFlags(new (int, object?)[] { (0, "VIEWPORT"), (100, "AcDbViewport") }));
     }
 
     [Fact]
@@ -280,6 +352,8 @@ public class BehaviorChecksTests : IDisposable
         Assert.Empty(s.SysvarsAdd); Assert.Empty(s.SysvarsRemove);
         Assert.Equal(SysVarDefaults.Default, s.EffectiveSysvars());
         Assert.Contains("CLAYER", SysVarDefaults.Default);
+        Assert.DoesNotContain("PSLTSCALE", SysVarDefaults.Default);   // per paper layout: the layouts behavior has it
+        Assert.Contains("PSLTSCALE", SysVarDefaults.Effective(new[] { "psltscale" }, null), StringComparer.OrdinalIgnoreCase);   // a user can still add it
         foreach (var volatile_ in new[] { "DATE", "CDATE", "TDUSRTIMER", "TDINDWG", "TDUPDATE", "DBMOD", "VIEWCTR", "VIEWSIZE", "VIEWDIR", "LASTPOINT", "CMDACTIVE" })
             Assert.DoesNotContain(volatile_, SysVarDefaults.Default);
         Assert.Equal(SysVarDefaults.Default.Length, SysVarDefaults.Default.Distinct(StringComparer.OrdinalIgnoreCase).Count());

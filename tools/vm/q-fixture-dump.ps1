@@ -138,9 +138,9 @@ Safe {
 
 Hdr 'VIEWPORTS'
 Safe {
-  # ViewportOn reads False until the layout has been made current once (tested), so visit each layout, then go back
+  # ViewportOn reads False until the layout has been made current once (tested; the builder visits every layout before saving), so visit each layout, then go back.
+  # PSLTSCALE is no longer put back here: on a built fixture a visit must not change it, and the [SYSVARS] diff would show it if it did
   $origLayout = $d.ActiveLayout.Name; $origSpace = $d.ActiveSpace
-  $pslt = $d.GetVariable('PSLTSCALE')   # visiting layouts was seen to flip PSLTSCALE 0 -> 1; put it back
   foreach ($l in (@($d.Layouts) | ? { $_.Name -ne 'Model' } | sort TabOrder)) {
     $d.ActiveLayout = $l; Start-Sleep -Milliseconds 700
     foreach ($e in $l.Block) {
@@ -151,10 +151,9 @@ Safe {
     }
   }
   $d.ActiveLayout = $d.Layouts.Item($origLayout); if ($origLayout -ne 'Model') { $d.ActiveSpace = $origSpace }
-  if ($d.GetVariable('PSLTSCALE') -ne $pslt) { $d.SetVariable('PSLTSCALE', $pslt) }
 }
 
 Hdr 'NOISE (view state, not part of any behavior)'
 Safe {
-  "  active layout: $($d.ActiveLayout.Name)  space: $($d.ActiveSpace)  VIEWCTR=$(V $d.GetVariable('VIEWCTR'))  VIEWSIZE=$(V $d.GetVariable('VIEWSIZE'))"
+  "  active layout: $($d.ActiveLayout.Name)  space: $($d.ActiveSpace)  VIEWCTR=$(V $d.GetVariable('VIEWCTR'))  VIEWSIZE=$(V $d.GetVariable('VIEWSIZE'))  PSLTSCALE=$($d.GetVariable('PSLTSCALE')) (after the layout visits above)"
 }

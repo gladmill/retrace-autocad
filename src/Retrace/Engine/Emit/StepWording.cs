@@ -72,9 +72,14 @@ public static class StepWording
         if (st.Kind is "ribbon" or "command" or "lisp" || (st.Kind == "palette" && st.Command != null))
         {
             int d = 0;
+            bool afterSelectionInput = false;
             foreach (var a in st.Answers)
             {
                 while (d < st.InnerDialogs.Count && st.InnerDialogs[d].T <= a.T) InnerDialog(sb, st.InnerDialogs[d++], ctx);
+                // the selection result after the corners / points that made it only echoes them (the same rule as Core/SelectionReplay.Effective)
+                if (a.Kind == "selection" && a.Status == "OK" && afterSelectionInput) { afterSelectionInput = false; continue; }
+                if (a.Kind == "selection" && a.Status == "Error" && a.Input != true) continue;
+                afterSelectionInput = a.Kind == "corner" || (a.Kind == "point" && a.Message is { } pm && (pm.Contains("select", StringComparison.OrdinalIgnoreCase) || pm.Contains("corner", StringComparison.OrdinalIgnoreCase)));
                 var text = AnswerText(a);
                 sb.Append("   - ").Append(text).Append('\n');
                 Shots(sb, a.Shots, Alt(text), ctx, "     ", a.By switch { "mouse" => "answer:pick", "keys" => "answer:enter", _ => "answer:answer" });
@@ -262,6 +267,7 @@ public static class StepWording
         {
             case "None": return "Press Enter";
             case "Cancel": return "Press Esc to cancel";
+            case "Error" when a.Kind == "selection": return "Press Enter";   // the Enter that ended a selection (recorded as an error result)
             case "Keyword" when a.IsTypedInput:
                 // free input at a prompt that also takes keywords (CIRCLE radius given 20) comes back as a Keyword result
                 return double.TryParse(a.Keyword, NumberStyles.Float, CultureInfo.InvariantCulture, out var typed)
@@ -297,6 +303,14 @@ public static class StepWording
                 return $"Type {Md.Code(s)}" + (subject != null ? $" for the {Md.Cell(subject)}" : "");
             }
             case "selection":
+                // the text typed for it, as the replay types it (Core/TypedInput): "w", "-1,5", "30,30", Enter
+                if (a.Value is { ValueKind: JsonValueKind.Object } sv && sv.TryGetProperty("typed", out var tp) && tp.ValueKind == JsonValueKind.String
+                    && tp.GetString() is { Length: > 0 } tt && tt.EndsWith('\n'))
+                {
+                    var lines = tt.Split('\n').SkipLast(1).ToList();
+                    var shown = lines.Where(l => l.Length > 0).Select(Md.Code);
+                    return "Type " + string.Join(", then ", shown) + (lines.Count > 0 && lines[^1].Length == 0 ? " and press Enter" : "");
+                }
                 return "Select " + Md.Cell(a.Describe());
             case "entity" or "nestedEntity":
                 return "Select the " + Md.Cell(a.Describe().Split(' ')[0]);

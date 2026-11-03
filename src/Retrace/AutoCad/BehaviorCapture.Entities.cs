@@ -29,18 +29,30 @@ static partial class BehaviorCapture
 
         public IEnumerable<KeyValuePair<string, string>> LayoutItems()
         {
+            // *Paper_Space is the block of the paper layout that is current, or was the last one before Model became current
+            var paperSpace = Layouts.Count > 0 ? SymbolUtilityServices.GetBlockPaperSpaceId(Layouts[0].Layout.Database) : ObjectId.Null;
             foreach (var l in Layouts)
             {
                 var lay = l.Layout;
                 string scale;
                 try { scale = lay.UseStandardScale ? lay.StdScaleType.ToString() : N(lay.CustomPrintScale.Numerator) + ":" + N(lay.CustomPrintScale.Denominator); }
                 catch { scale = ""; }
-                yield return new(lay.LayoutName, CanonicalValue.Join(
+                // The layout's own PSLTSCALE, from its saved flag: the system variable holds it only while the layout is current.
+                // AutoCAD writes the variable into the flag when you move to another paper layout (or save), so the flag of the layout that
+                // owns the live variable can lag behind a change made in it: that layout (the one whose block is the database's *Paper_Space)
+                // reads the variable instead. Left out when entget is not available.
+                var flags = DxfRead.ReadFlag(lay.ObjectId, DxfGroups.LayoutFlags);
+                string? psltscale = flags is { } f0 ? B(lay.BlockTableRecordId == paperSpace ? lay.Database.Psltscale : DxfGroups.LayoutPsltscale(f0)) : null;
+                var fields = new List<(string, string?)>
+                {
                     ("tab", lay.TabOrder.ToString(System.Globalization.CultureInfo.InvariantCulture)),
                     ("count", l.Types.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)),
                     ("types", BehaviorKeys.TypeCounts(l.Types)),
                     ("hash", DrawingDigest.ShortHash(l.HashKeys)),
-                    ("device", lay.PlotConfigurationName), ("media", lay.CanonicalMediaName), ("scale", scale)));
+                    ("device", lay.PlotConfigurationName), ("media", lay.CanonicalMediaName), ("scale", scale),
+                };
+                if (psltscale != null) fields.Add(("psltscale", psltscale));
+                yield return new(lay.LayoutName, CanonicalValue.Join(fields));
             }
         }
 
@@ -53,11 +65,19 @@ static partial class BehaviorCapture
                 {
                     var frozen = new List<string>();
                     foreach (ObjectId lid in vp.GetFrozenLayers()) frozen.Add(Open<LayerTableRecord>(tr, lid).Name);
-                    yield return new(BehaviorKeys.ViewportKey(l.Layout.LayoutName, ++n), CanonicalValue.Join(
+                    // off from the saved flags (group 90, bit "turn viewport off"): Viewport.On reads false until the layout has been current in
+                    // this session. Left out when entget is not available.
+                    var flags = DxfRead.ReadFlag(vp.ObjectId, DxfGroups.ViewportFlags);
+                    var fields = new List<(string, string?)>
+                    {
                         ("center", P(vp.CenterPoint)), ("width", N(vp.Width)), ("height", N(vp.Height)),
                         ("viewcenter", BehaviorKeys.Pt2(vp.ViewCenter.X, vp.ViewCenter.Y)), ("viewtarget", P(vp.ViewTarget)),
                         ("viewdirection", P(vp.ViewDirection)), ("customscale", N(vp.CustomScale)),
-                        ("on", B(vp.On)), ("locked", B(vp.Locked)), ("frozenlayers", BehaviorKeys.SortedList(frozen))));
+                    };
+                    if (flags is { } f) fields.Add(("off", B(DxfGroups.ViewportOff(f))));
+                    fields.Add(("locked", B(vp.Locked)));
+                    fields.Add(("frozenlayers", BehaviorKeys.SortedList(frozen)));
+                    yield return new(BehaviorKeys.ViewportKey(l.Layout.LayoutName, ++n), CanonicalValue.Join(fields));
                 }
             }
         }

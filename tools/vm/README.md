@@ -14,6 +14,7 @@ in the interactive session (`schtasks /create ... /it`, `/run`, then `/delete`).
 | `run-in-session.ps1 -Cmds "A\n\|B\n" [-Query q.ps1] [-WaitSec n] [-StallSec n]` | From SSH: runs `acad-cmd.ps1` in the interactive session and prints its result. Each run has an id (`C:\retrace-vm\out\run.txt`); a worker left over from a timed-out or stopped run sends and writes nothing more. `-StallSec n` (off by default, because `RETRACEREPLAY` keeps the command line busy on purpose) stops the run when a command has run n s and AutoCAD answers COM as busy: `STUCK`, exit 4, AutoCAD left as it is. |
 | `acad-cmd.ps1` | Attaches to the running AutoCAD over COM. Runs `-Query` (a PowerShell file with `$acad`/`$doc` in scope, for read-only COM queries), sends each `\|`-separated command with `SendCommand` (`\n` = Enter), and writes the command-line log tail and a screenshot to `C:\retrace-vm\out`. Commands go through `C:\retrace-vm\cmds.txt`, because `schtasks /tr` mangles spaces, quotes and parentheses. |
 | (recording from a script) | End a recording sent over COM with `-RETRACESTOP`, not `RETRACESTOP`: the plain command opens the modeless "Name your checkpoints" window on the test machine (verified: COM `SendCommand` is not seen as a script, CMDACTIVE 1). `RETRACEREPLAY` over COM always needs a path (an empty answer opens a file dialog). `-RETRACEMARK` for checkpoints. No script here stops a recording yet. |
+| `com-replay-test.sh` | Runs on your Mac or Linux box: regression test that a replay started over COM (`RETRACEREPLAY <path> Auto` through `run-test.sh`) really runs its typed commands. Replays a small recording (CIRCLE, LTSCALE 7.25, `-LAYER Make RTCOM`) in a new drawing, then reads the drawing back over COM: 1 entity, LTSCALE 7.25, layer RTCOM. Exit 0 PASS, 1 the drawing did not change, 2 infrastructure. |
 | `q-ents.ps1` | Query: model space objects by type and some system variables. |
 | `run-test.sh <test folder or recording.jsonl> [--new-drawing] [--run]` | Runs on your Mac or Linux box: copies the recording to the VM (`C:\temp\retrace\tests\<folder>\`), replays it unattended (`RETRACEREPLAY <path> Auto`; with `--run` `RETRACERUN <path>`, which opens its own drawing), waits for `results\latest.json`, copies it back, prints the verdict and checkpoints. Exit 0 PASS, 1 FAIL/INCOMPLETE/ERROR, 2 infra. |
 | `q-newdoc.ps1` | Query: opens a new drawing (`$acad.Documents.Add()`). Run it in a call of its own: later commands go to the document that was active before the query. |
@@ -62,7 +63,7 @@ Test drawings that hold every kind of thing a Retrace checkpoint can verify, plu
 export RETRACE_VM_HOST=retrace-vm
 tools/vm/fixtures.sh build [name]      # no name = every fixture; overwrites C:\temp\retrace\fixtures\fx-<name>.dwg
 tools/vm/fixtures.sh list              # fixtures on the VM and the mutation names
-tools/vm/fixtures.sh open all          # open fx-all.dwg (an open copy, mutated or not, is closed without saving first)
+tools/vm/fixtures.sh open all          # open fx-all.dwg (an open copy, mutated or not, is closed without saving first), then make each layout current once and go back to Model
 tools/vm/fixtures.sh dump              # q-fixture-dump.ps1 on the active drawing
 tools/vm/fixtures.sh mutate layers-freeze-dim   # run mut-layers-freeze-dim.ps1 on the active drawing
 tools/vm/fixtures.sh check [name|all]  # per mutation: reopen fx-all, dump, mutate, dump, print the diff
@@ -84,7 +85,16 @@ Files: `fx-build.ps1` (query; reads the fixture name from `C:\retrace-vm\fx-arg.
 | `fx-views` | behavior 8: 4 model-space named views and 2 paper-space ones (A-101 Plan, Z-Notes), over the layers and layouts |
 | `fx-all` | all of the above in one drawing. The mutations are written for this one |
 
-`q-fixture-dump.ps1` prints one section per behavior (`[LAYERS]`, `[LAYOUTS]`, `[VIEWPORTS]`, `[XDATA]`, `[EXTDICT]`, `[SYMBOLS]`, `[SYSVARS]`, `[VIEWS]`, `[ATTRIBUTES]`) and a last `[NOISE]` section with view state. It names things instead of printing handles, so dumps of two builds compare equal. A mutation changes only its own lines in the dump. Two side effects, both restored: it makes each layout current once (`ViewportOn` reads False until then; the first visit also flipped `PSLTSCALE` 0 to 1, so the dump puts it back) and each dim style current in turn.
+`q-fixture-dump.ps1` prints one section per behavior (`[LAYERS]`, `[LAYOUTS]`, `[VIEWPORTS]`, `[XDATA]`, `[EXTDICT]`, `[SYMBOLS]`, `[SYSVARS]`, `[VIEWS]`, `[ATTRIBUTES]`) and a last `[NOISE]` section with view state. It names things instead of printing handles, so dumps of two builds compare equal. A mutation changes only its own lines in the dump. Two side effects, both restored: it makes each layout current once (a no-op on a built fixture, which is already visited) and each dim style current in turn. It no longer puts `PSLTSCALE` back: on a built fixture a layout visit must not change it, and the `PSLTSCALE=` value at the end of `[NOISE]` shows it if it did.
+
+**Visited fixtures and sessions.** Two separate effects made a baseline recorded on a fresh fixture differ from a replay that switched layout tabs. Behavior capture no longer depends on either (the layouts' `psltscale` field and the viewports' `off` field are read from the saved DXF flags, `docs/recording-format.md`, "Session independence"; `PSLTSCALE` is not in the default `sysvars` list), so a baseline recorded on a plain open of `fx-all` replays clean after any layout visit. The notes below explain the AutoCAD behavior:
+
+1. `PSLTSCALE` (below). `Save-Fixture` now makes every layout current once (paper space), sets `PSLTSCALE` to the fixture's value inside each layout, returns to Model, sets it again and saves. Rebuild after pulling this change; an older `fx-*.dwg` still flips.
+2. Viewport `on` reads 0 until the layout has been current **in the running session**, whatever the file holds (checked: a fixture saved after visiting every layout still read `on = 0` right after opening). A visited file does not help, so `fixtures.sh open` (`q-fx-open.ps1`) makes each layout current once after opening and goes back to Model. Record the baseline after `open`. (Retrace's own `off` field is no longer affected (see `docs/recording-format.md`, "Session independence"); COM `ViewportOn` and the managed `Viewport.On` still are.)
+
+The builder also registers a COM message filter (`FxMsgFilter` in `fx-lib.ps1`), which makes COM wait while AutoCAD is busy instead of throwing `RPC_E_CALL_REJECTED`; without it most builds failed on this VM, and `fx-build.ps1` retries a failed build up to 3 times.
+
+**Why `PSLTSCALE` flipped (AutoCAD behavior, not a fixture bug).** AutoCAD saves `PSLTSCALE` per paper layout and loads the layout's own value when the layout becomes current (probed on new drawings from the default template: Layout1 held 0 and Layout2 held 1; Model keeps whatever value is current and does not reload one). Setting it while inside a layout stores it there. Setting it in Model is not free of effect either (checked later with DXFOUT): the variable stays backed by the flag of the last paper layout that was current, so `PSLTSCALE 0` typed in Model changes that layout's saved value. So on any drawing whose layouts carry different values, switching to a paper layout changes the system variable, including on a drawing a user made by hand. The old builder set 0 in Model only, so entering `A-101 Plan` loaded 1. A checkpoint compares the current value, so a baseline taken in Model and a replay that visits a layout differ on `PSLTSCALE` for such drawings (see `docs/recording-format.md`, "Session independence").
 
 ### Mutations
 
@@ -106,6 +116,7 @@ Each `mut-<area>-<what>.ps1` changes exactly one thing in the active drawing (op
 | `layers-rgb-color` | layer state |
 | `layers-unlock` | layer state |
 | `layouts-delete-line` | layouts |
+| `layouts-psltscale` | layouts (the layout's own PSLTSCALE, set inside one layout) |
 | `layouts-move-text` | layouts |
 | `layouts-rename` | layouts |
 | `layouts-taborder` | layouts |
@@ -150,7 +161,7 @@ These change only view state. A checkpoint must NOT report them (the dump change
 * `Views.Add` after `ZoomCenter` saved the wrong window, so named views are made with `ZOOM Center` and `-VIEW Save`.
 * Dim styles have no properties in COM: the builder sets `DIMSCALE` etc. and `CopyFrom`s the drawing into the style; the dump makes each style current to read it.
 * The template's layouts have no plotter (paper size in pixels, `AddPViewport` refused a width), so the builder gives each layout `DWG To PDF.pc3` and Letter landscape first.
-* A viewport reports `ViewportOn = False` until its layout has been current once, and one made in a layout that is then left is saved off: the builder sets on / off / locked in a second pass.
+* A viewport reports `ViewportOn = False` until its layout has been current once, and one made in a layout that is then left is saved off: the builder sets on / off / locked in a second pass, and `Save-Fixture` visits every layout before saving.
 * Layouts touched in paper space carry a viewport record with target 0,0,0 (the layout's own view); the dump skips it.
 * A multiline attribute: `MTextAttribute` / `MTextAttributeContent` on the attribute definition worked through COM (the dump shows `mtext=True`).
 * `PAN` through `SendCommand` needs `-PAN`; plain `PAN` waits for the mouse and hung AutoCAD (Esc with `esc.ps1` freed it).
