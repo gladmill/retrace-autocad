@@ -4,8 +4,8 @@ namespace Retrace.Core;
 
 /// <summary>The text a person types at a prompt, kept between two prompt results. AutoCAD raises no managed event for the corners and
 /// keywords of a built-in command's selection (ERASE W, -ATTEDIT window): only the finished selection arrives, with handles. The recorder
-/// therefore keeps what was typed since the last prompt result and stores it with the selection, so a replay can type it again
-/// (see <see cref="SelectionReplay"/>). Pure logic; the recorder feeds it the WM_CHAR characters.</summary>
+/// therefore keeps what was typed since the last prompt result and stores it with the selection (`typed`), so a replay can type it again
+/// (see <see cref="SelectionReplay"/>). Mouse clicks are not typed text: they go to their own field (`clicks`, see <see cref="TypedSelection"/>). Pure logic; the recorder feeds it the WM_CHAR characters.</summary>
 public static class TypedInput
 {
     public const int MaxLength = 2000;
@@ -69,8 +69,8 @@ public static class TypedInput
     }
 
     /// <summary>Whether the typed text alone makes the whole selection: it holds something other than Enters, and every point the selection
-    /// used (<paramref name="pointCount"/>, picked or typed) was typed as a point line. A selection made with the mouse, or with the mouse and
-    /// the keyboard mixed, is not complete: replaying the keys would leave out its picks (a bare Enter), so it uses handles.</summary>
+    /// used (<paramref name="pointCount"/>) has a point line in the text. Keys alone: a mouse selection's keys are not complete (replaying them would leave out
+    /// its clicks, a bare Enter), so <see cref="TypedSelection"/> checks the keys with the point count of a typed selection and the text with the clicks written in as point lines for a clicked one.</summary>
     public static bool MakesSelection(string? typed, int pointCount)
     {
         var lines = Lines(typed);

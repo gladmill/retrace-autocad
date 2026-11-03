@@ -49,16 +49,16 @@ public static class TdocPlan
             {
                 var label = RibbonLabel(s) ?? "the button";
                 list.Add(string.IsNullOrWhiteSpace(s.Tab) ? $"Click {label}." : $"Click {label} on the {s.Tab.Trim()} tab.");
-                list.AddRange(AnswerLines(s.Answers));
+                list.AddRange(AnswerLines(s.Answers, s));
                 break;
             }
             case "command":
                 list.Add($"Type {s.Command ?? "the command"} at the command line and press Enter.");
-                list.AddRange(AnswerLines(s.Answers));
+                list.AddRange(AnswerLines(s.Answers, s));
                 break;
             case "lisp":
                 list.Add($"Type {LispTyped(s)} at the command line and press Enter.");
-                list.AddRange(AnswerLines(s.Answers));
+                list.AddRange(AnswerLines(s.Answers, s));
                 break;
             case "dialog":
                 list.AddRange(DialogLines(s));
@@ -143,10 +143,16 @@ public static class TdocPlan
     // ---- answers at the command line ---------------------------------------------------------------------------------------
 
     /// <summary>"At the prompt 'Specify first point', type 10,10." for each recorded answer a person could give.</summary>
-    public static IEnumerable<string> AnswerLines(IEnumerable<Answer> answers)
+    public static IEnumerable<string> AnswerLines(IEnumerable<Answer> answers, Step? step = null)
     {
-        foreach (var a in SelectionReplay.Effective(answers.ToList()))
+        bool first = true;
+        var effective = SelectionReplay.Effective(answers.ToList());
+        foreach (var a in effective)
         {
+            // SETVAR: the recording holds only the value prompt, which names the variable; a person is asked for the name first
+            // (the same decision as the replay's, Plan.SetvarNameToType)
+            if (first && step != null && Plan.SetvarNameToType(step, effective) is { } sysvar) yield return $"At the prompt 'Enter variable name', type {sysvar}.";
+            first = false;
             var action = AnswerAction(a);
             if (action == null) continue;
             var prompt = CleanPrompt(a.Message);

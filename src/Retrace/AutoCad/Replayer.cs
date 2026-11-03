@@ -745,8 +745,7 @@ sealed class Replayer
                 Say($"\n  Dialog \"{s.DialogTitle}\": fill it in by hand.\n");
                 break;
             case "ribbon" or "command" or "lisp":
-                RunStep(s);
-                break;
+                return RunStep(s);
         }
         return true;
     }
@@ -807,19 +806,30 @@ sealed class Replayer
         catch (Exception ex) { Log.Error("handle check", ex); return false; }
     }
 
-    void RunStep(Step s)
+    /// <summary>Starts a command step; false when the run ended in it (a step Retrace cannot type: a person must do it).</summary>
+    bool RunStep(Step s)
     {
-        if (s.Kind == "ribbon" && s.Answers.Count == 0 && !s.HadDialog && TryClick(s)) { _pendingStart = true; _sentAt = DateTime.Now; return; }
+        if (Plan.Problem(s) is { } problem)
+        {
+            // typing it would put text where it does not belong; an unattended run must not end as PASS without it
+            Say($"\n  WARNING: {problem}\n");
+            _deferred = null;
+            _result.Steps.Add(new StepResult { Index = _i + 1, Kind = s.Kind, Title = s.Title, Status = "needs-person", Message = problem });
+            Finish(false, false, $"needs a person: {problem}");
+            return false;
+        }
+        if (s.Kind == "ribbon" && s.Answers.Count == 0 && !s.HadDialog && TryClick(s)) { _pendingStart = true; _sentAt = DateTime.Now; return true; }
         // interactive, and this step's command opens a dialog: hold back the answers given after the dialog opened
         var dialog = _interactive && _i + 1 < _steps.Count && _steps[_i + 1].Kind == "dialog" ? _steps[_i + 1] : null;
         string? text;
         if (dialog != null) (text, _deferred) = Plan.InputAroundDialog(s, dialog.T, HandleExists);
         else { text = Plan.InputText(s, handleExists: HandleExists); _deferred = null; }
-        if (string.IsNullOrEmpty(text)) { Say("\n  (nothing replayable in this step)\n"); return; }
+        if (string.IsNullOrEmpty(text)) { Say("\n  (nothing replayable in this step)\n"); return true; }
         if (s.Kind == "ribbon") ActivateTab(s.Tab);
         // SendStringToExecute: queued, runs as typed input when AutoCAD is next quiescent; "\n" is Enter
         _doc.SendStringToExecute(text, true, false, true);
         _pendingStart = true; _sentAt = DateTime.Now;
+        return true;
     }
 
     /// <summary>Invoke the live RibbonItem the way a click does: its CommandHandler.Execute(item).</summary>

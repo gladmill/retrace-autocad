@@ -31,6 +31,11 @@ static class Native
         return Retrace.Core.TypedInput.CharOf(vk, GetKeyState(0x10) < 0, (GetKeyState(0x14) & 1) != 0);
     }
 
+    [DllImport("user32.dll")] static extern bool IsChild(IntPtr parent, IntPtr h);
+    /// <summary>h is the window <paramref name="parent"/> or one of its children.</summary>
+    public static bool IsInside(IntPtr parent, IntPtr h) => parent != IntPtr.Zero && h != IntPtr.Zero && (parent == h || IsChild(parent, h));
+    public static bool ShiftOrCtrlDown() => GetKeyState(0x10) < 0 || GetKeyState(0x11) < 0;
+
     public static bool Exists(IntPtr h) => h != IntPtr.Zero && IsWindow(h);
 
     public static string TitleOf(IntPtr h) { var t = new StringBuilder(256); GetWindowText(h, t, t.Capacity); return t.ToString(); }

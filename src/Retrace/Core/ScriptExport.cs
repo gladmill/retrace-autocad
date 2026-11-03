@@ -10,6 +10,7 @@ public static class ScriptExport
         var sb = new StringBuilder();
         sb.AppendLine($"; Retrace export of {sourceName}");
         sb.AppendLine("; Plain commands and typed values only. Lines starting with ; are comments (use SCRIPT to run).");
+        sb.AppendLine("; A step with a space in an answer (a layout name) is one (command ...) line: a script takes a space as Enter.");
         sb.AppendLine("; Handles in (handent \"..\") belong to the drawing the session was recorded in.");
         for (int i = 0; i < steps.Count; i++)
         {
@@ -38,6 +39,7 @@ public static class ScriptExport
                 {
                     sb.AppendLine($"; {s.Title}");
                     if (s.HadDialog) { sb.AppendLine($"; MANUAL: {s.Command} opened a dialog; run it by hand (use -{s.Command} for the command-line form if one exists)"); break; }
+                    if (Plan.Problem(s) is { } problem) { sb.AppendLine($"; MANUAL: {problem}"); break; }
                     var text = Plan.InputText(s);
                     if (string.IsNullOrEmpty(text)) { sb.AppendLine("; (no replayable input recorded)"); break; }
                     // .scr: each line is Enter-terminated, so the "\n"-joined text maps one to one. Scripts cannot send Esc: drop it.

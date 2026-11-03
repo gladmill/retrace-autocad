@@ -2,7 +2,9 @@
 # per line from C:\retrace-vm\act.txt, writes what it did to C:\retrace-vm\out\act.txt. Window targets are found by exact window text in
 # AutoCAD's process; "text@class*" also matches the class. Actions:
 #   mouse x,y         real click at a screen point (brings AutoCAD to the front first)      rawmouse x,y   the same, without that
-#   rawrclick x,y     real right-click at a screen point, as is
+#   shiftclick x,y    real left click with Shift held, as is (a deselect at a selection prompt)
+#   drag x1,y1,x2,y2 real left-button drag, as is (a PICKDRAG window)
+#   rawrclick x,y    real right-click at a screen point, as is
 #   move x,y          rest the mouse there (hover: opens a rolled-up / auto-hidden palette)
 #   click <text>      posted click in the middle of a window (WinForms buttons react; WPF buttons do not)
 #   clickat <text>,x,y   posted click at a client point     wpfclick <palette>,x,y   posted click in a palette's WPF host
@@ -93,6 +95,13 @@ foreach ($line in (Get-Content 'C:\retrace-vm\act.txt')) {
       Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait($arg); $log.Add("keys '$arg' (foreground $ok)") }
     'mouse' { $x, $y = $arg -split ','; $ok = Front; [A]::SetCursorPos([int]$x, [int]$y) | Out-Null; Start-Sleep -Milliseconds 200; [A]::mouse_event(2,0,0,0,[UIntPtr]::Zero); [A]::mouse_event(4,0,0,0,[UIntPtr]::Zero); $log.Add("mouse click at $x,$y") }
     'rawmouse' { $x, $y = $arg -split ','; [A]::SetCursorPos([int]$x, [int]$y) | Out-Null; Start-Sleep -Milliseconds 200; [A]::mouse_event(2,0,0,0,[UIntPtr]::Zero); [A]::mouse_event(4,0,0,0,[UIntPtr]::Zero); $log.Add("raw mouse at $x,$y") }
+    'shiftclick' { $x, $y = $arg -split ','; [A]::SetCursorPos([int]$x, [int]$y) | Out-Null; Start-Sleep -Milliseconds 200   # real click with Shift held (deselect at a selection prompt), as is
+      [A]::keybd_event(0x10,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 150; [A]::mouse_event(2,0,0,0,[UIntPtr]::Zero); [A]::mouse_event(4,0,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 150
+      [A]::keybd_event(0x10,0,2,[UIntPtr]::Zero); $log.Add("shift-click at $x,$y") }
+    'drag' { $x1, $y1, $x2, $y2 = ($arg -split ',') | % { [int]$_ }   # real left-button drag (press, move in steps, release), as is
+      [A]::SetCursorPos($x1, $y1) | Out-Null; Start-Sleep -Milliseconds 200; [A]::mouse_event(2,0,0,0,[UIntPtr]::Zero)
+      for ($i = 1; $i -le 10; $i++) { [A]::SetCursorPos([int]($x1 + ($x2 - $x1) * $i / 10), [int]($y1 + ($y2 - $y1) * $i / 10)) | Out-Null; Start-Sleep -Milliseconds 60 }
+      Start-Sleep -Milliseconds 200; [A]::mouse_event(4,0,0,0,[UIntPtr]::Zero); $log.Add("drag $x1,$y1 -> $x2,$y2") }
     'rawrclick' { $x, $y = $arg -split ','; [A]::SetCursorPos([int]$x, [int]$y) | Out-Null; Start-Sleep -Milliseconds 200; [A]::mouse_event(8,0,0,0,[UIntPtr]::Zero); [A]::mouse_event(16,0,0,0,[UIntPtr]::Zero); $log.Add("raw right click at $x,$y") }
     'move' { $x, $y = $arg -split ','; [A]::SetCursorPos([int]$x, [int]$y) | Out-Null; $log.Add("moved") }
     'raw' { Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait($arg); $log.Add("raw '$arg'") }

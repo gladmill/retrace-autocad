@@ -29,14 +29,17 @@ public sealed class Recorder
     int _seq;
     // Prompts open right now. AutoCAD nests prompts (GetCorner runs a point prompt inside the corner prompt; GetDistance a point
     // prompt inside the distance prompt), each raising its own Prompted* event; only the outermost result is the user's answer.
-    int _openPrompts;
+    // Their kinds, outermost first: a point inside a corner prompt is GetCorner's inner point, a point or corner inside a selection prompt is a click or typed corner of that selection.
+    readonly List<string> _kinds = new();
+    int _openPrompts => _kinds.Count;
     // What was typed since the last prompt result or command start (see Core/TypedInput): the corners and keywords of a built-in selection.
     readonly TypedSelection _sel = new();
     // Real input vs noise: in AutoCAD Electrical 2026 something requests a point on every mouse move while a command waits
     // (each with its own Prompting event, echoing the command's message). A result counts as user input only if a click or
     // key press reached AutoCAD's message loop shortly before it and no earlier result has claimed that press.
     long _inputTick, _claimedTick, _lastInputMs = -100000;
-    bool _lastInputMouse;   // the newest input was a mouse button (a pick), else a key (typed value + Enter)
+    int _viewMouse, _viewMouseAtPoint;   // left button down / up in the drawing window, counted; and its value when the last click point was taken
+    bool _lastInputMouse;  // the newest input was a mouse button (a pick), else a key (typed value + Enter)
     string? _claimedBy;     // "mouse" | "keys" for the last successful ClaimInput
     RibbonControl? _hookedRibbon;
     readonly List<RibbonTab> _hookedTabs = new();
@@ -110,7 +113,7 @@ public sealed class Recorder
         _w = new SessionWriter(string.IsNullOrWhiteSpace(name) ? "test" : name!, header);
         BeginShots();
         _promptMsg.Clear();
-        _openPrompts = 0;
+        _kinds.Clear();
         _sel.Reset();
         _lastCtx = null; _startup = new(); _ctxCmdDepth = 0; _ctxLispDepth = 0;
         _marks = 0;
@@ -498,7 +501,7 @@ public sealed class Recorder
     {
         var name = e.GlobalCommandName;
         if (IsOurs(name)) { _sel.OwnCommandStart(_ctxCmdDepth > 0 || _ctxLispDepth > 0); _inOwnCmd = true; return; }   // (typed inside a prompt, the keys of 'RETRACEMARK are in the selection buffer: unusable) leaves _openPrompts alone: an own command typed transparently ('RETRACESTATUS) runs inside the user's prompt
-        _openPrompts = 0;
+        _kinds.Clear();
         _sel.CommandStart(_ctxCmdDepth > 0 || _ctxLispDepth > 0);   // a transparent command inside a prompt spoils the outer selection's text
         _cmdDoc = DocName(s as Document);
         _claimedTick = _inputTick; // the click/Enter that started the command answers no prompt
@@ -507,9 +510,9 @@ public sealed class Recorder
         Emit("cmd_start", DocName(s as Document), ("command", name), ("origin", origin), ("via", via));
     });
 
-    void OnCmdEnded(object? s, CommandEventArgs e) => Log.Safe("CommandEnded", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _openPrompts = 0; Emit("cmd_end", DocName(s as Document), ("command", e.GlobalCommandName)); TakePendingMark(); } });
-    void OnCmdCancelled(object? s, CommandEventArgs e) => Log.Safe("CommandCancelled", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _openPrompts = 0; Emit("cmd_cancel", DocName(s as Document), ("command", e.GlobalCommandName)); TakePendingMark(); } });
-    void OnCmdFailed(object? s, CommandEventArgs e) => Log.Safe("CommandFailed", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _openPrompts = 0; Emit("cmd_fail", DocName(s as Document), ("command", e.GlobalCommandName)); TakePendingMark(); } });
+    void OnCmdEnded(object? s, CommandEventArgs e) => Log.Safe("CommandEnded", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _kinds.Clear(); Emit("cmd_end", DocName(s as Document), ("command", e.GlobalCommandName)); TakePendingMark(); } });
+    void OnCmdCancelled(object? s, CommandEventArgs e) => Log.Safe("CommandCancelled", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _kinds.Clear(); Emit("cmd_cancel", DocName(s as Document), ("command", e.GlobalCommandName)); TakePendingMark(); } });
+    void OnCmdFailed(object? s, CommandEventArgs e) => Log.Safe("CommandFailed", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _kinds.Clear(); Emit("cmd_fail", DocName(s as Document), ("command", e.GlobalCommandName)); TakePendingMark(); } });
 
     /// <summary>A command ended: a checkpoint asked for during it is taken now, once AutoCAD has finished ending it (MarkFromKey waits again if
     /// another command is still running).</summary>
@@ -660,6 +663,12 @@ public sealed class Recorder
         foreach (var a in undo) Log.Safe("UnhookEditor", a);
     }
 
+    /// <summary>The window of the active drawing (its views are children of it); not the ribbon, a palette or the command line.</summary>
+    static IntPtr DrawingWindow()
+    {
+        try { return AcApp.DocumentManager.MdiActiveDocument?.Window?.Handle ?? IntPtr.Zero; } catch { return IntPtr.Zero; }
+    }
+
     // Runs for every UI-thread message: keep it allocation-free.
     void OnPreTranslate(object? s, PreTranslateMessageEventArgs e)
     {
@@ -667,6 +676,11 @@ public sealed class Recorder
         if (CheckpointKey.TryHandle(m, e.Message.wParam, e.Message.lParam)) { e.Handled = true; return; }   // the shortcut is not user input
         if (m is 0x0100 or 0x0201 && _pal.Enabled) PaletteInput(e.Message.hwnd, (uint)m, e.Message.wParam, e.Message.lParam);
         if (m == 0x0100 && _w != null && !_inOwnCmd) { if (Native.TypedChar((uint)(long)e.Message.wParam) is { } typedChar) _sel.Key(typedChar); }   // WM_KEYDOWN (no WM_CHAR reaches this handler)
+        if (m is 0x0201 or 0x0202 && _w != null && !_inOwnCmd && Native.IsInside(DrawingWindow(), e.Message.hwnd))
+        {
+            _viewMouse++;
+            if (m == 0x0201 && Native.ShiftOrCtrlDown()) _sel.ClickModifier();   // a deselect, sub-object or cycling pick: its point cannot stand for it
+        }
         if (m is 0x0201 or 0x0203 or 0x0204) NativeInput(e.Message.hwnd, (uint)m, e.Message.lParam);
         // WM_KEYDOWN, WM_L/R/MBUTTONDOWN. Shift, Ctrl and Alt alone answer nothing (pressed for the checkpoint shortcut, they made an
         // AutoCAD Electrical mouse-move point look typed)
@@ -754,7 +768,7 @@ public sealed class Recorder
             _lastPromptMsg = o?.Message;
             _promptKeywords[kind] = KeywordsOf(o?.Message);
             _promptSeq[kind] = ++_seq;
-            _openPrompts++;
+            _kinds.Add(kind);
         });
     }
 
@@ -777,21 +791,30 @@ public sealed class Recorder
             _promptMsg["selection"] = o?.MessageForAdding;
             _lastPromptMsg = o?.MessageForAdding;
             _promptKeywords["selection"] = KeywordsOf(o?.MessageForAdding);
-            _openPrompts++;
+            _kinds.Add("selection");
         });
     }
 
     /// <summary>Closes one open prompt; true if another prompt is still open around it (the result is nested).</summary>
     bool ClosePrompt()
     {
-        if (_openPrompts > 0) _openPrompts--;
-        return _openPrompts > 0;
+        if (_kinds.Count > 0) _kinds.RemoveAt(_kinds.Count - 1);
+        return _kinds.Count > 0;
     }
 
     void Post(string kind, PromptResult? r, Func<PromptResult, object?> value, Editor ed)
     {
         if (_w == null || r == null) return;
-        if (!_inOwnCmd && r.Status == PromptStatus.OK && kind is "point" or "corner" && value(r) is double[] pt) _sel.Point(pt);
+        if (!_inOwnCmd && r.Status == PromptStatus.OK && kind is "point" or "corner" && value(r) is double[] pt
+            && !(kind == "point" && _kinds.Count >= 2 && _kinds[^2] == "corner"))   // GetCorner's inner point: the corner result that follows is the answer
+        {
+            // A point is typed (its line is already in the keys), or a click in the drawing window (a left button went down or up there since the last
+            // click, and the newest input was the mouse), or neither, which spoils the selection's text (see TypedSelection.Point).
+            var ppr = r as PromptPointResult;
+            bool click = ppr != null && _lastInputMouse && _viewMouse != _viewMouseAtPoint;
+            if (click) _viewMouseAtPoint = _viewMouse;
+            _sel.Point(pt, ppr == null ? null : TypedSelection.PointLine(ppr.Value.X, ppr.Value.Y, ppr.Value.Z), click);
+        }
         if (ClosePrompt()) return; // nested inside another open prompt
         if (_inOwnCmd) return; // e.g. RETRACEMARK's note: not part of the user's path
         Log.Safe("Prompted " + kind, () =>
@@ -801,7 +824,10 @@ public sealed class Recorder
             _promptMsg.TryGetValue(kind, out var msg);
             // The typed text belongs to the selection result that follows it. A point or corner that this prompt's text does not show to be
             // part of a selection ("Specify base point:") ends it, like every other kind of answer.
-            if (!(kind == "corner" || (kind == "point" && SelectionReplay.IsSelectionInput(new Answer(kind, "", null, null, msg))))) _sel.OtherAnswer();
+            // A top-level corner is selection input only at the "opposite corner" prompt of a selection; RECTANG's and a custom GetCorner's end the text.
+            bool selectionInput = kind == "corner" ? (msg ?? "").Contains("opposite corner", StringComparison.OrdinalIgnoreCase)
+                : kind == "point" && SelectionReplay.IsSelectionInput(new Answer(kind, "", null, null, msg));
+            if (!selectionInput) _sel.OtherAnswer();
             _promptKeywords.TryGetValue(kind, out var kws);
             Emit("prompt", _cmdDoc,
                 ("kind", kind), ("seq", _promptSeq.TryGetValue(kind, out var q) ? q : null), ("input", ClaimInput()), ("by", _claimedBy), ("message", msg?.Trim()), ("keywords", kws is { Length: > 0 } ? kws : null),
@@ -813,7 +839,7 @@ public sealed class Recorder
     void PostSel(PromptSelectionResult? r, Editor ed)
     {
         if (_w == null || r == null) return;
-        var typed = _sel.Take();   // starts the text over
+        var (typed, clicks) = _sel.Take();   // starts the text over
         if (ClosePrompt()) return; // nested inside another open prompt
         Log.Safe("Prompted selection", () =>
         {
@@ -833,8 +859,10 @@ public sealed class Recorder
                     ["dxf"] = ids.Take(200).Select(DxfOf).ToArray(),
                     ["method"] = method,
                 };
-                // only when the typed text alone makes the whole selection: a mouse window or pick, or keys and mouse mixed, replays from handles
+                // `typed`: only when the typed text alone makes the whole selection. `clicks`: the same text with the mouse clicks as point lines, when a click took part
+                // and the text makes the whole selection (no Shift / Ctrl click, no half-typed line); the replay uses it only where handles cannot express the selection.
                 if (typed != null) ((Dictionary<string, object?>)value)["typed"] = typed;
+                if (clicks != null) ((Dictionary<string, object?>)value)["clicks"] = clicks;
             }
             Emit("prompt", _cmdDoc,
                 ("kind", "selection"), ("input", ClaimInput()), ("by", _claimedBy), ("message", msg?.Trim()), ("keywords", kws is { Length: > 0 } ? kws : null),
