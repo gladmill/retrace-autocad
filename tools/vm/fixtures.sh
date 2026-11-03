@@ -2,7 +2,7 @@
 # Builds, lists, mutates and dumps the Retrace test fixtures on the Windows VM (AutoCAD 2026 must be running there).
 #   fixtures.sh build [name]       build one fixture (all, layers, ...), no name = every fixture to C:\temp\retrace\fixtures\<name>.dwg
 #   fixtures.sh list               fixtures on the VM, and the mutations in this folder
-#   fixtures.sh open <name>        open fixtures\<name>.dwg (an open copy is closed without saving first)
+#   fixtures.sh open <name>        open fixtures\<name>.dwg (an open copy is closed without saving first), then visit every layout once and return to Model
 #   fixtures.sh dump               q-fixture-dump.ps1 on the active drawing
 #   fixtures.sh mutate <name>      run mut-<name>.ps1 on the active drawing (name = "layers-freeze-dim", without mut-)
 #   fixtures.sh check [name|all]   per mutation: reopen fx-all, dump, mutate, dump, print the diff (what a detector should see)

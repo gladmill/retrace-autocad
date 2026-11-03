@@ -608,7 +608,7 @@ sealed class Replayer
             // a right-click in a native palette: its menu is not replayed, the command picked from it is typed (the item is selected now)
             if (s.Native is { Action: "rclick" } && s.Command != null)
             {
-                var typed = Plan.InputText(new Step { Kind = "command", Command = s.Command, Answers = s.Answers });
+                var typed = Plan.InputText(new Step { Kind = "command", Command = s.Command, Answers = s.Answers }, handleExists: HandleExists);
                 if (!string.IsNullOrEmpty(typed)) { _doc.SendStringToExecute(typed, true, false, true); _pendingStart = true; _sentAt = now; }
                 NextPaletteStep();
                 return;
@@ -644,7 +644,7 @@ sealed class Replayer
         if (s.Native != null && _lastStartedAt >= _paletteClickedAt && string.Equals(_lastStarted, s.Command, StringComparison.OrdinalIgnoreCase)) _paletteCommandStarted = true;
         if (running || _paletteCommandStarted)
         {
-            var text = Plan.InputText(s, includeStart: false);
+            var text = Plan.InputText(s, includeStart: false, handleExists: HandleExists);
             if (running && !string.IsNullOrEmpty(text)) _doc.SendStringToExecute(text, true, false, true);
             _paletteCommand = null;
             NextPaletteStep();
@@ -795,14 +795,26 @@ sealed class Replayer
         _win.Show("Check " + cp.Index + (cp.Pass == true ? " PASS" : " FAIL"), (cp.Note.Length > 0 ? cp.Note + "\n" : "") + string.Join("\n", all), false);
     }
 
+    /// <summary>Handle fallback of a recorded selection: the handle must exist in this drawing and hold the recorded kind of object.</summary>
+    bool HandleExists(string handle, string? dxf)
+    {
+        try
+        {
+            if (!long.TryParse(handle, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out var v)) return false;
+            if (!_doc.Database.TryGetObjectId(new Autodesk.AutoCAD.DatabaseServices.Handle(v), out var id) || id.IsNull || id.IsErased) return false;
+            return dxf == null || dxf == "?" || string.Equals(id.ObjectClass.DxfName, dxf, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) { Log.Error("handle check", ex); return false; }
+    }
+
     void RunStep(Step s)
     {
         if (s.Kind == "ribbon" && s.Answers.Count == 0 && !s.HadDialog && TryClick(s)) { _pendingStart = true; _sentAt = DateTime.Now; return; }
         // interactive, and this step's command opens a dialog: hold back the answers given after the dialog opened
         var dialog = _interactive && _i + 1 < _steps.Count && _steps[_i + 1].Kind == "dialog" ? _steps[_i + 1] : null;
         string? text;
-        if (dialog != null) (text, _deferred) = Plan.InputAroundDialog(s, dialog.T);
-        else { text = Plan.InputText(s); _deferred = null; }
+        if (dialog != null) (text, _deferred) = Plan.InputAroundDialog(s, dialog.T, HandleExists);
+        else { text = Plan.InputText(s, handleExists: HandleExists); _deferred = null; }
         if (string.IsNullOrEmpty(text)) { Say("\n  (nothing replayable in this step)\n"); return; }
         if (s.Kind == "ribbon") ActivateTab(s.Tab);
         // SendStringToExecute: queued, runs as typed input when AutoCAD is next quiescent; "\n" is Enter

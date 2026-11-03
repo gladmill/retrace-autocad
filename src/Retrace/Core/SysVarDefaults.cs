@@ -18,8 +18,9 @@ public static class SysVarDefaults
         "INSUNITS", "LUNITS", "LUPREC", "AUNITS", "AUPREC", "ANGBASE", "ANGDIR", "MEASUREMENT", "UNITMODE",
         // current object settings
         "CLAYER", "CELTYPE", "CECOLOR", "CELWEIGHT", "CELTSCALE", "ELEVATION", "THICKNESS",
-        // linetype scale and display
-        "LTSCALE", "PSLTSCALE", "MSLTSCALE", "LWUNITS", "LWDEFAULT",
+        // linetype scale and display (PSLTSCALE is not here: AutoCAD saves it per paper layout and loads it when a layout becomes current, so the
+        // variable follows the tab last visited. Each layout's own value is the `psltscale` field of `layouts`. Add it with sysvarsAdd if wanted.)
+        "LTSCALE", "MSLTSCALE", "LWUNITS", "LWDEFAULT",
         // styles
         "TEXTSTYLE", "TEXTSIZE", "DIMSTYLE", "CMLSTYLE", "CMLSCALE", "CMLJUST", "CMLEADERSTYLE", "CTABLESTYLE",
         // annotation scale ("ANNOSCALE" is the older name some products use)

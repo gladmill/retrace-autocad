@@ -311,7 +311,8 @@ public static class Plan
     static string Inv(double d) => d.ToString("0.############", CultureInfo.InvariantCulture);
 
     /// <summary>One answer as the text to type, or null if it cannot be typed. Each returned line is followed by Enter.</summary>
-    public static List<string>? TypedLines(Answer a)
+    /// <param name="handleExists">optional check used only for the handle fallback: (handle, recorded dxf name) -> is it in the replay drawing</param>
+    public static List<string>? TypedLines(Answer a, Func<string, string?, bool>? handleExists = null)
     {
         if (a.Status == "None") return new List<string> { "" };          // Enter
         if (a.Status == "Cancel") return new List<string> { "\u0003" };  // Esc/^C
@@ -333,20 +334,17 @@ public static class Plan
             case "string":
                 return new List<string> { v.GetString() ?? "" };
             case "entity" or "nestedEntity":
-                return Str(v, "handle") is { } h ? new List<string> { $"(handent \"{h}\")" } : null;
+                if (Str(v, "handle") is { } h && (handleExists == null || handleExists(h, Str(v, "dxf")))) return new List<string> { $"(handent \"{h}\")" };
+                return null;
             case "selection":
-            {
-                if (!v.TryGetProperty("handles", out var hs) || hs.ValueKind != JsonValueKind.Array) return null;
-                var lines = hs.EnumerateArray().Select(x => $"(handent \"{x.GetString()}\")").ToList();
-                lines.Add(""); // Enter ends selection
-                return lines;
-            }
+                // as it was made: the text typed for it (window corners, keywords); a mouse selection has none, then handles, the last resort
+                return SelectionReplay.TypedLines(v) ?? SelectionReplay.HandleLines(v, handleExists);
         }
         return null;
     }
 
     /// <summary>The command-line text that replays a step: command or converted macro, then the answers. Lines are joined with \n (= Enter).</summary>
-    public static string? InputText(Step s, bool includeStart = true)
+    public static string? InputText(Step s, bool includeStart = true, Func<string, string?, bool>? handleExists = null)
     {
         var sb = new StringBuilder();
         if (includeStart)
@@ -363,9 +361,9 @@ public static class Plan
             else return null;
             sb.Append('\n');
         }
-        foreach (var a in s.Answers)
+        foreach (var a in SelectionReplay.Effective(s.Answers))
         {
-            var lines = TypedLines(a);
+            var lines = TypedLines(a, handleExists);
             if (lines == null) return sb.ToString(); // stop at the first untypable answer; the rest is up to the tester
             // ^C cancels on its own; an Enter after it would repeat the command (seen replaying LINE ... Esc, R25.1)
             if (a.Status == "Cancel") return sb.Append('\u0003').ToString();
@@ -377,7 +375,7 @@ public static class Plan
     /// <summary>Input for a step whose command opens a dialog (recorded at <paramref name="dialogT"/>): First = the start plus the answers
     /// given before the dialog opened, After = the answers given after it (null if none). After is typed only once the dialog was
     /// confirmed; sent up front it would wait in AutoCAD's input queue and run as a command if the dialog is cancelled.</summary>
-    public static (string? First, string? After) InputAroundDialog(Step s, long dialogT)
+    public static (string? First, string? After) InputAroundDialog(Step s, long dialogT, Func<string, string?, bool>? handleExists = null)
     {
         Step With(IEnumerable<Answer> answers) => new()
         {
@@ -385,8 +383,8 @@ public static class Plan
             Command = s.Command, Lisp = s.Lisp, T = s.T, HadDialog = s.HadDialog, Answers = answers.ToList(),
         };
         var after = With(s.Answers.Where(a => a.T >= dialogT));
-        var rest = after.Answers.Count == 0 ? null : InputText(after, includeStart: false);
-        return (InputText(With(s.Answers.Where(a => a.T < dialogT))), string.IsNullOrEmpty(rest) ? null : rest);
+        var rest = after.Answers.Count == 0 ? null : InputText(after, includeStart: false, handleExists: handleExists);
+        return (InputText(With(s.Answers.Where(a => a.T < dialogT)), handleExists: handleExists), string.IsNullOrEmpty(rest) ? null : rest);
     }
 
     /// <summary>Menu macro -> typed input: ^C -> Esc, ; -> Enter, \ (pause) dropped (the recorded answers fill it). Null for empty macros.</summary>

@@ -27,6 +27,33 @@ function Send-Cmd($d, [string]$text) {
   }
 }
 
+# COM message filter: when AutoCAD is busy (regen after a layout switch, a document loading) it refuses calls with RPC_E_CALL_REJECTED.
+# A filter that answers "retry in 200 ms" makes COM wait instead of throwing (the standard fix for automation clients). Needs an STA thread.
+if (-not ('FxMsgFilter' -as [type])) {
+  Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+[ComImport, Guid("00000016-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IOleMessageFilter {
+  [PreserveSig] int HandleInComingCall(int dwCallType, IntPtr hTaskCaller, int dwTickCount, IntPtr lpInterfaceInfo);
+  [PreserveSig] int RetryRejectedCall(IntPtr hTaskCallee, int dwTickCount, int dwRejectType);
+  [PreserveSig] int MessagePending(IntPtr hTaskCallee, int dwTickCount, int dwPendingType);
+}
+public class FxMsgFilter : IOleMessageFilter {
+  [DllImport("Ole32.dll")] static extern int CoRegisterMessageFilter(IOleMessageFilter n, out IOleMessageFilter o);
+  public static void Register() { IOleMessageFilter old; CoRegisterMessageFilter(new FxMsgFilter(), out old); }
+  public int HandleInComingCall(int t, IntPtr h, int k, IntPtr i) { return 0; }
+  public int RetryRejectedCall(IntPtr h, int tick, int type) { return (type == 2 && tick < 60000) ? 200 : -1; }  // SERVERCALL_RETRYLATER: wait 200 ms, up to 60 s
+  public int MessagePending(IntPtr h, int tick, int type) { return 2; }  // PENDINGMSG_WAITDEFPROCESS
+}
+'@
+}
+try { [FxMsgFilter]::Register() } catch { Write-Output "message filter not registered: $($_.Exception.Message)" }
+
+# a COM call right after a layout switch or a regen can be refused (RPC_E_CALL_REJECTED, AutoCAD busy): try again for up to 30 s
+function Retry([scriptblock]$b) {
+  for ($i = 0; ; $i++) { try { return (& $b) } catch { if ($i -ge 40 -or $_.Exception.Message -notmatch 'rejected by callee|0x8001010A') { throw }; Start-Sleep -Milliseconds 750 } }
+}
+
 function Ensure-Layer($d, [string]$name, [int]$aci = 7) {
   try { return $d.Layers.Item($name) } catch { $l = $d.Layers.Add($name); $l.color = $aci; return $l }
 }
@@ -39,15 +66,24 @@ function New-Fixture([string]$name) {
   $d = $acad.Documents.Add(); Start-Sleep 3
   $d = $acad.ActiveDocument
   $d.Activate()
+  $script:FxPslt = [int16]$d.GetVariable('PSLTSCALE')   # the value the finished fixture carries everywhere (Add-FxSysvars may change it)
   return $d
 }
 
 function Save-Fixture($d, [string]$name) {
-  $d.ActiveSpace = 1
-  try { $d.ActiveLayout = $d.Layouts.Item('Model') } catch { }
+  # Make every layout current once, so the saved drawing is "visited": viewports read ViewportOn right and the overall viewport exists.
+  # PSLTSCALE is saved per layout and AutoCAD loads a layout's own value when it becomes current (the template's Layout1 says 0, Layout2 says 1),
+  # so a first visit used to flip it. Set the intended value inside every layout, then in Model.
+  foreach ($l in (Retry { @($d.Layouts) | ? { $_.Name -ne 'Model' } | sort TabOrder })) {
+    Retry { $d.ActiveLayout = $l }; Start-Sleep -Milliseconds 700
+    Retry { $d.ActiveSpace = 0 }; Retry { $d.SetVariable('PSLTSCALE', $script:FxPslt) }
+  }
+  Retry { $d.ActiveSpace = 1 }
+  Retry { $d.ActiveLayout = $d.Layouts.Item('Model') }
+  Retry { $d.SetVariable('PSLTSCALE', $script:FxPslt) }
   $path = Join-Path $script:FxDir "fx-$name.dwg"
   $d.SaveAs($path)
-  Say "saved $path ($((Get-Item $path).Length) bytes)"
+  Say "saved $path ($((Get-Item $path).Length) bytes), layouts visited, PSLTSCALE $($script:FxPslt) in Model and every layout"
 }
 
 function Add-Line($sp, $x1, $y1, $x2, $y2, [string]$layer) { $l = $sp.AddLine((Pt $x1 $y1), (Pt $x2 $y2)); if ($layer) { $l.Layer = $layer }; $l }
@@ -222,6 +258,7 @@ function Add-FxSysvars($d) {
     LTSCALE = 2.5; PSLTSCALE = 0; INSUNITS = 4; LUNITS = 4; LUPREC = 3; AUNITS = 1; AUPREC = 2; MEASUREMENT = 1
     PDMODE = 35; PDSIZE = 2.5; MIRRTEXT = 1; FILLMODE = 0
   }
+  $script:FxPslt = [int16]$set['PSLTSCALE']   # Save-Fixture puts it in every layout too
   foreach ($k in $set.Keys) {
     try { if ($k -eq 'DIMSTYLE') { $d.ActiveDimStyle = $d.DimStyles.Item($set[$k]) } else { Set-Sv $d $k $set[$k] } } catch { Say "sysvars: $k FAILED: $($_.Exception.Message)" }
   }

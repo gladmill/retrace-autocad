@@ -145,7 +145,7 @@ public static class TdocPlan
     /// <summary>"At the prompt 'Specify first point', type 10,10." for each recorded answer a person could give.</summary>
     public static IEnumerable<string> AnswerLines(IEnumerable<Answer> answers)
     {
-        foreach (var a in answers)
+        foreach (var a in SelectionReplay.Effective(answers.ToList()))
         {
             var action = AnswerAction(a);
             if (action == null) continue;
@@ -164,7 +164,15 @@ public static class TdocPlan
         switch (a.Kind)
         {
             case "entity" or "nestedEntity": return "select the object";
-            case "selection": return "select the objects and press Enter";
+            case "selection":
+                // the text typed for it, as the replay types it; otherwise a person picks the objects
+                if (a.Value is { } sv && SelectionReplay.TypedLines(sv) is { } typedLines)
+                {
+                    var words = typedLines.Where(l => l.Length > 0).ToList();
+                    var closes = typedLines[^1].Length == 0;
+                    return "type " + string.Join(", then ", words) + (closes ? " and press Enter" : "");
+                }
+                return "select the objects and press Enter";
         }
         List<string>? lines;
         try { lines = Plan.TypedLines(a); }
@@ -199,7 +207,7 @@ public static class TdocPlan
         var parts = new List<string>();
         if (s.Kind == "command") parts.Add($"type {s.Command ?? "the command"}");
         else if (s.Kind == "lisp") parts.Add($"type {LispTyped(s)}");
-        foreach (var a in s.Answers)
+        foreach (var a in SelectionReplay.Effective(s.Answers))
             if (AnswerAction(a) is { } act) parts.Add(act.StartsWith("type ", StringComparison.Ordinal) && parts.Count > 0 ? act[5..] : act);
         if (parts.Count == 0) return null;
         var shown = parts.Take(Max).ToList();

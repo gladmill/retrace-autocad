@@ -30,6 +30,8 @@ public sealed class Recorder
     // Prompts open right now. AutoCAD nests prompts (GetCorner runs a point prompt inside the corner prompt; GetDistance a point
     // prompt inside the distance prompt), each raising its own Prompted* event; only the outermost result is the user's answer.
     int _openPrompts;
+    // What was typed since the last prompt result or command start (see Core/TypedInput): the corners and keywords of a built-in selection.
+    readonly TypedSelection _sel = new();
     // Real input vs noise: in AutoCAD Electrical 2026 something requests a point on every mouse move while a command waits
     // (each with its own Prompting event, echoing the command's message). A result counts as user input only if a click or
     // key press reached AutoCAD's message loop shortly before it and no earlier result has claimed that press.
@@ -109,6 +111,7 @@ public sealed class Recorder
         BeginShots();
         _promptMsg.Clear();
         _openPrompts = 0;
+        _sel.Reset();
         _lastCtx = null; _startup = new(); _ctxCmdDepth = 0; _ctxLispDepth = 0;
         _marks = 0;
         _lastRibbonConsumed = true;
@@ -494,8 +497,9 @@ public sealed class Recorder
     void OnCmdStart(object? s, CommandEventArgs e) => Log.Safe("CommandWillStart", () =>
     {
         var name = e.GlobalCommandName;
-        if (IsOurs(name)) { _inOwnCmd = true; return; }   // leaves _openPrompts alone: an own command typed transparently ('RETRACESTATUS) runs inside the user's prompt
+        if (IsOurs(name)) { _sel.OwnCommandStart(_ctxCmdDepth > 0 || _ctxLispDepth > 0); _inOwnCmd = true; return; }   // (typed inside a prompt, the keys of 'RETRACEMARK are in the selection buffer: unusable) leaves _openPrompts alone: an own command typed transparently ('RETRACESTATUS) runs inside the user's prompt
         _openPrompts = 0;
+        _sel.CommandStart(_ctxCmdDepth > 0 || _ctxLispDepth > 0);   // a transparent command inside a prompt spoils the outer selection's text
         _cmdDoc = DocName(s as Document);
         _claimedTick = _inputTick; // the click/Enter that started the command answers no prompt
         try { if (s is Document d) _ucs = d.Editor.CurrentUserCoordinateSystem; } catch { _ucs = Matrix3d.Identity; }
@@ -519,6 +523,7 @@ public sealed class Recorder
     // startup: LISP AutoCAD runs while a drawing opens (no click or key since it opened), not the person's (DrawingOpen)
     void OnLispStart(object? s, LispWillStartEventArgs e) => Log.Safe("LispWillStart", () =>
     {
+        _sel.LispStart(_ctxCmdDepth > 0 || _ctxLispDepth > 0);   // its own keys come before an ssget; typed inside a prompt (a replay's (handent ..)) it spoils the text
         _cmdDoc = DocName(s as Document);
         Emit("lisp_start", _cmdDoc, ("firstLine", e.FirstLine), ("startup", _startup.IsStartupLisp(_w?.ElapsedMs ?? 0, _lastInputMs)));
     });
@@ -661,6 +666,7 @@ public sealed class Recorder
         var m = e.Message.message;
         if (CheckpointKey.TryHandle(m, e.Message.wParam, e.Message.lParam)) { e.Handled = true; return; }   // the shortcut is not user input
         if (m is 0x0100 or 0x0201 && _pal.Enabled) PaletteInput(e.Message.hwnd, (uint)m, e.Message.wParam, e.Message.lParam);
+        if (m == 0x0100 && _w != null && !_inOwnCmd) { if (Native.TypedChar((uint)(long)e.Message.wParam) is { } typedChar) _sel.Key(typedChar); }   // WM_KEYDOWN (no WM_CHAR reaches this handler)
         if (m is 0x0201 or 0x0203 or 0x0204) NativeInput(e.Message.hwnd, (uint)m, e.Message.lParam);
         // WM_KEYDOWN, WM_L/R/MBUTTONDOWN. Shift, Ctrl and Alt alone answer nothing (pressed for the checkpoint shortcut, they made an
         // AutoCAD Electrical mouse-move point look typed)
@@ -785,6 +791,7 @@ public sealed class Recorder
     void Post(string kind, PromptResult? r, Func<PromptResult, object?> value, Editor ed)
     {
         if (_w == null || r == null) return;
+        if (!_inOwnCmd && r.Status == PromptStatus.OK && kind is "point" or "corner" && value(r) is double[] pt) _sel.Point(pt);
         if (ClosePrompt()) return; // nested inside another open prompt
         if (_inOwnCmd) return; // e.g. RETRACEMARK's note: not part of the user's path
         Log.Safe("Prompted " + kind, () =>
@@ -792,6 +799,9 @@ public sealed class Recorder
             object? v = null;
             if (r.Status == PromptStatus.OK) v = value(r);
             _promptMsg.TryGetValue(kind, out var msg);
+            // The typed text belongs to the selection result that follows it. A point or corner that this prompt's text does not show to be
+            // part of a selection ("Specify base point:") ends it, like every other kind of answer.
+            if (!(kind == "corner" || (kind == "point" && SelectionReplay.IsSelectionInput(new Answer(kind, "", null, null, msg))))) _sel.OtherAnswer();
             _promptKeywords.TryGetValue(kind, out var kws);
             Emit("prompt", _cmdDoc,
                 ("kind", kind), ("seq", _promptSeq.TryGetValue(kind, out var q) ? q : null), ("input", ClaimInput()), ("by", _claimedBy), ("message", msg?.Trim()), ("keywords", kws is { Length: > 0 } ? kws : null),
@@ -803,6 +813,7 @@ public sealed class Recorder
     void PostSel(PromptSelectionResult? r, Editor ed)
     {
         if (_w == null || r == null) return;
+        var typed = _sel.Take();   // starts the text over
         if (ClosePrompt()) return; // nested inside another open prompt
         Log.Safe("Prompted selection", () =>
         {
@@ -822,6 +833,8 @@ public sealed class Recorder
                     ["dxf"] = ids.Take(200).Select(DxfOf).ToArray(),
                     ["method"] = method,
                 };
+                // only when the typed text alone makes the whole selection: a mouse window or pick, or keys and mouse mixed, replays from handles
+                if (typed != null) ((Dictionary<string, object?>)value)["typed"] = typed;
             }
             Emit("prompt", _cmdDoc,
                 ("kind", "selection"), ("input", ClaimInput()), ("by", _claimedBy), ("message", msg?.Trim()), ("keywords", kws is { Length: > 0 } ? kws : null),

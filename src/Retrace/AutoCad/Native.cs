@@ -21,6 +21,15 @@ static class Native
     }
 
     [DllImport("user32.dll")] static extern bool IsWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] static extern short GetKeyState(int vk);
+
+    /// <summary>The character a WM_KEYDOWN types (what <see cref="Retrace.Core.TypedInput"/> keeps of the command line); null for keys that
+    /// type nothing or are pressed with Ctrl / Alt. UI thread only. See <see cref="Retrace.Core.TypedInput.CharOf"/> for the layout it assumes.</summary>
+    public static char? TypedChar(uint vk)
+    {
+        if (GetKeyState(0x11) < 0 || GetKeyState(0x12) < 0) return null;
+        return Retrace.Core.TypedInput.CharOf(vk, GetKeyState(0x10) < 0, (GetKeyState(0x14) & 1) != 0);
+    }
 
     public static bool Exists(IntPtr h) => h != IntPtr.Zero && IsWindow(h);
 
