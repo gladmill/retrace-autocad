@@ -58,6 +58,12 @@ public sealed class RetraceSettings
     int _tdocStepDelayMs = 1500;
     public const int MaxTdocStepDelayMs = 10000;
 
+    /// <summary>Suite run (RETRACESUITE): a test step that takes longer than this many seconds is cancelled (^C^C) and the test is recorded as ERROR
+    /// "step N timed out". 120 by default; clamped to 5..3600.</summary>
+    [JsonPropertyName("suiteStepTimeoutSeconds")] public int SuiteStepTimeoutSeconds { get => _suiteTimeout; set => _suiteTimeout = Math.Clamp(value, MinSuiteTimeoutSeconds, MaxSuiteTimeoutSeconds); }
+    int _suiteTimeout = 120;
+    public const int MinSuiteTimeoutSeconds = 5, MaxSuiteTimeoutSeconds = 3600;
+
     /// <summary>Where the Retrace ribbon tab goes: "" / "afterHome" (right of Home), "first", "last" or "after:&lt;tab id or title&gt;".</summary>
     [JsonPropertyName("ribbonTabPosition")] public string RibbonTabPosition { get; set; } = "";
 
@@ -88,6 +94,11 @@ public sealed class RetraceSettings
     /// <summary>Behavior ids (see <see cref="BehaviorCatalog"/>) verified when <see cref="AutoDetectBehavior"/> is off.</summary>
     [JsonPropertyName("checkBehaviors")] public List<string> CheckBehaviors { get; set; } = new(BehaviorCatalog.DefaultManual);
 
+    /// <summary>Opt-in behaviors (<see cref="BehaviorCatalog.OptIn"/>: `appearance`, `paperspace`) to record at every checkpoint, in either mode.
+    /// Default empty; a settings file without it reads as empty. Separate from <see cref="CheckBehaviors"/>, which is what manual mode verifies.
+    /// In manual mode an opt-in behavior in `checkBehaviors` is recorded as well, since it could not be verified otherwise.</summary>
+    [JsonPropertyName("recordBehaviors")] public List<string> RecordBehaviors { get; set; } = new();
+
     /// <summary>System variable names added to <see cref="SysVarDefaults.Default"/> for the `sysvars` behavior.</summary>
     [JsonPropertyName("sysvarsAdd")] public List<string> SysvarsAdd { get; set; } = new();
 
@@ -101,6 +112,15 @@ public sealed class RetraceSettings
     public List<string> EffectiveCheckBehaviors() =>
         (CheckBehaviors ?? new()).Select(id => BehaviorCatalog.Find((id ?? "").Trim(), true)?.Id).OfType<string>().Distinct(StringComparer.Ordinal).ToList();
 
+    /// <summary>The opt-in behavior ids in <see cref="RecordBehaviors"/>: known opt-in ids only, no duplicates, matched without case.</summary>
+    public List<string> EffectiveRecordBehaviors() =>
+        (RecordBehaviors ?? new()).Select(id => BehaviorCatalog.Find((id ?? "").Trim(), true)?.Id).OfType<string>()
+            .Where(BehaviorCatalog.IsOptIn).Distinct(StringComparer.Ordinal).ToList();
+
+    /// <summary>The behaviors to capture at a checkpoint while recording (see <see cref="BehaviorCatalog.ForRecording"/>).</summary>
+    public List<string> BehaviorsToRecord() =>
+        BehaviorCatalog.ForRecording(EffectiveRecordBehaviors(), AutoDetectBehavior ? Array.Empty<string>() : EffectiveCheckBehaviors());
+
     /// <summary>The prompt style asked for: true for "ui" (any case), false for anything else.</summary>
     [JsonIgnore] public bool UiPrompts => string.Equals(Clean(PromptStyle), PromptStyles.Ui, StringComparison.OrdinalIgnoreCase);
 
@@ -112,6 +132,7 @@ public sealed class RetraceSettings
     [JsonIgnore] public string DefaultCaptures => Paths.Captures(RootDir);
     [JsonIgnore] public string DefaultDocs => Paths.Docs(RootDir);
 
+    [JsonIgnore] public string Results => Paths.Results(RootDir);
     [JsonIgnore] public string Tests => Pick(TestsFolder, DefaultTests);
     [JsonIgnore] public string Captures => Pick(CapturesFolder, DefaultCaptures);
     [JsonIgnore] public string Docs => Pick(DocsFolder, DefaultDocs);
@@ -202,6 +223,7 @@ public sealed class RetraceSettings
     {
         var c = (RetraceSettings)MemberwiseClone();
         c.CheckBehaviors = new List<string>(CheckBehaviors ?? new());
+        c.RecordBehaviors = new List<string>(RecordBehaviors ?? new());
         c.SysvarsAdd = new List<string>(SysvarsAdd ?? new());
         c.SysvarsRemove = new List<string>(SysvarsRemove ?? new());
         return c;

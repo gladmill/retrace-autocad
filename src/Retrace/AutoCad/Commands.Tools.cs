@@ -23,6 +23,7 @@ public sealed partial class Commands
         public required DrawingDigest? Initial;
         public DateTime Created = DateTime.UtcNow;
         public TdocCapture? Tdoc;   // set by a Tdoc run (RETRACETDOC) for the test it sent here
+        public SuiteHook? Suite;    // set by a suite run (RETRACESUITE) for the test it sent here
     }
 
     PendingTest? _pending;
@@ -33,6 +34,7 @@ public sealed partial class Commands
         if (_testIdleHooked) { AcApp.Idle -= OnTestIdle; _testIdleHooked = false; }
         _pending = null;
         TdocRun.Abort();
+        SuiteRun.Abort();
         CloseTdoc();
         CloseOpenTest();
         CloseCheckpoints();
@@ -70,11 +72,13 @@ public sealed partial class Commands
         var ed = Ed; if (ed == null) return;
         try
         {
+            // a suite or Tdoc run owns RETRACERUN while it runs: only the run's own typed RETRACERUN (it expects one) may start a test
+            if (TestQueue.Active != null && !TestQueue.Expecting) { ed.WriteMessage("\nA test suite or training run is active: RETRACERUN is refused until it is done (RETRACESUITE / RETRACETDOC end it).\n"); return; }
             // a Tdoc run that sent this RETRACERUN skips its test at once instead of waiting out its 90 s watchdog
-            if (Replayer.Current != null) { ed.WriteMessage("\nA replay is already running.\n"); TdocRun.StartFailed("a replay was already running"); return; }
-            if (Recorder.Instance.IsRecording) { ed.WriteMessage("\nStop the recording first (RETRACESTOP): a test opens a new drawing and replays into it.\n"); TdocRun.StartFailed("a recording was running"); return; }
-            var path = TdocRun.TakeExpected() ?? TakeQueuedTest() ?? PickSession(ed);   // a Tdoc run names its test; the "Open test" window queues its recording; else ask
-            if (path == null || !File.Exists(path)) { ed.WriteMessage("\nNo recording chosen; test cancelled.\n"); TdocRun.StartFailed("the recording was not found"); return; }
+            if (Replayer.Current != null) { ed.WriteMessage("\nA replay is already running.\n"); TestQueue.StartFailed("a replay was already running"); return; }
+            if (Recorder.Instance.IsRecording) { ed.WriteMessage("\nStop the recording first (RETRACESTOP): a test opens a new drawing and replays into it.\n"); TestQueue.StartFailed("a recording was running"); return; }
+            var path = TestQueue.TakeExpected() ?? TakeQueuedTest() ?? PickSession(ed);   // a Tdoc run names its test; the "Open test" window queues its recording; else ask
+            if (path == null || !File.Exists(path)) { ed.WriteMessage("\nNo recording chosen; test cancelled.\n"); TestQueue.StartFailed("the recording was not found"); return; }
             var events = Plan.ReadEvents(path);
             var steps = Plan.Build(events).Where(s => s.Kind != "tab").ToList();
             var initial = Plan.InitialState(events);
@@ -83,7 +87,7 @@ public sealed partial class Commands
             var dm = AcApp.DocumentManager;
             var doc = dm.Add(FindTemplate());
             dm.MdiActiveDocument = doc;
-            _pending = new PendingTest { Doc = doc, Steps = steps, Path = path, Initial = initial, Tdoc = TdocRun.CaptureFor(path, steps) };
+            _pending = new PendingTest { Doc = doc, Steps = steps, Path = path, Initial = initial, Tdoc = TdocRun.CaptureFor(path, steps), Suite = SuiteRun.HookFor(path) };
             if (!_testIdleHooked) { AcApp.Idle += OnTestIdle; _testIdleHooked = true; }
             // the new drawing is active now: the old one's editor rejects messages (eNotApplicable)
             doc.Editor.WriteMessage($"\nRETRACERUN: new drawing opened; the test starts when it is ready ({steps.Count} steps, Auto).\n");
@@ -92,11 +96,11 @@ public sealed partial class Commands
         {
             Log.Error("RETRACERUN", ex);
             try { (AcApp.DocumentManager.MdiActiveDocument?.Editor ?? ed).WriteMessage($"\nRETRACERUN failed: {ex.Message}\n"); } catch { }
-            TdocRun.StartFailed(ex.Message);   // no-op unless a Tdoc run is waiting for this test
+            TestQueue.StartFailed(ex.Message);   // no-op unless a Tdoc run is waiting for this test
         }
     }
 
-    static string FindTemplate()
+    internal static string FindTemplate()
     {
         try { return HostApplicationServices.Current.FindFile("acad.dwt", HostApplicationServices.WorkingDatabase, FindFileHint.Default); }
         catch (Exception) { return ""; }
@@ -113,18 +117,19 @@ public sealed partial class Commands
             {
                 AcApp.Idle -= OnTestIdle; _testIdleHooked = false; _pending = null;
                 Print("RETRACERUN: the new drawing did not become active within 60 s; test not started.");
-                if (p.Tdoc != null) TdocRun.StartFailed("the new drawing did not become active within 60 s");
+                if (p.Tdoc != null || p.Suite != null) TestQueue.StartFailed("the new drawing did not become active within 60 s");
                 return;
             }
             var doc = AcApp.DocumentManager.MdiActiveDocument;
             if (doc == null || !ReferenceEquals(doc, p.Doc) || !string.IsNullOrEmpty(doc.CommandInProgress) || !doc.Editor.IsQuiescent) return;
             AcApp.Idle -= OnTestIdle; _testIdleHooked = false; _pending = null;
             // a Tdoc run shows no verdict box between its tests and hears when the test is over
-            var tdoc = p.Tdoc;
-            if (!Replayer.Start(p.Steps, ReplayMode.Auto, p.Path, p.Initial, out var msg, alert: tdoc == null, interactive: true, tdoc: tdoc, finished: tdoc == null ? null : r => TdocRun.Finished(tdoc, r)))
+            var tdoc = p.Tdoc; var suite = p.Suite;
+            Action<ReplayResult>? finished = tdoc != null ? r => TdocRun.Finished(tdoc, r) : suite != null ? r => SuiteRun.Finished(suite, p.Path, r) : null;
+            if (!Replayer.Start(p.Steps, ReplayMode.Auto, p.Path, p.Initial, out var msg, alert: tdoc == null && suite == null, interactive: true, tdoc: tdoc, finished: finished, suite: suite))
             {
                 Print("RETRACERUN: " + msg);
-                if (tdoc != null) TdocRun.StartFailed(msg);
+                if (tdoc != null || suite != null) TestQueue.StartFailed(msg);
             }
             else Print("RETRACERUN: " + msg);
         }
@@ -133,7 +138,7 @@ public sealed partial class Commands
             Log.Error("RETRACERUN idle", ex);
             AcApp.Idle -= OnTestIdle; _testIdleHooked = false; _pending = null;
             Print("RETRACERUN failed: " + ex.Message);
-            if (p?.Tdoc != null) TdocRun.StartFailed(ex.Message);
+            if (p?.Tdoc != null || p?.Suite != null) TestQueue.StartFailed(ex.Message);
         }
     }
 
@@ -240,6 +245,14 @@ public sealed partial class Commands
                     if (int.TryParse(tdv, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var ms)) n.TdocStepDelayMs = ms;
                     else ed.WriteMessage($"\nTdoc pause not changed: \"{tdv}\" is not a number.\n");
                 }
+                var st = Ask.String(ed, $"\nSuite step timeout in seconds, {RetraceSettings.MinSuiteTimeoutSeconds} to {RetraceSettings.MaxSuiteTimeoutSeconds} <{s.SuiteStepTimeoutSeconds}> (Enter keeps): ");
+                if (st.Status == PromptStatus.Cancel) return;
+                var stv = (st.StringResult ?? "").Trim();
+                if (stv.Length > 0)
+                {
+                    if (int.TryParse(stv, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var secs)) n.SuiteStepTimeoutSeconds = secs;
+                    else ed.WriteMessage($"\nSuite step timeout not changed: \"{stv}\" is not a number.\n");
+                }
                 SaveAndReport(ed, n);
                 return;
             }
@@ -297,6 +310,7 @@ public sealed partial class Commands
                $"  Tdoc front       : {(s.TdocBringToFront ? "on" : "off")} (RETRACETDOC brings AutoCAD, the dialog or the palette to the front before each picture)\n" +
                $"  Tdoc boxes       : {(s.TdocAnnotate ? "on" : "off")} (green numbered boxes on the pictures where the user gives input)\n" +
                $"  Tdoc pause       : {s.TdocStepDelayMs} ms (before each picture, so the screen has repainted)\n" +
+               $"  Suite timeout    : {s.SuiteStepTimeoutSeconds} s (RETRACESUITE cancels a step that runs longer and records the test as ERROR)\n" +
                $"  Checkpoint key   : {(s.CheckpointChord(out var warn) is { } kc ? kc.Format() : "off")} (while recording; Ctrl+Shift+K, F8, None = off){(warn.Length > 0 ? "\n  WARNING: " + warn : "")}\n";
     }
 

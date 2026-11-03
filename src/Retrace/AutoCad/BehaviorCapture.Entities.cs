@@ -1,9 +1,11 @@
+using Autodesk.AutoCAD.Colors;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
 
 namespace Retrace.AutoCad;
 
-// The behaviors that look at individual entities (layouts, viewports, psattributes, xdata, xdicts): one pass per space.
+// The behaviors that look at individual entities (BehaviorCapture.SharedPass: layouts, viewports, psattributes, xdata, xdicts, appearance,
+// paperspace): one loop per space, each entity opened once.
 
 static partial class BehaviorCapture
 {
@@ -21,8 +23,42 @@ static partial class BehaviorCapture
     sealed class SpaceScan
     {
         public readonly Dictionary<string, Exception> Failed = new(StringComparer.Ordinal);
+
+        /// <summary>Runs one behavior's part of the pass. Once a behavior has failed (or hit its entity limit) its part is not run again.</summary>
+        public void Guard(string behavior, Action a)
+        {
+            if (Failed.ContainsKey(behavior)) return;
+            try { a(); }
+            catch (Exception ex) { Failed.TryAdd(behavior, ex); }
+        }
+
         public readonly List<Owner> Owners = new();
         public readonly List<LayoutData> Layouts = new();
+        /// <summary>`appearance` rows of model space (id key, value), before ids are numbered.</summary>
+        public readonly List<(string Key, string Value)> ModelAppearance = new();
+        public int AppearanceCount, PaperSpaceCount;   // entities counted for appearance / paperspace (against BehaviorKeys.MaxEntityItems)
+
+        public IEnumerable<KeyValuePair<string, string>> AppearanceItems()
+        {
+            foreach (var kv in Numbered(BehaviorKeys.ModelPrefix, ModelAppearance)) yield return kv;
+            foreach (var l in Layouts)
+                foreach (var kv in Numbered(BehaviorKeys.PaperPrefix(l.Layout.LayoutName), l.Appearance)) yield return kv;
+        }
+
+        static IEnumerable<KeyValuePair<string, string>> Numbered(string prefix, List<(string Key, string Value)> rows)
+        {
+            var ids = BehaviorKeys.EntityIds(prefix, rows.Select(r => r.Key).ToList());
+            for (var i = 0; i < rows.Count; i++) yield return new(ids[i], rows[i].Value);
+        }
+
+        public IEnumerable<KeyValuePair<string, string>> PaperSpaceItems()
+        {
+            foreach (var l in Layouts)
+            {
+                var ids = BehaviorKeys.EntityIds(BehaviorKeys.PaperPrefix(l.Layout.LayoutName), l.GeoKeys);
+                foreach (var id in ids) yield return new(id, "");
+            }
+        }
 
         public IEnumerable<KeyValuePair<string, string>> XData =>
             Owners.SelectMany(o => o.XData.Select(x => new KeyValuePair<string, string>(BehaviorKeys.XDataKey(o.Id, x.Key), x.Value)));
@@ -105,27 +141,51 @@ static partial class BehaviorCapture
         public readonly Layout Layout = layout;
         public readonly List<string> Types = new();
         public readonly List<string> HashKeys = new();
+        public readonly List<string> GeoKeys = new();                          // paperspace: the digest key of every entity but viewports
+        public readonly List<(string Key, string Value)> Appearance = new();   // appearance: layer-less id key, value
         public readonly List<(double, double, Viewport)> Viewports = new();
         public readonly List<(string Key, List<(string Tag, string Text)> Attrs)> Inserts = new();
     }
 
-    /// <summary>One pass over model space (xdata, xdicts) and each paper-space layout (everything), opening every entity once. Only entities that have
+    /// <summary>The keys of one entity, each computed at most once: the digest key (layouts hash, paperspace) and the id key (appearance, psattributes;
+    /// the same for everything but an INSERT, whose id key leaves out the attribute values).</summary>
+    sealed class EntKeys(DrawingState.Keys keys, Entity ent)
+    {
+        (string Dxf, string Layer, string Key)? of;
+        string? id;
+        public (string Dxf, string Layer, string Key) Of() => of ??= keys.Of(ent);
+        public string IdKey() => id ??= ent is BlockReference and not Table ? keys.IdKey(ent) : Of().Key;
+    }
+
+    /// <summary>The loop over model space and each paper-space layout, opening every entity once for every behavior in <paramref name="want"/>
+    /// (<see cref="SharedPass"/>). Model space: xdata / xdicts owners and appearance. Layouts: everything. Only entities that have
     /// xdata or an extension dictionary are keyed for xdata / xdicts, and only inserts with attributes for psattributes (ids are numbered among those,
-    /// in the order of the block table record = creation order). The layout's overall viewport (the first id of
-    /// `Layout.GetViewports()`, none on a layout never made current) is skipped by every behavior; if it cannot be found, layouts, viewports, xdata and xdicts fail.</summary>
-    static SpaceScan ScanSpaces(Database db, Transaction tr, DrawingState.Keys keys, bool layouts, bool viewports, bool psAttributes, bool xdata, bool xdicts)
+    /// in the order of the block table record = creation order). appearance and paperspace take every entity but viewports. The layout's overall
+    /// viewport (the first id of `Layout.GetViewports()`, none on a layout never made current) is skipped by every behavior; if it cannot be found,
+    /// the behaviors that depend on it (<see cref="NeedsOverallViewport"/>) fail.</summary>
+    static SpaceScan ScanSpaces(Database db, Transaction tr, DrawingState.Keys keys, Func<string, bool> want)
     {
         var scan = new SpaceScan();
-        void Guard(string behavior, Action a)
-        {
-            try { a(); }
-            catch (Exception ex) { scan.Failed.TryAdd(behavior, ex); }
-        }
-
-        if (xdata || xdicts)
-            ScanOwners(tr, keys, SymbolUtilityServices.GetBlockModelSpaceId(db), BehaviorKeys.ModelPrefix, xdata, xdicts, scan);
+        bool layouts = want(BehaviorCatalog.Layouts), viewports = want(BehaviorCatalog.Viewports), psAttributes = want(BehaviorCatalog.PsAttributes),
+            xdata = want(BehaviorCatalog.XData), xdicts = want(BehaviorCatalog.XDicts),
+            appearance = want(BehaviorCatalog.Appearance), paperSpace = want(BehaviorCatalog.PaperSpace);
         var wantOwners = xdata || xdicts;
-        if (!(layouts || viewports || psAttributes || wantOwners)) return scan;
+        var look = appearance ? new AppearanceReader(tr, ColorDependentPlotStyles(db)) : null;
+
+        if (wantOwners || appearance)
+        {
+            var owners = new List<Owner>();
+            foreach (ObjectId id in Open<BlockTableRecord>(tr, SymbolUtilityServices.GetBlockModelSpaceId(db)))
+            {
+                if (tr.GetObject(id, OpenMode.ForRead) is not Entity ent) continue;
+                var ek = new EntKeys(keys, ent);
+                if (appearance && ent is not Viewport)
+                    scan.Guard(BehaviorCatalog.Appearance, () => scan.ModelAppearance.Add(AppearanceRow(look!, scan, ent, ek)));
+                if (wantOwners) CollectOwner(tr, ek, ent, xdata, xdicts, owners, scan);
+            }
+            NumberOwners(BehaviorKeys.ModelPrefix, owners, scan);
+        }
+        if (!(layouts || viewports || psAttributes || wantOwners || appearance || paperSpace)) return scan;
 
         foreach (var lay in PaperLayouts(db, tr))
         {
@@ -143,20 +203,27 @@ static partial class BehaviorCapture
             catch (Exception ex)
             {
                 // without it the overall viewport would count as a user item: nothing these behaviors read can be trusted
-                foreach (var failed in new[] { BehaviorCatalog.Layouts, BehaviorCatalog.Viewports, BehaviorCatalog.XData, BehaviorCatalog.XDicts }) scan.Failed.TryAdd(failed, ex);
+                foreach (var failed in NeedsOverallViewport) scan.Failed.TryAdd(failed, ex);
             }
             foreach (ObjectId id in Open<BlockTableRecord>(tr, lay.BlockTableRecordId))
             {
                 if (id == overallId) continue;
                 if (tr.GetObject(id, OpenMode.ForRead) is not Entity ent) continue;
-                if (layouts) Guard(BehaviorCatalog.Layouts, () =>
+                var ek = new EntKeys(keys, ent);
+                if (layouts) scan.Guard(BehaviorCatalog.Layouts, () =>
                 {
-                    var (dxf, _, key) = keys.Of(ent);
+                    var (dxf, _, key) = ek.Of();
                     data.Types.Add(dxf);
                     data.HashKeys.Add(key);
                 });
-                if (viewports && ent is Viewport vp) Guard(BehaviorCatalog.Viewports, () => data.Viewports.Add((vp.CenterPoint.X, vp.CenterPoint.Y, vp)));
-                if (psAttributes && ent is BlockReference br && br is not Table) Guard(BehaviorCatalog.PsAttributes, () =>
+                if (paperSpace && ent is not Viewport) scan.Guard(BehaviorCatalog.PaperSpace, () =>
+                {
+                    if (++scan.PaperSpaceCount > BehaviorKeys.MaxEntityItems) throw TooMany();
+                    data.GeoKeys.Add(ek.Of().Key);
+                });
+                if (appearance && ent is not Viewport) scan.Guard(BehaviorCatalog.Appearance, () => data.Appearance.Add(AppearanceRow(look!, scan, ent, ek)));
+                if (viewports && ent is Viewport vp) scan.Guard(BehaviorCatalog.Viewports, () => data.Viewports.Add((vp.CenterPoint.X, vp.CenterPoint.Y, vp)));
+                if (psAttributes && ent is BlockReference br && br is not Table) scan.Guard(BehaviorCatalog.PsAttributes, () =>
                 {
                     var attrs = new List<(string, string)>();
                     foreach (ObjectId aid in br.AttributeCollection)
@@ -167,24 +234,70 @@ static partial class BehaviorCapture
                         else text = ar.TextString;
                         attrs.Add((ar.Tag, text));
                     }
-                    if (attrs.Count > 0) data.Inserts.Add((keys.IdKey(br), attrs));
+                    if (attrs.Count > 0) data.Inserts.Add((ek.IdKey(), attrs));
                 });
-                if (wantOwners) CollectOwner(tr, keys, ent, xdata, xdicts, owners, scan);
+                if (wantOwners) CollectOwner(tr, ek, ent, xdata, xdicts, owners, scan);
             }
             NumberOwners(BehaviorKeys.PaperPrefix(lay.LayoutName), owners, scan);
         }
         return scan;
     }
 
-    static void ScanOwners(Transaction tr, DrawingState.Keys keys, ObjectId space, string prefix, bool xdata, bool xdicts, SpaceScan scan)
+    /// <summary>Whether plot styles follow color; a drawing whose mode cannot be read counts as color-dependent, which only leaves the plot style out.</summary>
+    static bool ColorDependentPlotStyles(Database db)
     {
-        var owners = new List<Owner>();
-        foreach (ObjectId id in Open<BlockTableRecord>(tr, space))
-            if (tr.GetObject(id, OpenMode.ForRead) is Entity ent) CollectOwner(tr, keys, ent, xdata, xdicts, owners, scan);
-        NumberOwners(prefix, owners, scan);
+        try { return db.PlotStyleMode; }
+        catch { return true; }
     }
 
-    static void CollectOwner(Transaction tr, DrawingState.Keys keys, Entity ent, bool xdata, bool xdicts, List<Owner> owners, SpaceScan scan)
+    static InvalidOperationException TooMany() => new($"more than {BehaviorKeys.MaxEntityItems} entities: left out of the snapshot");
+
+    /// <summary>(layer-less id key, canonical look) of one entity for `appearance`. An insert is named without its attribute values (as for xdata),
+    /// so editing an attribute does not rename it.</summary>
+    static (string Key, string Value) AppearanceRow(AppearanceReader look, SpaceScan scan, Entity ent, EntKeys ek)
+    {
+        if (++scan.AppearanceCount > BehaviorKeys.MaxEntityItems) throw TooMany();
+        var l = look.Read(ent);
+        return (BehaviorKeys.LayerlessKey(ek.IdKey(), l.Layer), BehaviorKeys.AppearanceValue(l));
+    }
+
+    /// <summary>Reads the look of entities. Layer records go through <see cref="DrawingState"/>'s layer reader (color, linetype, lineweight) and are cached
+    /// by id with their transparency; linetype names are cached by id, so each record is opened once per read.</summary>
+    sealed class AppearanceReader(Transaction tr, bool colorDependentPlotStyles)
+    {
+        readonly DrawingState.LayerReader layerReader = new(tr);
+        readonly Dictionary<ObjectId, (string Name, string Color, string Linetype, string Lineweight, string Transparency)> layers = new();
+
+        public BehaviorKeys.Look Read(Entity e)
+        {
+            var lid = e.LayerId;
+            if (!layers.TryGetValue(lid, out var l))
+            {
+                var r = Open<LayerTableRecord>(tr, lid);
+                var p = layerReader.Of(r);
+                // LayerReader leaves out a property it cannot read (and logs the first one); recording that as empty would make every ByLayer entity
+                // look different later, so the whole behavior is left out of the snapshot ("could not be read") instead
+                if (p.Color == null || p.Linetype == null || p.Lineweight == null)
+                    throw new InvalidOperationException($"layer {r.Name}: color, linetype or lineweight could not be read");
+                layers[lid] = l = (r.Name, p.Color, p.Linetype, p.Lineweight, TransparencyOf(r.Transparency));
+            }
+            var c = e.Color;
+            var color = c.ColorMethod switch
+            {
+                ColorMethod.ByLayer => BehaviorKeys.ByLayer,
+                ColorMethod.ByBlock => BehaviorKeys.ByBlock,
+                _ => DrawingState.ColorText(c),
+            };
+            string? plot = null;
+            // color-dependent drawings (CTB) name the style after the color ("Color_1"): that is the color, already a field; only a named style counts
+            if (!colorDependentPlotStyles) try { plot = BehaviorKeys.NamedPlotStyle(e.PlotStyleName); } catch { /* no plot style on this entity */ }
+            return new BehaviorKeys.Look(l.Name, color, layerReader.LinetypeName(e.LinetypeId), DrawingDigest.Num(e.LinetypeScale),
+                DrawingDigest.LineweightText((int)e.LineWeight), TransparencyOf(e.Transparency), plot,
+                l.Color, l.Linetype, l.Lineweight, l.Transparency);
+        }
+    }
+
+    static void CollectOwner(Transaction tr, EntKeys ek, Entity ent, bool xdata, bool xdicts, List<Owner> owners, SpaceScan scan)
     {
         try
         {
@@ -196,7 +309,7 @@ static partial class BehaviorCapture
                             o.XData[kv.Key] = BehaviorKeys.GroupsValue(kv.Value);
             if (xdicts && !ent.ExtensionDictionary.IsNull) ReadDictionary(tr, ent.ExtensionDictionary, new List<string>(), new HashSet<ObjectId>(), o.XDict);
             if (o.XData.Count == 0 && o.XDict.Count == 0) return;
-            o.Key = keys.IdKey(ent);
+            o.Key = ek.IdKey();
             owners.Add(o);
         }
         catch (Exception ex)

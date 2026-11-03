@@ -15,12 +15,14 @@ public sealed record BehaviorInfo(string Id, string Label, string Description, s
 public static class BehaviorCatalog
 {
     public const string Layers = "layers", Layouts = "layouts", Viewports = "viewports", XData = "xdata", XDicts = "xdicts",
-        Symbols = "symbols", SysVars = "sysvars", Views = "views", PsAttributes = "psattributes";
+        Symbols = "symbols", SysVars = "sysvars", Views = "views", PsAttributes = "psattributes", Appearance = "appearance", PaperSpace = "paperspace";
 
     public static readonly IReadOnlyList<BehaviorInfo> All = new BehaviorInfo[]
     {
         new(Layers, "Layer state", "On, frozen, locked, plot, color, linetype and lineweight of each layer.", "layer", true),
-        new(Layouts, "Paper space and layouts", "Each layout's tab order and what is drawn on it.", "layout", true),
+        new(Appearance, "Entity appearance", "Layer, color, linetype, linetype scale, lineweight, transparency and plot style of each entity in model space and on the layouts. Tick Record in Settings before recording to be able to check it.", "appearance", true),
+        new(Layouts, "Layouts", "Each layout's tab order, page setup and a fingerprint of what is drawn on it.", "layout", true),
+        new(PaperSpace, "Paper-space entities", "Each entity drawn on a layout (not the viewports), one by one: type, layer and geometry. Tick Record in Settings before recording to be able to check it.", "paperspace", true),
         new(Viewports, "Viewports", "Position, size, view and scale of the paper-space viewports.", "viewport", true),
         new(XData, "XData", "Extended data attached to entities, per application.", "xdata", true),
         new(XDicts, "Extension dictionaries", "Dictionaries attached to entities and the named object dictionary (Xrecords).", "xdict", true),
@@ -33,6 +35,20 @@ public static class BehaviorCatalog
     public static BehaviorInfo? Find(string? id, bool ignoreCase = false) =>
         All.FirstOrDefault(b => string.Equals(b.Id, id, ignoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal));
     public static bool IsKnown(string? id) => Find(id) != null;
+
+    /// <summary>Behaviors that cost one item per entity (about 250 bytes each in every snapshot): while recording they are captured only when
+    /// they are in the setting `recordBehaviors` (either mode) or, in manual mode, in `checkBehaviors`. Old recordings and the other behaviors are unaffected.</summary>
+    public static readonly IReadOnlyList<string> OptIn = new[] { Appearance, PaperSpace };
+    public static bool IsOptIn(string id) => OptIn.Contains(id);
+
+    /// <summary>The behaviors to capture at a checkpoint while recording: every behavior, minus the opt-in ones that are in neither
+    /// <paramref name="record"/> (the effective `recordBehaviors`) nor <paramref name="manualCheck"/> (the effective `checkBehaviors` in manual mode,
+    /// empty in auto mode).</summary>
+    public static List<string> ForRecording(IEnumerable<string> record, IEnumerable<string> manualCheck)
+    {
+        var on = new HashSet<string>(record.Concat(manualCheck), StringComparer.Ordinal);
+        return All.Select(b => b.Id).Where(id => !IsOptIn(id) || on.Contains(id)).ToList();
+    }
 
     /// <summary>The label of a behavior; an unknown id (from a newer recording) is its own label.</summary>
     public static string LabelOf(string id) => Find(id)?.Label ?? id;

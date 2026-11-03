@@ -37,6 +37,8 @@ sealed class SettingsWindow : Window
     readonly CheckBox _tdocFront = new() { Content = "Bring the step's windows to the front before each picture", Margin = new Thickness(0, 4, 0, 0), ToolTip = "AutoCAD, the dialog being filled and the palette are put on top (a dialog that is off screen is moved onto it), and Retrace's own replay window stays out of the picture." };
     readonly CheckBox _tdocAnnotate = new() { Content = "Draw green numbered boxes where the reader gives input", Margin = new Thickness(0, 4, 0, 0), ToolTip = "On the ribbon button, the command line, each dialog field that is filled and the button that closes the dialog. The legend under the picture says what each number is." };
     readonly TextBox _tdocDelay = new() { Width = 70, Padding = new Thickness(3), Margin = new Thickness(8, 0, 0, 0), ToolTip = "Milliseconds to wait before each picture and between steps, so tool tips are gone and dialogs are drawn. 0 to 10000." };
+    readonly TextBox _suiteTimeout = new() { Width = 70, Padding = new Thickness(3), Margin = new Thickness(8, 0, 0, 0), ToolTip = "RETRACESUITE: a test step that runs longer than this many seconds is cancelled and the test is recorded as ERROR. 5 to 3600." };
+    readonly TextBlock _suiteTimeoutMsg = new() { Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
     readonly TextBlock _tdocDelayMsg = new() { Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
     readonly ComboBox _tabPos = new() { MinWidth = 320, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(8, 0, 0, 0) };
     readonly List<string> _tabPosValues = new();
@@ -45,6 +47,7 @@ sealed class SettingsWindow : Window
     readonly CheckBox _autoDetect = new() { Content = "Auto-detect test behavior", ToolTip = "On: at each checkpoint Retrace works out what changed (layers, layouts, styles...) and verifies exactly that. Off: you pick the behaviors below." };
     readonly TextBlock _behaviorNote = new() { Foreground = Brushes.DimGray, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 4) };
     readonly List<(string Id, CheckBox Box)> _behaviorBoxes = new();
+    readonly List<(string Id, CheckBox Box)> _recordBoxes = new();
     readonly TextBlock _sysvarSummary = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), Foreground = Brushes.DimGray };
     List<string> _sysAdd = new(), _sysRemove = new();   // edited in the dialog, written to Result on Save only
     string _keyValue = KeyChord.Default;   // "None" = off; always valid
@@ -116,6 +119,13 @@ sealed class SettingsWindow : Window
         tdoc.Children.Add(delayRow);
         root.Children.Add(new GroupBox { Header = "Training documents (Tdoc)", Margin = new Thickness(0, 12, 0, 0), Content = tdoc });
 
+        var suite = new StackPanel { Margin = new Thickness(6), Orientation = Orientation.Horizontal };
+        suite.Children.Add(new TextBlock { Text = "Step timeout (seconds)", VerticalAlignment = VerticalAlignment.Center });
+        _suiteTimeout.Text = current.SuiteStepTimeoutSeconds.ToString();
+        suite.Children.Add(_suiteTimeout);
+        suite.Children.Add(_suiteTimeoutMsg);
+        root.Children.Add(new GroupBox { Header = "Test suites (RETRACESUITE)", Margin = new Thickness(0, 12, 0, 0), Content = suite });
+
         root.Children.Add(BuildBehaviorGroup(current));
 
         var posRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
@@ -153,7 +163,7 @@ sealed class SettingsWindow : Window
 
         var fixedRow = new CheckBox { Content = BehaviorSettingsModel.ModelSpaceLabel, IsChecked = true, IsEnabled = false, Margin = new Thickness(0, 2, 0, 0), ToolTip = BehaviorSettingsModel.ModelSpaceDescription };
         panel.Children.Add(fixedRow);
-        foreach (var r in BehaviorSettingsModel.Rows(current.AutoDetectBehavior, current.CheckBehaviors))
+        foreach (var r in BehaviorSettingsModel.Rows(current.AutoDetectBehavior, current.CheckBehaviors, current.RecordBehaviors))
         {
             var box = new CheckBox { Margin = new Thickness(0, 2, 0, 0), IsChecked = r.Ticked, ToolTip = r.Description };
             var text = new StackPanel { Orientation = Orientation.Horizontal };
@@ -161,7 +171,17 @@ sealed class SettingsWindow : Window
             text.Children.Add(new TextBlock { Text = "  " + r.Description, Foreground = Brushes.DimGray });
             box.Content = text;
             _behaviorBoxes.Add((r.Id, box));
-            panel.Children.Add(box);
+            if (r.Recordable)
+            {
+                // a separate tick: recording these costs one item per entity in every checkpoint, so it is chosen apart from what is verified
+                var rec = new CheckBox { Content = "Record", Margin = new Thickness(18, 0, 0, 0), IsChecked = r.Recorded, VerticalAlignment = VerticalAlignment.Center,
+                    ToolTip = "Store this behavior in every checkpoint while recording, in either mode. Tick it before recording to be able to check it." };
+                _recordBoxes.Add((r.Id, rec));
+                var line = new StackPanel { Orientation = Orientation.Horizontal };
+                line.Children.Add(box); line.Children.Add(rec);
+                panel.Children.Add(line);
+            }
+            else panel.Children.Add(box);
         }
 
         _sysAdd = new List<string>(current.SysvarsAdd ?? new());
@@ -186,7 +206,7 @@ sealed class SettingsWindow : Window
     {
         var auto = _autoDetect.IsChecked == true;
         _behaviorNote.Text = BehaviorSettingsModel.Explanation(auto);
-        foreach (var (_, box) in _behaviorBoxes) box.IsEnabled = !auto;
+        foreach (var (_, box) in _behaviorBoxes) box.IsEnabled = BehaviorSettingsModel.CheckEnabled(auto);
     }
 
     void ShowSysvarSummary() => _sysvarSummary.Text = SysvarListEdit.Summary(_sysAdd, _sysRemove);
@@ -328,6 +348,7 @@ sealed class SettingsWindow : Window
         _autoDetect.IsChecked = dflt.AutoDetectBehavior;
         var defaults = new HashSet<string>(dflt.CheckBehaviors);
         foreach (var (id, box) in _behaviorBoxes) box.IsChecked = defaults.Contains(id);
+        foreach (var (id, box) in _recordBoxes) box.IsChecked = dflt.RecordBehaviors.Contains(id);
         SysvarListEdit.Reset(_sysAdd, _sysRemove);
         ShowSysvarSummary();
         RefreshBehaviors();
@@ -335,6 +356,8 @@ sealed class SettingsWindow : Window
         _tdocAnnotate.IsChecked = true;
         _tdocDelay.Text = new RetraceSettings().TdocStepDelayMs.ToString();
         _tdocDelayMsg.Text = "";
+        _suiteTimeout.Text = new RetraceSettings().SuiteStepTimeoutSeconds.ToString();
+        _suiteTimeoutMsg.Text = "";
         SetKey(KeyChord.Default);
     }
 
@@ -345,6 +368,13 @@ sealed class SettingsWindow : Window
             _tdocDelayMsg.Text = $"a whole number from 0 to {RetraceSettings.MaxTdocStepDelayMs}";
             _tdocDelayMsg.Foreground = Brushes.Firebrick;
             _tdocDelay.Focus();
+            return;
+        }
+        if (!int.TryParse(_suiteTimeout.Text.Trim(), out var suiteSecs) || suiteSecs < RetraceSettings.MinSuiteTimeoutSeconds || suiteSecs > RetraceSettings.MaxSuiteTimeoutSeconds)
+        {
+            _suiteTimeoutMsg.Text = $"a whole number from {RetraceSettings.MinSuiteTimeoutSeconds} to {RetraceSettings.MaxSuiteTimeoutSeconds}";
+            _suiteTimeoutMsg.Foreground = Brushes.Firebrick;
+            _suiteTimeout.Focus();
             return;
         }
         var s = Result;
@@ -369,11 +399,13 @@ sealed class SettingsWindow : Window
         s.CheckpointKey = _keyValue;
         s.AutoDetectBehavior = _autoDetect.IsChecked == true;
         s.CheckBehaviors = BehaviorSettingsModel.FromTicks(_behaviorBoxes.Where(b => b.Box.IsChecked == true).Select(b => b.Id), s.CheckBehaviors);
+        s.RecordBehaviors = BehaviorSettingsModel.FromTicks(_recordBoxes.Where(b => b.Box.IsChecked == true).Select(b => b.Id), s.RecordBehaviors);
         s.SysvarsAdd = new List<string>(_sysAdd);
         s.SysvarsRemove = new List<string>(_sysRemove);
         s.TdocBringToFront = _tdocFront.IsChecked == true;
         s.TdocAnnotate = _tdocAnnotate.IsChecked == true;
         s.TdocStepDelayMs = delay;
+        s.SuiteStepTimeoutSeconds = suiteSecs;
         Saved = true;
         Close();
     }

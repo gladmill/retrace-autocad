@@ -46,8 +46,13 @@ public sealed class BehaviorChecks
 
     /// <summary>Auto-detect: every behavior captured in both snapshots whose items changed gets `source auto, scope items`; items = added and
     /// changed with the current value, removed with null. <paramref name="previous"/> is the previous checkpoint's snapshot, or the start
-    /// snapshot for the first one; null (none captured) gives no checks. Mode is "auto".</summary>
-    public static BehaviorChecks AutoPick(BehaviorSnapshot? previous, BehaviorSnapshot current)
+    /// snapshot for the first one; null (none captured) gives no checks. Mode is "auto".
+    /// `appearance` is picked differently: an added item (a new or moved entity) and a changed item are kept with their own fields only (the
+    /// resolved `r...` fields, which are the layer's and belong to `layers`, are left out); a changed item whose difference is only in the resolved
+    /// fields is dropped, and so is a removed item (the digest and `paperspace` own what an entity is and where). So a layer color change adds no
+    /// `appearance` item, a new red hatch does, and a MOVE adds small items for the moved entities. More than <see cref="MaxAutoAppearanceItems"/>
+    /// items leave `appearance` out of that checkpoint (reported to <paramref name="log"/>).</summary>
+    public static BehaviorChecks AutoPick(BehaviorSnapshot? previous, BehaviorSnapshot current, Action<string>? log = null)
     {
         var checks = new BehaviorChecks { Mode = ModeAuto };
         if (previous == null) return checks;
@@ -56,11 +61,42 @@ public sealed class BehaviorChecks
             if (diff.IsEmpty) continue;
             var cur = current.Behaviors[id];
             var check = new BehaviorCheck { Source = BehaviorCheck.SourceAuto, Scope = BehaviorCheck.ScopeItems };
-            foreach (var k in diff.Added.Concat(diff.Changed)) check.Items[k] = cur[k];
-            foreach (var k in diff.Removed) check.Items[k] = null;
+            if (id == BehaviorCatalog.Appearance)
+            {
+                var prev = previous.Behaviors[id];
+                foreach (var k in diff.Added) check.Items[k] = BehaviorKeys.OwnLook(cur[k]);
+                foreach (var k in diff.Changed)
+                    if (OwnLookChanged(prev[k], cur[k])) check.Items[k] = BehaviorKeys.OwnLook(cur[k]);
+                if (check.Items.Count == 0) continue;
+                if (check.Items.Count > MaxAutoAppearanceItems)
+                {
+                    // a mass edit (a big MOVE, a drawing opened mid-recording) would store thousands of items in the recording: not checked at this checkpoint
+                    log?.Invoke($"appearance: {check.Items.Count} items over the {MaxAutoAppearanceItems} limit, not checked at this checkpoint");
+                    continue;
+                }
+            }
+            else
+            {
+                foreach (var k in diff.Added.Concat(diff.Changed)) check.Items[k] = cur[k];
+                foreach (var k in diff.Removed) check.Items[k] = null;
+            }
             checks.Behaviors[id] = check;
         }
         return checks;
+    }
+
+    /// <summary>Most `appearance` items an auto pick stores for one checkpoint; above it the behavior is left out of that checkpoint's checks.</summary>
+    public const int MaxAutoAppearanceItems = 2000;
+
+    /// <summary>Do two `appearance` values differ in a field other than the resolved ones (`rcolor`, `rlinetype`, `rlineweight`, `rtransparency`)?
+    /// A value that is not canonical counts as different.</summary>
+    static bool OwnLookChanged(string before, string after)
+    {
+        if (!CanonicalValue.TryParse(before, out var b) || !CanonicalValue.TryParse(after, out var a) || a == null || b == null) return true;
+        static Dictionary<string, string> Own(List<(string Name, string Value)> f) =>
+            f.Where(x => !BehaviorKeys.IsResolvedField(x.Name)).GroupBy(x => x.Name).ToDictionary(g => g.Key, g => g.First().Value, StringComparer.Ordinal);
+        var ob = Own(b); var oa = Own(a);
+        return ob.Count != oa.Count || ob.Any(kv => !oa.TryGetValue(kv.Key, out var v) || v != kv.Value);
     }
 
     /// <summary>Manual: each chosen behavior id (duplicates and unknown ids ignored) that the current snapshot captured gets
@@ -184,14 +220,18 @@ public sealed class BehaviorChecks
     /// it is ignored. <c>New</c>: a field older recordings do not have (layouts `psltscale`, viewports `off`): skipped when the recording lacks it;
     /// when the recording has it and this capture does not (entget unavailable), the line is `could not be read`, never a quiet pass.
     /// Every other field is strict, including `expected (none)` lines.</summary>
-    sealed class FieldRules(string[] dropped, string[] added)
+    sealed class FieldRules(string[] dropped, string[] added, string[]? unrecorded = null)
     {
-        public readonly string[] Dropped = dropped, New = added;
+        /// <summary><c>Unrecorded</c>: a field an auto pick leaves out on purpose (appearance `r...`: the layer's values). Skipped when the recording lacks
+        /// it; when the recording has it (a manual pick) it is compared like any other field.</summary>
+        public readonly string[] Dropped = dropped, New = added, Unrecorded = unrecorded ?? Array.Empty<string>();
+        public bool IsUnrecorded(string field) => Array.IndexOf(Unrecorded, field) >= 0;
         static readonly FieldRules None = new(Array.Empty<string>(), Array.Empty<string>());
         public static FieldRules For(string behaviorId) => behaviorId switch
         {
             BehaviorCatalog.Layouts => new(Array.Empty<string>(), new[] { "psltscale" }),
             BehaviorCatalog.Viewports => new(new[] { "on" }, new[] { "off" }),
+            BehaviorCatalog.Appearance => new(Array.Empty<string>(), Array.Empty<string>(), new[] { "rcolor", "rlinetype", "rlineweight", "rtransparency" }),
             _ => None,
         };
         public bool IsDropped(string field) => Array.IndexOf(Dropped, field) >= 0;
@@ -216,7 +256,7 @@ public sealed class BehaviorChecks
             foreach (var (name, g) in gf.DistinctBy(f => f.Name))
             {
                 if (wantBy.ContainsKey(name)) continue;
-                if (rules.IsNew(name)) tolerated = true;   // an older recording: not checked
+                if (rules.IsNew(name) || rules.IsUnrecorded(name)) tolerated = true;   // an older recording, or left out by the auto pick: not checked
                 else lines.Add($"{noun} {key} {name}: expected (none), got {g}");
             }
             if (lines.Count > before) return;

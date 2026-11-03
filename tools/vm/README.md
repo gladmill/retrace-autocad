@@ -84,6 +84,7 @@ Files: `fx-build.ps1` (query; reads the fixture name from `C:\retrace-vm\fx-arg.
 | `fx-sysvars` | behavior 7: CLAYER DOORS, CELTYPE DASHED, CECOLOR 3, CELWEIGHT 25, TEXTSTYLE FX_Narrow, DIMSTYLE FX_DIM2, LTSCALE 2.5, PSLTSCALE 0, INSUNITS 4, LUNITS 4, LUPREC 3, AUNITS 1, AUPREC 2, MEASUREMENT 1, PDMODE 35, PDSIZE 2.5, MIRRTEXT 1, FILLMODE 0 |
 | `fx-views` | behavior 8: 4 model-space named views and 2 paper-space ones (A-101 Plan, Z-Notes), over the layers and layouts |
 | `fx-all` | all of the above in one drawing. The mutations are written for this one |
+| `fx-picks` | five model-space lines for the pick-point tests (BREAK, TRIM, FILLET): `(0,0)-(100,0)`; cutter `(250,-30)-(250,30)` and target `(200,0)-(300,0)`; `(400,0)-(500,0)` and `(450,-50)-(450,50)`. Built by `fixtures.sh build picks` only (`q-fx-picks.ps1`); `fixtures.sh open picks` opens it |
 
 `q-fixture-dump.ps1` prints one section per behavior (`[LAYERS]`, `[LAYOUTS]`, `[VIEWPORTS]`, `[XDATA]`, `[EXTDICT]`, `[SYMBOLS]`, `[SYSVARS]`, `[VIEWS]`, `[ATTRIBUTES]`) and a last `[NOISE]` section with view state. It names things instead of printing handles, so dumps of two builds compare equal. A mutation changes only its own lines in the dump. Two side effects, both restored: it makes each layout current once (a no-op on a built fixture, which is already visited) and each dim style current in turn. It no longer puts `PSLTSCALE` back: on a built fixture a layout visit must not change it, and the `PSLTSCALE=` value at the end of `[NOISE]` shows it if it did.
 
@@ -102,6 +103,12 @@ Each `mut-<area>-<what>.ps1` changes exactly one thing in the active drawing (op
 
 | Mutation | Behavior it should trip |
 |---|---|
+| `appearance-color` | appearance (a model-space circle on DOORS: colour ByLayer -> 1) |
+| `appearance-linetype` | appearance (same circle: linetype -> DASHED) |
+| `appearance-lineweight` | appearance (same circle: lineweight -> 0.50) |
+| `appearance-transparency` | appearance (same circle: transparency -> 50) |
+| `paperspace-move-line` | paper-space entities, layouts (the DIM line of A-101 Plan moved 0.25) |
+| `paperspace-text` | paper-space entities, layouts (the "Scale varies" note of A-102 Sections edited) |
 | `attrs-invisible-visible` | attributes |
 | `attrs-layout-value` | attributes |
 | `attrs-model-tag` | attributes |

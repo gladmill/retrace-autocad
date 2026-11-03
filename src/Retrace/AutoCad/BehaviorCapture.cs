@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Autodesk.AutoCAD.ApplicationServices;
+using Autodesk.AutoCAD.Colors;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
 using AcApp = Autodesk.AutoCAD.ApplicationServices.Application;
@@ -16,6 +17,20 @@ namespace Retrace.AutoCad;
 static partial class BehaviorCapture
 {
     static readonly HashSet<string> Logged = new(StringComparer.Ordinal);
+
+    /// <summary>The behaviors read together in the one loop over model space and the layouts (<see cref="ScanSpaces"/>).</summary>
+    static readonly string[] SharedPass =
+    {
+        BehaviorCatalog.Layouts, BehaviorCatalog.Viewports, BehaviorCatalog.PsAttributes, BehaviorCatalog.XData, BehaviorCatalog.XDicts,
+        BehaviorCatalog.Appearance, BehaviorCatalog.PaperSpace,
+    };
+
+    /// <summary>Of those, the ones that cannot be trusted when the layout's overall viewport cannot be found (appearance, paperspace and psattributes
+    /// skip viewports by type and do not depend on it).</summary>
+    static readonly string[] NeedsOverallViewport = { BehaviorCatalog.Layouts, BehaviorCatalog.Viewports, BehaviorCatalog.XData, BehaviorCatalog.XDicts };
+
+    /// <summary>Transparency as the layers behavior and appearance write it: the alpha (0-255), `ByBlock` or `ByLayer`.</summary>
+    static string TransparencyOf(Transparency t) => BehaviorKeys.TransparencyText(t.IsByAlpha, t.IsByAlpha ? t.Alpha : (byte)0, t.IsByBlock);
 
     static string N(double d) => DrawingDigest.Num(d);
     static string P(Point3d p) => DrawingState.P(p);
@@ -42,13 +57,13 @@ static partial class BehaviorCapture
         using var tr = db.TransactionManager.StartOpenCloseTransaction();
         var keys = new DrawingState.Keys(tr);
         bool Want(string id) => only == null || only.Contains(id);
-        // layouts, viewports, psattributes, xdata and xdicts share ONE pass over model space and each paper-space layout
+        // the SharedPass behaviors share ONE loop over model space and each paper-space layout
         var scanTimer = Stopwatch.StartNew();
         var scan = new Lazy<SpaceScan>(() =>
         {
-            var sc = ScanSpaces(db, tr, keys, Want(BehaviorCatalog.Layouts), Want(BehaviorCatalog.Viewports), Want(BehaviorCatalog.PsAttributes),
-                Want(BehaviorCatalog.XData), Want(BehaviorCatalog.XDicts));
-            if (scanTimer.ElapsedMilliseconds > 200) Log.Info($"BehaviorCapture entity pass (layouts, viewports, psattributes, xdata, xdicts): {scanTimer.ElapsedMilliseconds} ms");
+            var sc = ScanSpaces(db, tr, keys, Want);
+            if (scanTimer.ElapsedMilliseconds > 200)
+                Log.Info($"BehaviorCapture entity pass ({string.Join(", ", SharedPass)}): {scanTimer.ElapsedMilliseconds} ms");
             return sc;
         });
 
@@ -66,8 +81,7 @@ static partial class BehaviorCapture
             {
                 if (Logged.Add(id)) Log.Error($"BehaviorCapture {id} (left out of the snapshot; logged once)", ex);
             }
-            if (id is not (BehaviorCatalog.Layouts or BehaviorCatalog.Viewports or BehaviorCatalog.PsAttributes or BehaviorCatalog.XData or BehaviorCatalog.XDicts)
-                && sw.ElapsedMilliseconds > 200) Log.Info($"BehaviorCapture {id}: {sw.ElapsedMilliseconds} ms");
+            if (!SharedPass.Contains(id) && sw.ElapsedMilliseconds > 200) Log.Info($"BehaviorCapture {id}: {sw.ElapsedMilliseconds} ms");
         }
 
         Run(BehaviorCatalog.Layers, () => Layers(db, tr));
@@ -79,6 +93,8 @@ static partial class BehaviorCapture
         if (Want(BehaviorCatalog.SysVars)) Run(BehaviorCatalog.SysVars, () => SysVars(settings.EffectiveSysvars()));
         Run(BehaviorCatalog.Views, () => Views(db, tr));
         Run(BehaviorCatalog.PsAttributes, () => scan.Value.PsAttributeItems());
+        Run(BehaviorCatalog.Appearance, () => scan.Value.AppearanceItems());
+        Run(BehaviorCatalog.PaperSpace, () => scan.Value.PaperSpaceItems());
         tr.Commit();
         return snap;
     }
@@ -102,7 +118,7 @@ static partial class BehaviorCapture
                 ("color", DrawingState.ColorText(l.Color)),
                 ("linetype", NameOf<LinetypeTableRecord>(tr, l.LinetypeObjectId, t => t.Name)),
                 ("lineweight", DrawingDigest.LineweightText((int)l.LineWeight)),
-                ("transparency", tp.IsByAlpha ? tp.Alpha.ToString(System.Globalization.CultureInfo.InvariantCulture) : tp.IsByBlock ? "ByBlock" : "ByLayer"),
+                ("transparency", TransparencyOf(tp)),
                 ("description", l.Description)));
         }
     }

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds, lists, mutates and dumps the Retrace test fixtures on the Windows VM (AutoCAD 2026 must be running there).
 #   fixtures.sh build [name]       build one fixture (all, layers, ...), no name = every fixture to C:\temp\retrace\fixtures\<name>.dwg
+#                                  (`picks` is built only when named: five lines for the BREAK / TRIM / FILLET pick tests)
 #   fixtures.sh list               fixtures on the VM, and the mutations in this folder
 #   fixtures.sh open <name>        open fixtures\<name>.dwg (an open copy is closed without saving first), then visit every layout once and return to Model
 #   fixtures.sh dump               q-fixture-dump.ps1 on the active drawing
@@ -16,7 +17,7 @@ NAMES="layers layouts viewports xdata extdict symbols sysvars views attrs"
 r() { ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" "$@"; }
 upload() {
   r 'New-Item -ItemType Directory -Force C:\temp\retrace\fixtures, C:\retrace-vm | Out-Null; exit 0' >/dev/null || { echo "cannot reach $HOST" >&2; exit 2; }
-  scp -q "$here"/fx-*.ps1 "$here"/mut-*.ps1 "$here"/noise-*.ps1 "$here"/q-fixture-dump.ps1 "$here"/q-fx-open.ps1 "$here"/q-fx-layout.ps1 \
+  scp -q "$here"/fx-*.ps1 "$here"/mut-*.ps1 "$here"/noise-*.ps1 "$here"/q-fixture-dump.ps1 "$here"/q-fx-open.ps1 "$here"/q-fx-layout.ps1 "$here"/q-fx-picks.ps1 \
       "$here"/acad-cmd.ps1 "$here"/run-in-session.ps1 "$here"/run-hidden.vbs "$HOST:C:/retrace-vm/" || { echo "scp failed" >&2; exit 2; }
 }
 # run a query file in the interactive session; $2 = timeout seconds
@@ -35,7 +36,7 @@ case "$cmd" in
     upload; list="${1:-$NAMES all}"
     for n in $list; do
       echo "== build $n"; argset "$n"
-      q fx-build.ps1 600 | body
+      if [ "$n" = picks ]; then q q-fx-picks.ps1 180 | body; else q fx-build.ps1 600 | body; fi
     done ;;
   list)
     r 'Get-ChildItem C:\temp\retrace\fixtures -Filter *.dwg | % { "{0}  {1} bytes  {2}" -f $_.Name, $_.Length, $_.LastWriteTime }; exit 0' | tr -d '\r'

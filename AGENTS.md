@@ -40,12 +40,14 @@ src/Retrace/
   Core/          plugin logic with no AutoCAD, WPF or WinForms: Paths, RetraceSettings, SessionWriter, Plan,
                  ReplayResult, DrawingDigest, ShotPolicy, DialogWait, DialogFillCore, SecurityPrompt, RibbonTabPosition, GuideModel, EngineJobs,
                  MapFolders (every folder given to the Map window, newest first), EditorLaunch (the arguments that open a file at a line in the editor),
+                 Suite: SuiteResult (the summary of a suite run: json and md, no AutoCAD), SuiteTestList (the -RETRACESUITE list: all, names, @file),
                  Tdoc: TdocPlan (instruction sentences and numbered legend lines per step), TdocNaming (folder, docx and picture names), TdocTestList (the -RETRACETDOC list),
                  TdocGeometry (move a dialog onto the screen), Annotate (green numbered boxes on BGRA pixels)
   AutoCad/       everything that touches AutoCAD: RetraceApp (IExtensionApplication and every [CommandMethod]), Commands (partial: Commands.Map is RETRACEMAP),
-                 RetraceTab (ribbon), Recorder, Replayer, BehaviorCapture (behavior snapshot of the drawing, read-only; pure parts in Core/BehaviorKeys), DialogWatch / DialogFill (dialog values), ShotService, DrawingState, DclCapture, Native / Win32, Log,
+                 RetraceTab (ribbon), Recorder, Replayer, ViewControl (reads, shows and puts back the active viewport's view: Editor.GetCurrentView / SetCurrentView; pure parts in Core/ViewSpec, Core/PickReplay), PickChecker (does a recorded pick point still hit its object; read-only), BehaviorCapture (behavior snapshot of the drawing, read-only; pure parts in Core/BehaviorKeys), DialogWatch / DialogFill (dialog values), ShotService, DrawingState, DclCapture, Native / Win32, Log,
                  LiveRibbonReader (copies the live ribbon into the engine's LiveTab records),
-                 Tdoc: TdocRun (the queue of tests; one at a time through RETRACERUN), TdocCapture (the pictures of one test, called by the Replayer), TdocTargets (where a box goes), Commands.Tdoc
+                 TestQueue (the queue of tests behind Tdoc and the suite; one at a time through RETRACERUN, start watchdog), SuiteRun (a suite run: unattended, closes each test's drawings, summary; Commands.Suite),
+                 Tdoc: TdocRun (a Tdoc run on the queue), TdocCapture (the pictures of one test, called by the Replayer), TdocTargets (where a box goes), Commands.Tdoc
   Ui/            WPF windows and the guide palette: SettingsWindow (with SysvarWindow), ReplayWindow, OpenTestWindow, TdocWindow, MapWindow (with MapRowView, its display text), GuidePalette, GuideControl, MarkdownPage, ScriptViewer, WebPreview
   Embedded/      Dependencies.cs
 ```
@@ -120,7 +122,11 @@ The scripts live in `C:\retrace-vm\` on the VM. See `tools/vm/README.md` for eac
 
 ### Commands for scripts
 
-A `-` command is the form a script, LISP or COM automation may run (COM `SendCommand` is not detected by `Ask.ScriptKnown()`: CMDACTIVE is 1 there): command line only, no window, no message box (`-RETRACEMARK`, `-RETRACESTOP`, `-RETRACESETTINGS`, `-RETRACETDOC`, `-RETRACEMAP`). When a stop-path or other command gets a new window, give the `-` form a way around it (`Core/StopReview.cs` decides the Checkpoints window). File pickers are skipped when `Ask.ScriptRuns()` (CMDACTIVE 4 / 32).
+A `-` command is the form a script, LISP or COM automation may run (COM `SendCommand` is not detected by `Ask.ScriptKnown()`: CMDACTIVE is 1 there): command line only, no window, no message box (`-RETRACEMARK`, `-RETRACESTOP`, `-RETRACESETTINGS`, `-RETRACETDOC`, `-RETRACEMAP`, `-RETRACESUITE`). When a stop-path or other command gets a new window, give the `-` form a way around it (`Core/StopReview.cs` decides the Checkpoints window). File pickers are skipped when `Ask.ScriptRuns()` (CMDACTIVE 4 / 32).
+
+### Suite hook in the Replayer
+
+A suite run passes a `SuiteHook` to `Replayer.Start`; it is null for every other replay and then nothing changes. With it: the step timeout (`CheckStepTimeout`: ^C^C, step `timed-out`, verdict ERROR), a dialog or palette step Retrace cannot do ends the test as needs-person instead of waiting, an "open" step for a drawing that was open before the suite opens a temp copy of the file, and Stop ends the suite. `TestQueue` asks its owner (`Gate`) before each test; the suite closes the previous test's drawings there. See [docs/suite.md](docs/suite.md).
 
 ### Tdoc hooks in the Replayer
 
@@ -138,6 +144,7 @@ Gates return false until ready and are asked again on the next 200 ms tick; noth
 | `TestFolderTests`, `RecordingTests`, `RecordingShotTests` | Test folder layout, reading recordings, picture naming. |
 | `ScriptTests`, `ExportTests` | `steps.md`, docx and xlsx. |
 | `SelectionReplayTests` | How a selection replays: typed window text, the Enter that ends it, the echo of older point answers, the handle fallback with missing handles left out; the typed-key characters. |
+| `ViewPickTests` | The recorded view (read, round trip, malformed), what a replay window of another shape shows, pick points typed instead of `(handent)` and every fallback to the handle, TRIM / EXTEND single clicks, clicks that ask for their view. |
 | `SettingsTests` | Settings keys and defaults. |
 | `BehaviorChecksTests`, `BehaviorKeysTests` | Behavior checks: canonical values, snapshots, picking, compare; entity ids, viewport order, xdata groups, NOD filter. |
 | `LispScannerTests`, `MacroTextTests` | LISP commands and functions found in `.lsp` / `.mnl` (comments and strings skipped, line numbers right); what a ribbon macro runs (commands, LISP calls, loads, DIESEL). |
@@ -145,4 +152,5 @@ Gates return false until ready and are asked again on the next 200 ms tick; noth
 | `MapFoldersTests` | The Map window's folder list: newest first, ticks, remove, the options, a broken file. |
 | `SecurityPromptTests`, `DialogFillTests`, `DialogValuesTests` | Security prompts, dialog auto-fill and dialog values. |
 | `TdocPlanTests`, `TdocNamingTests`, `TdocTestListTests` | Tdoc: instruction sentences and callout numbering, safe title / stamp / picture names and the geometry that moves a dialog onto the screen, the `-RETRACETDOC` list (names, `@file`, paths). |
+| `SuiteTests` | Suite: the test list (all, names, @file), a test's summary line (failing checkpoints, NEEDS-PERSON), the json / md summary and its file names, the step timeout setting; `SuiteBookkeepingTests`: tests missing from a stopped suite (NOT-RUN / INCOMPLETE), the latest of same-stamp suites, `UniquePath`, `StepClock` (which step a timeout blames). |
 | `AnnotateTests`, `TrainingDocTests` | Tdoc: the green numbered boxes on pixels; `tdoc.json` and the Word file. |

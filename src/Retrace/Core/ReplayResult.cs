@@ -39,7 +39,7 @@ public sealed class CheckpointResult
     }
 }
 
-/// <summary>One replayed step. `status`: "ok", "failed" (a dialog step that did not happen as recorded) or "needs-person" (unattended run stopped here).</summary>
+/// <summary>One replayed step. `status`: "ok", "failed" (a dialog step that did not happen as recorded), "needs-person" (unattended run stopped here), "blocked" (a security prompt) or "timed-out" (a suite run's step timeout).</summary>
 public sealed class StepResult
 {
     [JsonPropertyName("index")] public int Index { get; set; }
@@ -74,6 +74,8 @@ public sealed class ReplayResult
     [JsonPropertyName("steps")] public List<StepResult> Steps { get; set; } = new();
     [JsonPropertyName("checkpoints")] public List<CheckpointResult> Checkpoints { get; set; } = new();
     [JsonPropertyName("message")] public string Message { get; set; } = "";
+    /// <summary>The history file <see cref="Write"/> made (not stored in the file); a suite summary links to it.</summary>
+    [JsonIgnore] public string? WrittenTo { get; set; }
 
     /// <summary>ERROR beats FAIL beats INCOMPLETE beats PASS. PASS needs a completed run and at least one checkpoint, every one verified and matching.</summary>
     public static string ComputeVerdict(bool completed, bool errored, IReadOnlyList<CheckpointResult> checkpoints, int failedSteps = 0)
@@ -123,10 +125,10 @@ public sealed class ReplayResult
             var dir = ResultsDir(sessionPath);
             Directory.CreateDirectory(dir);
             var stem = Path.GetFileNameWithoutExtension(HistoryName(DateTime.Now, Verdict));
-            var path = Path.Combine(dir, stem + ".json");
-            for (int i = 2; File.Exists(path); i++) path = Path.Combine(dir, $"{stem}_{i}.json");
+            var path = UniquePath.Find(i => UniquePath.Numbered(dir, stem, ".json", i));
             WriteAtomic(path, json);
             WriteAtomic(Path.Combine(dir, TestFolders.LatestResult), json);
+            WrittenTo = path;
             return path;
         }
         catch (Exception ex) { onError?.Invoke(ex); return null; }

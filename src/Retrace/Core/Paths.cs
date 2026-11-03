@@ -30,6 +30,8 @@ public static class Paths
     public static string Tests(string root = Root) => Path.Combine(root, "tests");
     public static string Captures(string root = Root) => Path.Combine(root, "captures");
     public static string Docs(string root = Root) => Path.Combine(root, "docs");
+    /// <summary>Suite summaries: `&lt;stamp&gt;_suite.json` and `.md`.</summary>
+    public static string Results(string root = Root) => Path.Combine(root, "results");
     public static string Cache(string root = Root) => Path.Combine(root, "cache");
     /// <summary>WebView2's user data folder.</summary>
     public static string WebViewCache(string root = Root) => Path.Combine(Cache(root), "webview");

@@ -9,22 +9,31 @@ namespace Retrace.Core;
 /// <param name="Enabled">the user can change it</param>
 /// <param name="Source">Checkpoints window: "auto" / "manual" for a verified behavior, null when not verified</param>
 /// <param name="Tooltip">why it is disabled, or null</param>
-public sealed record BehaviorRow(string Id, string Label, string Description, bool Ticked, bool Enabled, string? Source = null, string? Tooltip = null);
+/// <param name="Recordable">Settings window: an opt-in behavior, which has a separate "Record" tick</param>
+/// <param name="Recorded">Settings window: that Record tick is set</param>
+public sealed record BehaviorRow(string Id, string Label, string Description, bool Ticked, bool Enabled, string? Source = null, string? Tooltip = null,
+    bool Recordable = false, bool Recorded = false);
 
 /// <summary>The Settings window's "Behavior checks" group.</summary>
 public static class BehaviorSettingsModel
 {
-    public const string AutoExplanation = "Retrace works out what changed at each checkpoint and verifies exactly that. Turn this off to pick the behaviors yourself.";
+    public const string AutoExplanation = "Retrace works out what changed at each checkpoint and verifies exactly that. Turn this off to pick the behaviors yourself. Entity appearance and Paper-space entities are large, so they are recorded only when Record is ticked for them: tick it before recording.";
     public const string ManualExplanation = "Every checkpoint verifies the ticked behaviors in full. Model-space entities are always verified.";
     public const string ModelSpaceLabel = "Model-space entities";
     public const string ModelSpaceDescription = "The objects in model space: always verified.";
 
+    /// <summary>Whether the "check" tick of a row can be edited: only when auto-detect is off. The one predicate for the window and <see cref="Rows"/>.
+    /// (The "Record" tick of an opt-in row is editable in both modes.)</summary>
+    public static bool CheckEnabled(bool autoDetect) => !autoDetect;
+
     /// <summary>Every catalog behavior, in catalog order. Auto-detect on: all shown disabled (ticks still show the stored list, so turning
     /// auto-detect off again brings back the choice). Off: enabled, ticked = in <paramref name="checkBehaviors"/> (ids match without case).</summary>
-    public static List<BehaviorRow> Rows(bool autoDetect, IEnumerable<string>? checkBehaviors)
+    public static List<BehaviorRow> Rows(bool autoDetect, IEnumerable<string>? checkBehaviors, IEnumerable<string>? recordBehaviors = null)
     {
+        var recorded = new HashSet<string>(new RetraceSettings { RecordBehaviors = (recordBehaviors ?? Enumerable.Empty<string>()).ToList() }.EffectiveRecordBehaviors(), StringComparer.Ordinal);
         var ticked = new HashSet<string>(new RetraceSettings { CheckBehaviors = (checkBehaviors ?? Enumerable.Empty<string>()).ToList() }.EffectiveCheckBehaviors(), StringComparer.Ordinal);
-        return BehaviorCatalog.All.Select(b => new BehaviorRow(b.Id, b.Label, b.Description, ticked.Contains(b.Id), !autoDetect)).ToList();
+        return BehaviorCatalog.All.Select(b => new BehaviorRow(b.Id, b.Label, b.Description, ticked.Contains(b.Id), CheckEnabled(autoDetect), null, null,
+            BehaviorCatalog.IsOptIn(b.Id), recorded.Contains(b.Id))).ToList();
     }
 
     /// <summary>The setting value from the ticks: the catalog ids that are ticked, in catalog order, then every id in <paramref name="existing"/>
@@ -109,6 +118,7 @@ public sealed class CheckpointChecksEditor
 {
     public const string NoChecksText = "No behavior checks (older recording).";
     public const string NoSnapshotTip = "This recording has no stored data for this behavior at this checkpoint (older recording, or it could not be read when recording), so it cannot be added.";
+    public const string NotRecordedTip = "Not ticked under Record in Settings when this was recorded, so this checkpoint has no stored data for it and it cannot be added. (Otherwise: older recording, or it could not be read when recording.)";
 
     readonly string _mode;
     Dictionary<string, BehaviorCheck> _baseline;           // as on disk
@@ -155,7 +165,9 @@ public sealed class CheckpointChecksEditor
         {
             if (_current.TryGetValue(b.Id, out var c)) { rows.Add(new BehaviorRow(b.Id, b.Label, b.Description, true, true, c.Source)); continue; }
             var can = _baseline.ContainsKey(b.Id) || (snap != null && snap.Has(b.Id));
-            rows.Add(new BehaviorRow(b.Id, b.Label, b.Description, false, can, null, can ? null : NoSnapshotTip));
+            // the Record hint only when there is a snapshot and it lacks the behavior; no snapshot file at all is the general tip
+            var notRecorded = BehaviorCatalog.IsOptIn(b.Id) && snap != null && !snap.Has(b.Id);
+            rows.Add(new BehaviorRow(b.Id, b.Label, b.Description, false, can, null, can ? null : notRecorded ? NotRecordedTip : NoSnapshotTip));
         }
         foreach (var id in UnknownIds())
         {

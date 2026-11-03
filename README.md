@@ -7,7 +7,7 @@ tells you pass or fail. It can also read your customization folder (`.cuix`, C#,
 write Markdown docs: ribbons, commands, dialogs, a source map, and an editable user guide with how-tos built from your recordings.
 And it maps each ribbon button to the LISP, C++, C# or VB.NET code it runs.
 
-Status: pre-1.0 (0.3.2). AutoCAD 2026 (R25.1), Windows x64. Written against the `AutoCAD.NET` 25.1.0 packages.
+Status: pre-1.0 (0.4.0). AutoCAD 2026 (R25.1), Windows x64. Written against the `AutoCAD.NET` 25.1.0 packages.
 Verified in AutoCAD only in part: see [Limitations](#limitations).
 
 ## Install
@@ -72,8 +72,9 @@ The guide palette needs the Microsoft Edge WebView2 Runtime (part of Windows 11 
    Dialogs are filled in from the recorded values when possible, otherwise Retrace waits for you. Palette steps likewise: Retrace sets the values
    and presses the button in WinForms and WPF palettes, waiting for results of async calls; when it cannot, you do the step and click Next.
 5. **Make a training document.** Training doc (`RETRACETDOC`): tick tests, give a title, Start. See [Training documents (Tdoc)](#training-documents-tdoc).
-6. **Build the docs.** Build docs (`RETRACEDOCS`) asks once for the folder with your code, CUIX and DCL files (setting `sourceFolder`), then runs in the background.
-7. **Read the guide.** Guide (`RETRACEGUIDE`) opens a palette with the pages. Edit a page and write outside the generated blocks; your text is kept on every rebuild.
+6. **Run many tests.** Tick tests in Open test and press Run suite (`RETRACESUITE`), or use `-RETRACESUITE`. One summary lists every test's verdict. See [Test suites](#test-suites).
+7. **Build the docs.** Build docs (`RETRACEDOCS`) asks once for the folder with your code, CUIX and DCL files (setting `sourceFolder`), then runs in the background.
+8. **Read the guide.** Guide (`RETRACEGUIDE`) opens a palette with the pages. Edit a page and write outside the generated blocks; your text is kept on every rebuild.
 
 To practise, load `samples/Retrace.Samples` (see its README): a small plugin with `DRAWLINE`, `DRAWCIRCLE`, `DRAWRECT`, `DRAWLABEL` and `DRAWGRID`.
 
@@ -94,10 +95,12 @@ All are on the Retrace ribbon tab (panels Record, Test, Guide, Open, Tools) exce
 | `RETRACERUN` | Pick a recording, open a new drawing, replay it, show the verdict. Waits for a person at dialogs it cannot fill. |
 | `RETRACETDOC` | The Training doc window: tick the tests, order them, give a title, Start. Replays them one after another and writes a Word training document with pictures (see [Training documents (Tdoc)](#training-documents-tdoc)). While a run is active it says so; between two tests it ends the run. |
 | `-RETRACETDOC` | The same on the command line: asks for the title, then the tests (names or paths separated by `;`, `last`, or `@file` with one per line). Starts nothing if a name finds no test. Not on the ribbon. |
+| `RETRACESUITE` | Run the tests ticked in the Open test window as one suite: unattended, past failures, one summary (`results\<stamp>_suite.json` and `.md`). With nothing ticked it opens that window. While a suite runs it says so; between two tests it ends the suite. See [Test suites](#test-suites). Not on the ribbon. |
+| `-RETRACESUITE` | The same on the command line, no window: asks for the tests (names or paths separated by `;`, `last`, `@file` with one per line, or Enter / `all` for every test). Starts nothing if a name finds no test. Scriptable like `-RETRACESTOP`. Not on the ribbon. |
 | `RETRACESTEP` | Pick a recording and replay it one step at a time in the current drawing. |
 | `RETRACEREPLAY` | Pick a recording (Enter = file dialog, `last` = newest) and a mode, Auto or Step. Auto stops with `INCOMPLETE` at a dialog. Run by a SCRIPT file, LISP or a menu macro it asks on the command line and never opens the file dialog; an empty answer gives "No recording chosen." With `FILEDIA` 0 and a person at the keyboard the dialog still opens on Enter. Over COM (not detected as a script) an empty answer opens the dialog, so always send a path or `last`. It still shows the small Retrace replay panel. Not on the ribbon. |
 | `RETRACESCR` | Write a `.scr` script next to the recording for its plain-command parts. Not on the ribbon. |
-| `RETRACEOPEN` | The Open test window: your tests with their last verdict, and one button per file or folder of the selected test, plus Run this test. |
+| `RETRACEOPEN` | The Open test window: your tests with a tick box and their last verdict, and one button per file or folder of the selected test, plus Run this test, Run suite for the ticked tests and a button for the last suite's summary. |
 | `RETRACEDOCS` | Build the docs from the source folder, the captures and the recorded tests. AutoCAD stays usable. |
 | `RETRACEMAP` | The Map window: tick the folders with your CUI / CUIX files and code, press Map, and see which code each ribbon button runs. Writes `ribbon-map.md`, `.csv` and `.json` (see [Ribbon map](#ribbon-map)). AutoCAD stays usable. |
 | `-RETRACEMAP` | The same on the command line, for scripts: asks for the folders (separated by `;`; Enter keeps the ones ticked last time), then whether to map the ribbon AutoCAD shows now. Prints a summary when it is done. Not on the ribbon. |
@@ -120,6 +123,16 @@ Details, file layout and limits: [docs/tdoc.md](docs/tdoc.md).
 3. The document is `C:\temp\retrace\docs\training\<stamp>_<title>.docx`; beside it a folder of the same name holds `tdoc.json` and `pictures\`.
 
 Three settings (Settings window, group "Training documents (Tdoc)"; `-RETRACESETTINGS` asks for them last): `tdocBringToFront`, `tdocAnnotate`, `tdocStepDelayMs` (see Settings).
+
+## Test suites
+
+`RETRACESUITE` replays many tests unattended and writes one summary. Details: [docs/suite.md](docs/suite.md).
+
+1. Open test (`RETRACEOPEN`), tick the tests, press Run suite. Or `-RETRACESUITE` on the command line (names, `@file`, or `all`).
+2. Each test runs like Run test, in a new drawing, and its drawings are closed without saving afterwards. A drawing you had open is never closed or saved. FAIL, INCOMPLETE, ERROR and tests that need a person end that test only, not the suite. A dialog Retrace cannot fill stays open: if it is still open 30 s later the suite stops (STOPPED, the rest NOT-RUN).
+3. A step that runs longer than `suiteStepTimeoutSeconds` (default 120) is cancelled and the test is `ERROR`, "step N timed out". A security prompt or dialog that stays open stops the suite with a summary of what ran.
+   A test that opens a drawing you already have open gets a copy of the file, which loses relative xrefs, images and AutoCAD Electrical project membership: close project drawings before running a suite that opens them.
+4. The summary is `C:\temp\retrace\results\<stamp>_suite.json` and `.md`: one line per test with its verdict, duration, the checkpoints that differed and the path to its own result. The Open test window's Last suite button opens it.
 
 ## Ribbon map
 
@@ -185,9 +198,11 @@ Recordings hold drawing names, typed text, coordinates and object handles. Treat
 | `showDrivenUi` | `true` | Run test opens a rolled-up or auto-hidden palette before it drives it, by resting the mouse on it as a person would (and putting the mouse back after), so the run can be watched. Off: the palette is filled while it stays hidden. Recording never moves the mouse. |
 | `tdocBringToFront` | `true` | Tdoc run (training document): before every picture, bring the UI of the step to the front (AutoCAD's window, the dialog being filled, the palette), move a dialog that is off screen onto it and keep Retrace's own replay window out of the picture. |
 | `tdocAnnotate` | `true` | Tdoc run: draw green numbered boxes on the pictures where the reader gives input (the ribbon button, the command line for typed answers, each dialog field that is filled, the button that closes the dialog, palette controls). The legend under the picture says what each number is. |
+| `suiteStepTimeoutSeconds` | `120` | Suite run (`RETRACESUITE`): a test step that takes longer than this many seconds is cancelled with `^C^C` and the test is recorded as `ERROR`, "step N timed out". 5 to 3600; a value outside that range is clamped when the settings are read. |
 | `tdocStepDelayMs` | `1500` | Tdoc run: milliseconds to wait before each picture and between steps, so the screen has repainted (tool tips gone, dialogs drawn). 0 to 10000; a value outside that range is clamped when the settings are read. |
 | `autoDetectBehavior` | `true` | Checkpoints verify what changed in the drawing since the previous checkpoint (the first: since recording started), besides the model-space entities. Off: the behaviors in `checkBehaviors` are verified whole. See [recording format](docs/recording-format.md), "Behavior checks". |
-| `checkBehaviors` | `["layers","layouts","symbols"]` | Behavior ids verified when `autoDetectBehavior` is off. Ids: `layers`, `layouts`, `viewports`, `xdata`, `xdicts`, `symbols`, `sysvars`, `views`, `psattributes`. |
+| `checkBehaviors` | `["layers","layouts","symbols"]` | Behavior ids verified when `autoDetectBehavior` is off. Ids: `layers`, `appearance`, `layouts`, `paperspace`, `viewports`, `xdata`, `xdicts`, `symbols`, `sysvars`, `views`, `psattributes`. In manual mode `appearance` and `paperspace` listed here are recorded as well. |
+| `recordBehaviors` | `[]` | Opt-in behaviors to store in every checkpoint while recording, in either mode: `appearance`, `paperspace`. Off by default because they hold one item per entity. A settings file without it reads as empty. |
 | `sysvarsAdd`, `sysvarsRemove` | `[]` | System variable names added to / removed from the built-in list the `sysvars` behavior reads (without case). Names AutoCAD does not know are skipped. |
 | `exportDocx` | `false` | Also write `steps.docx` when a recording stops. |
 | `exportXlsx` | `false` | Also write `steps.xlsx` when a recording stops. |
@@ -215,7 +230,7 @@ Recordings hold drawing names, typed text, coordinates and object handles. Treat
 
 - Pre-1.0. Run in AutoCAD Electrical 2026 (R25.1) on 2026-10-22: the bundle loads, the Retrace tab appears, and record / checkpoint / stop, `steps.md` with Word and Excel export, `RETRACEREPLAY` (PASS), `RETRACEDOCS` and the guide palette work. The ribbon map was run in plain AutoCAD 2026 on 2026-10-28: `-RETRACEMAP` and the Map window (ribbon button, Map, filter, Open code, Add folders) on test folders with CUIX, CUI, LISP, C++, C#, VB.NET and the live ribbon, including a tab a plugin builds at run time. Run it in your AutoCAD before you rely on it.
 - The engine that builds the docs runs inside the AutoCAD process (on a background thread). A bug in it is caught and reported, but it shares memory with AutoCAD. Screenshots are queued and taken a moment later, never inside an AutoCAD event handler.
-- Replay is not a pixel-exact replay: a ribbon click with recorded answers is replayed through its macro. Handles refer to the drawing the test was recorded in. The pick point on an object is not replayed. Points are typed absolute, angles in degrees (assumes `AUNITS` 0). Text answers with spaces break at the first space.
+- Replay is not a pixel-exact replay: a ribbon click with recorded answers is replayed through its macro. Handles refer to the drawing the test was recorded in. A pick on an object (BREAK, FILLET, TRIM, EXTEND, nested picks) is replayed at the recorded point, in the view it was made in, when the point still hits that object; otherwise by its handle (the replay says so). The view is set before and put back after, so a test needs no `ZOOM` step and no particular window size for those picks and for mouse clicks (a window typed on the keyboard still selects what is visible: start such a test with `ZOOM E`). Points are typed absolute, angles in degrees (assumes `AUNITS` 0). Text answers with spaces break at the first space.
 - Palette sets (your plugin's `PaletteSet`, WinForms or WPF content): the fields you change and the push buttons you click are recorded, as one step per
   button (or per palette you leave). Field values are read when you start working in the palette, every ~300 ms, and when you click a button or move on.
   AutoCAD's own native palettes (Properties, Tool Palettes) and the ribbon are not. Palette tabs you switch, list views, trees and drag-and-drop are not
@@ -224,7 +239,7 @@ Recordings hold drawing names, typed text, coordinates and object handles. Treat
   the palette taken while it was open, so a palette that rolled up right after still shows in the steps. Give fields stable names (`Name`,
   `x:Name`) and, next to text that changes, an `AccessibleName` / `AutomationProperties.Name`.
 - Not recorded: other modeless windows, grips, right-click menus, mouse-only actions (pan, wheel zoom). Only the active drawing is driven.
-- Checkpoints compare geometry, not appearance: model space only, counts per type and layer, layer names, and a hash. Colours, linetypes and paper space are not part of it. A checkpoint without a recorded state is "not verified" and makes the verdict `INCOMPLETE`.
+- The checkpoint's own comparison (the digest) is geometry only: model space, counts per type and layer, layer names, and a hash. Appearance and paper space are verified by two more behaviors: `Entity appearance` (layer, color, linetype, linetype scale, lineweight, transparency and plot style of each entity, in model space and on the layouts) and `Paper-space entities` (each entity drawn on a layout, one by one). They cost one item per entity (about 250 bytes each in every checkpoint's stored snapshot), so they are recorded only when you tick **Record** for them in Settings (Behavior checks), in either mode (in manual mode, ticking them under `checkBehaviors` records them too): **tick Record before recording to be able to check them**. Then, in auto mode, Retrace picks `Paper-space entities` when the entities on a layout changed, and `Entity appearance` for entities that are new or whose own look changed (a layer property change is left to `Layer state`, and removed entities to the digest). An auto checkpoint that would store more than 2000 `Entity appearance` items (a mass edit) leaves it out and says so in `retrace.log`. Not covered: the contents of block definitions (only their fingerprint) and viewports (their own behavior). Recordings made without Record pass unchanged; the Checkpoints window can add them to a checkpoint only if the recording stored them.
 - Dialog values are read from outside through child windows (Win32, WinForms, DCL) or UI Automation (WPF); WinForms check boxes and radio buttons
   are asked through WinForms itself. Other owner-drawn controls, list views, trees and password fields are not read. A dialog that opens a nested dialog still needs a person.
 - AutoCAD's security prompt is never answered by a replay: the run stops with `INCOMPLETE` and says what to do. A recording does not replay a security prompt either.
