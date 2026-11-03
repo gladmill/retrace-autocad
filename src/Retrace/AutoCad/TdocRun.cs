@@ -13,44 +13,33 @@ namespace Retrace.AutoCad;
 /// the replayer's Finish). After the last test, or Stop, the manifest is written at once and the Word file by the engine in the background.
 /// One run at a time. UI thread only (the engine's callback marshals back).
 /// </summary>
-sealed class TdocRun
+sealed class TdocRun : ITestQueueOwner
 {
     public static TdocRun? Current { get; private set; }
 
-    /// <summary>A test that was sent to RETRACERUN must start within this time, else it is skipped (its command failed before the replay began).</summary>
-    static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(90);
-
-    enum State { Idle, Sent, Running }
-
     readonly string _title, _folder, _manifestPath, _docxPath;
-    readonly IReadOnlyList<string> _recordings;
+    readonly TestQueue _queue;
     readonly RetraceSettings _settings;
     readonly TrainingManifest _manifest = new();
     readonly List<TdocCapture> _captures = new();
     readonly List<string> _summary = new();
     readonly Dispatcher _ui = Dispatcher.CurrentDispatcher;
-    readonly DispatcherTimer _watch = new() { Interval = TimeSpan.FromSeconds(2) };
-    int _index = -1;
-    State _state = State.Idle;
-    string? _sentPath;
-    bool _taken, _stopped;
-    DateTime _sentAt;
 
     TdocRun(string title, IReadOnlyList<string> recordings, RetraceSettings settings)
     {
         _title = string.IsNullOrWhiteSpace(title) ? "Training" : title.Trim();
-        _recordings = recordings; _settings = settings;
+        _queue = new TestQueue(recordings, this); _settings = settings;
         var root = Path.Combine(settings.Docs, TdocNaming.TrainingDir);
         _folder = TestFolders.UniqueFolder(root, TdocNaming.FolderName(DateTime.Now, _title));
         _manifestPath = Path.Combine(_folder, TdocNaming.ManifestFile);
         _docxPath = TdocNaming.DocxPath(_folder);
-        _watch.Tick += (_, _) => Log.Safe("tdoc watch", Watch);
     }
 
     /// <summary>Starts a run over the recordings (each a recording.jsonl). False with the reason in <paramref name="message"/>.</summary>
     public static bool Start(string title, IReadOnlyList<string> recordings, out string message)
     {
         if (Current != null) { message = "A Tdoc run is already active."; return false; }
+        if (SuiteRun.Current != null || TestQueue.Active != null) { message = "A test suite is running; start the training document when it is done."; return false; }
         if (Replayer.Current != null) { message = "A replay is already running."; return false; }
         if (Recorder.Instance.IsRecording) { message = "Stop the recording first (RETRACESTOP): a test opens a new drawing and replays into it."; return false; }
         if (recordings.Count == 0) { message = "No tests chosen."; return false; }
@@ -63,18 +52,8 @@ sealed class TdocRun
         message = $"Tdoc: {recordings.Count} test(s), written to {run._folder} (as {Path.GetFileName(run._docxPath)} beside it).";
         run.Say(message);
         if (!s.AutoFillDialogs) run.Say("Tdoc: the setting autoFillDialogs is off, so dialogs are not filled in and get no picture.");
-        run._watch.Start();
-        run.Next();
+        run._queue.Begin();
         return true;
-    }
-
-    /// <summary>For <see cref="Commands.Test"/>: the recording of the test the run just sent to RETRACERUN (once), else null.</summary>
-    public static string? TakeExpected()
-    {
-        var run = Current;
-        if (run == null || run._state != State.Sent || run._taken) return null;
-        run._taken = true;
-        return run._sentPath;
     }
 
     /// <summary>For <see cref="Commands.Test"/>, which has read the steps of <paramref name="path"/>: the capture for the replayer, or null when the
@@ -82,9 +61,9 @@ sealed class TdocRun
     public static TdocCapture? CaptureFor(string path, List<Step> steps)
     {
         var run = Current;
-        if (run == null || run._state != State.Sent || !string.Equals(path, run._sentPath, StringComparison.OrdinalIgnoreCase)) return null;
+        if (run == null || !run._queue.IsSent(path)) return null;
         var test = new TrainingTest { Name = TestList.NameOf(TestFolders.NameOf(path)), Folder = Path.GetDirectoryName(path) ?? "" };
-        var capture = new TdocCapture(test, steps, run._folder, run._index + 1, run._recordings.Count, run._settings);
+        var capture = new TdocCapture(test, steps, run._folder, run._queue.Index + 1, run._queue.Recordings.Count, run._settings);
         run._captures.Add(capture);
         return capture;
     }
@@ -94,15 +73,9 @@ sealed class TdocRun
     {
         var run = Current;
         if (run == null || !run._captures.Contains(capture)) return;
-        run._state = State.Running;
+        run._queue.MarkRunning();
         run._manifest.Tests.Add(capture.Test);
         run.Say($"{capture.Label}: {capture.Test.Name} ({capture.Test.Steps.Count} steps)");
-    }
-
-    /// <summary>The test that was sent to RETRACERUN could not be started (the recording is gone, the new drawing never became active...): skip it.</summary>
-    public static void StartFailed(string why)
-    {
-        if (Current is { _state: State.Sent } run) run.Skip(why);
     }
 
     /// <summary>The replayer ended the test (from its Finish, after the result file is written).</summary>
@@ -115,9 +88,8 @@ sealed class TdocRun
         run._summary.Add($"{capture.Test.Name}: {r.Verdict}, {capture.PictureCount} picture(s)");
         run.Say($"{capture.Label}: {capture.Test.Name} {r.Verdict}, {capture.PictureCount} picture(s)");
         capture.Dispose();
-        if (capture.StopRequested) run._stopped = true;
-        run._state = State.Idle;
-        run.Post(run.Next);
+        if (capture.StopRequested) run._queue.Stopped = true;
+        run._queue.Finished();
     }
 
     /// <summary>RETRACETDOC while a run is active: between two tests it ends the run; during a test the replay window's Stop does.</summary>
@@ -125,10 +97,10 @@ sealed class TdocRun
     {
         var run = Current;
         if (run == null) return "No Tdoc run is active.";
-        if (Replayer.Current != null) return $"A Tdoc run is active (test {run._index + 1} of {run._recordings.Count}). Press Stop in the replay window to end it.";
+        if (Replayer.Current != null) return $"A Tdoc run is active (test {run._queue.Index + 1} of {run._queue.Recordings.Count}). Press Stop in the replay window to end it.";
         // the next test was sent to RETRACERUN and is about to start: ending now would leave that RETRACERUN without its test (a file picker)
-        if (run._state == State.Sent) return $"A Tdoc run is starting test {run._index + 1} of {run._recordings.Count}. Press Stop in the replay window when it shows.";
-        run._stopped = true;
+        if (run._queue.Current == TestQueue.State.Sent) return $"A Tdoc run is starting test {run._queue.Index + 1} of {run._queue.Recordings.Count}. Press Stop in the replay window when it shows.";
+        run._queue.Stopped = true;
         run.Complete();
         return "Tdoc run stopped.";
     }
@@ -139,9 +111,9 @@ sealed class TdocRun
         var run = Current;
         if (run == null) return;
         Current = null;
-        run._watch.Stop();
+        run._queue.End();
         foreach (var c in run._captures) c.Dispose();
-        run._stopped = true;
+        run._queue.Stopped = true;
         Log.Safe("tdoc abort manifest", () => { if (run.WriteManifest()) run.Say($"Tdoc stopped; the manifest is {run._manifestPath}"); });
     }
 
@@ -149,39 +121,23 @@ sealed class TdocRun
 
     void Say(string message) => Commands.Print(message.StartsWith("Tdoc", StringComparison.Ordinal) ? message : "Tdoc: " + message);
 
-    void Post(Action a) => _ui.BeginInvoke(DispatcherPriority.Background, () => Log.Safe("tdoc next", a));
+    void ITestQueueOwner.Say(string message) => Say(message);
+    QueueGate ITestQueueOwner.Gate() => QueueGate.Go;
+    void ITestQueueOwner.Complete() => Complete();
+    void ITestQueueOwner.Aborted(string reason) { Say(reason + "; the run ends here"); _queue.Stopped = true; Complete(); }
 
-    void Next()
+    void ITestQueueOwner.Skipped(int index, string path, string why)
     {
-        if (Current != this) return;
-        if (_stopped || ++_index >= _recordings.Count) { Complete(); return; }
-        var doc = AcApp.DocumentManager.MdiActiveDocument;
-        if (doc == null) { Say("no drawing is open; the run ends here"); Complete(); return; }
-        _sentPath = _recordings[_index]; _taken = false; _sentAt = DateTime.Now; _state = State.Sent;
-        // Test() asks TakeExpected for the recording; this is what the Run test button types, ^C^C first: the test before may have left a
-        // prompt open (a step that failed), and the text would answer it instead of starting the next test
-        doc.SendStringToExecute("\u0003\u0003_RETRACERUN ", true, false, false);
-    }
-
-    void Skip(string why)
-    {
-        var name = TestList.NameOf(TestFolders.NameOf(_sentPath ?? ""));
+        var name = TestList.NameOf(TestFolders.NameOf(path));
         _summary.Add($"{name}: not run ({why})");
-        Say($"test {_index + 1}/{_recordings.Count} ({name}) was not run: {why}");
-        _state = State.Idle;
-        Post(Next);
-    }
-
-    void Watch()
-    {
-        if (_state == State.Sent && Replayer.Current == null && DateTime.Now - _sentAt > StartTimeout) Skip("it did not start within 90 s");
+        Say($"test {index + 1}/{_queue.Recordings.Count} ({name}) was not run: {why}");
     }
 
     // ---- the end ------------------------------------------------------------------------------------------------------------------------
 
     bool WriteManifest()
     {
-        _manifest.Title = _title + (_stopped ? " (incomplete)" : "");
+        _manifest.Title = _title + (_queue.Stopped ? " (incomplete)" : "");
         _manifest.CreatedUtc = DateTime.UtcNow.ToString("o");
         _manifest.RetraceVersion = BuildInfo.Version;
         try { _manifest.Write(_manifestPath); return true; }
@@ -192,7 +148,7 @@ sealed class TdocRun
     {
         if (Current != this) return;
         Current = null;
-        _watch.Stop();
+        _queue.End();
         foreach (var line in _summary) Say("  " + line);
         if (_manifest.Tests.Count == 0) { Say("no test ran; no document written."); return; }
         if (!WriteManifest()) return;
@@ -205,7 +161,7 @@ sealed class TdocRun
                 return EngineRunner.WriteTrainingDoc(manifest, docx);
             }, r => _ui.BeginInvoke(() => Log.Safe("tdoc done", () => Done(r))), out var err))
         { Say("the document could not be queued: " + err); return; }
-        Say((_stopped ? "stopped; " : "") + (wait ? "another Retrace job is running; the Word file is written right after it..." : "writing the Word file in the background...") + $"\n  {_manifestPath}");
+        Say((_queue.Stopped ? "stopped; " : "") + (wait ? "another Retrace job is running; the Word file is written right after it..." : "writing the Word file in the background...") + $"\n  {_manifestPath}");
     }
 
     void Done(EngineResult r)

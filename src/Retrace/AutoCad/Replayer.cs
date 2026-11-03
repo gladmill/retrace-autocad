@@ -75,6 +75,10 @@ sealed class Replayer
     string? _deferred;   // answers recorded after the dialog opened: typed once the person confirmed it (see Plan.InputAroundDialog)
     // Tdoc run (RETRACETDOC): pictures for the training document; null for every other replay, and then none of the hooks does anything
     TdocCapture? _tdoc;
+    SuiteHook? _suite;   // suite run (RETRACESUITE): step timeout, no waiting for a person; null for every other replay
+    StepClock? _clock;   // the suite's step timeout: which step runs and since when
+    /// <summary>Nobody is there to help: RETRACEREPLAY, and a suite run (which fills dialogs itself but never waits for a person).</summary>
+    bool Unattended => !_interactive || _suite != null;
     Action<ReplayResult>? _finished;   // called at the end of Finish, after the result file is written
 
     Replayer(List<Step> steps, ReplayMode mode, Document doc, string sessionPath, bool interactive)
@@ -96,6 +100,8 @@ sealed class Replayer
         _win.StopClicked += () =>
         {
             if (_running && _tdoc != null) _tdoc.StopRequested = true;   // Stop ends a Tdoc run's whole queue (a normal end closes the window too: only while running)
+            if (_running && _suite != null) _suite.StopRequested = true;
+            _userStopped = true;
             Finish(false, false, "stopped by the user");
         };
     }
@@ -106,6 +112,7 @@ sealed class Replayer
         var c = Current; if (c == null) return;
         c._alert = false;
         if (c._tdoc != null) c._tdoc.StopRequested = true;
+        if (c._suite != null) c._suite.StopRequested = true;
         c.Finish(false, false, "stopped (core shutdown)");
     }
 
@@ -114,12 +121,12 @@ sealed class Replayer
     /// <param name="tdoc">a Tdoc run's pictures for this test (RETRACETDOC); null for a plain replay</param>
     /// <param name="finished">called once at the end of the run with its result (a Tdoc run starts the next test from it)</param>
     public static bool Start(List<Step> steps, ReplayMode mode, string sessionPath, DrawingDigest? initial, out string message, bool alert = false, bool interactive = false,
-        TdocCapture? tdoc = null, Action<ReplayResult>? finished = null)
+        TdocCapture? tdoc = null, Action<ReplayResult>? finished = null, SuiteHook? suite = null)
     {
         if (Current != null) { message = "A replay is already running (close its window or press Stop)."; return false; }
         var doc = AcApp.DocumentManager.MdiActiveDocument;
         if (doc == null) { message = "No active drawing."; return false; }
-        var r = new Replayer(steps, mode, doc, sessionPath, interactive) { _alert = alert, _tdoc = tdoc, _finished = finished };
+        var r = new Replayer(steps, mode, doc, sessionPath, interactive) { _alert = alert, _tdoc = tdoc, _finished = finished, _suite = suite };
         Current = r;
         r.Begin(initial);
         message = $"Replaying {steps.Count} steps ({mode}).";
@@ -147,6 +154,8 @@ sealed class Replayer
             _tdoc.Begin(_win.SetVisible, AcApp.MainWindow.Handle);
             TdocRun.Started(_tdoc);
         }
+        _suite?.Started();
+        if (_suite != null) _clock = new StepClock(_suite.StepTimeout);
         _win.Show();
         _win.Show("Retrace replay", "Starting...", false);
         _timer.Start();
@@ -206,7 +215,21 @@ sealed class Replayer
         try
         {
             var doc = OpenDocument(path);
-            if (doc != null && !(bool)((dynamic)doc.GetAcadDocument()).Saved)
+            var ownCopy = false;
+            // suite run: a drawing the person had open is never replayed into (or saved, or closed): the test gets a copy of the file instead,
+            // one copy per file for the whole test (a second open of the same file goes back to it)
+            if (doc != null && _suite != null && _suite.IsProtected(doc))
+            {
+                if (!_copies.TryGetValue(path, out var copy))
+                {
+                    if (!File.Exists(path)) { Finish(false, true, $"{Path.GetFileName(path)} was open before the suite and its file is gone: the test will not touch that drawing"); return false; }
+                    copy = _suite.CopyOf(path); _copies[path] = copy;
+                    Say($"\n  {Path.GetFileName(path)} is open already; the test uses a copy.\n");
+                }
+                path = copy; doc = OpenDocument(path); ownCopy = true;
+            }
+            else if (_suite != null && _copies.TryGetValue(path, out var again)) { path = again; doc = OpenDocument(path); ownCopy = true; }
+            if (doc != null && !ownCopy && !(bool)((dynamic)doc.GetAcadDocument()).Saved)
             {
                 Finish(false, true, $"{Path.GetFileName(path)} is open with unsaved changes: save or close it, then run the test again");
                 return false;
@@ -216,7 +239,7 @@ sealed class Replayer
                 if (!File.Exists(path)) { Finish(false, true, $"drawing not found: {path}"); return false; }
                 doc = dm.Open(path, false);
             }
-            Follow(doc);
+            if (!Follow(doc)) return false;
             Say($"\n  Opened {path}\n");
             return true;
         }
@@ -226,13 +249,29 @@ sealed class Replayer
     /// <summary>Replays the rest in <paramref name="doc"/>, a drawing just opened. Its start-up (acaddoc.lsp, S::STARTUP, AutoCAD Electrical's
     /// project setup) runs after this, partly on the drawing's first idle: the next step waits until it has been quiet (no command, no
     /// LISP) for a second.</summary>
-    void Follow(Document doc)
+    readonly Dictionary<string, string> _copies = new(StringComparer.OrdinalIgnoreCase);   // suite: a protected file -> the temp copy this test opened
+
+    bool Follow(Document doc)
     {
+        if (RefusedProtected(doc)) return false;
         var dm = AcApp.DocumentManager;
         if (dm.MdiActiveDocument != doc) dm.MdiActiveDocument = doc;
         if (!ReferenceEquals(doc, _doc)) { Log.Safe("Replay unhook", () => Unhook(_doc)); _doc = doc; Hook(_doc); }
+        if (_suite != null) _docGone = false;
         _lispRunning = 0; _afterOpen = true; _quietSince = DateTime.MinValue;
         _notBefore = DateTime.Now.AddMilliseconds(500);
+        return true;
+    }
+
+    /// <summary>The one rule for protected drawings in a suite (the ones open before it, and the blank one it opened to run from): an explicit "open"
+    /// step gets a temp copy (<see cref="OpenDrawing"/>); every other way into one (a palette double-click, the drawing the test ran in being
+    /// closed) ends the test as ERROR. True when the run ended.</summary>
+    bool RefusedProtected(Document doc)
+    {
+        if (_suite == null || !_suite.IsProtected(doc)) return false;
+        string name; try { name = Path.GetFileName(doc.Name); } catch (Exception) { name = "a drawing"; }
+        Finish(false, true, $"the test switched to {name}, which was open before the suite (or is the suite's own start drawing): not touched; close it and re-run");
+        return true;
     }
 
     static Document? OpenDocument(string path) =>
@@ -246,7 +285,7 @@ sealed class Replayer
         if (OpenDocument(s.Drawing!) is { } doc)
         {
             _awaitOpen = null;
-            Follow(doc);
+            if (!Follow(doc)) return;   // a protected drawing: the test ends as ERROR (the palette is not raced with a copy)
             Say($"\n  Opened {s.Drawing}\n");
             NextPaletteStep();
             return;
@@ -280,6 +319,7 @@ sealed class Replayer
         _running = false;
         CursorBack();
         _timer.Stop();
+        Log.Safe("Replay restore view", () => HandOffView(cancel: _userStopped || errored));
         Log.Safe("Replay stop", () =>
         {
             AcApp.EnterModal -= OnEnterModal;
@@ -364,9 +404,16 @@ sealed class Replayer
     void Tick()
     {
         if (!_running) return;
-        if (_docGone)
+        // (a palette open that is still pending decides the drawing itself: TickAwaitOpen, bounded by its own timeout)
+        if (_docGone && (_suite == null || _awaitOpen == null))
         {
-            if (AcApp.DocumentManager.MdiActiveDocument is not { } active || ReferenceEquals(active, _doc)) return;   // between drawings
+            if (_suite != null && ReplayRules.NothingLeftToRun(_steps, _i)) { Finish(true, false, "finished"); return; }   // the last step closed its drawing (and the dialogs it showed)
+            if (AcApp.DocumentManager.MdiActiveDocument is not { } active || ReferenceEquals(active, _doc))   // between drawings, or none left (CLOSEALL)
+            {
+                if (_clock is { } gone && gone.Expired(DateTime.Now)) Finish(false, true, "no drawing to continue in");
+                return;
+            }
+            if (RefusedProtected(active)) return;
             _docGone = false;
             _doc = active; Hook(_doc);
             Log.Info($"replay continues in {active.Name}: the drawing it ran in was closed");
@@ -375,9 +422,11 @@ sealed class Replayer
         // AutoCAD's security prompt (an untrusted dll or LISP file is being loaded) is a decision for a person, never a test step:
         // stop at once with what to do, in both modes, and leave the prompt open for the person to answer.
         if (Native.OpenSecurityPrompt() is { } prompt) { StopAtSecurityPrompt(prompt); return; }
+        if (_suite != null && CheckStepTimeout()) return;
         // interactive: the step that opens a dialog was sent; wait for the dialog and the person
         if (_interactive && !_dialog.Active && _i < _steps.Count && _steps[_i].Kind == "dialog") 
         {
+            _clock?.Begin(_i + 1, DateTime.Now);
             _dialog.Begin(DateTime.Now, _modalDepth > 0, _steps[_i].ClosedWith == "cancel");
             _announced = false; _cancelSent = false;
             _fill = null; _fillTried = false; _fillAnnounced = false;
@@ -395,7 +444,7 @@ sealed class Replayer
         if (_dialog.Active) { TickDialog(); return; }
         if (_modalDepth > 0)
         {
-            if (_mode == ReplayMode.Auto && !_interactive)
+            if (_mode == ReplayMode.Auto && Unattended)
             {
                 // a dialog needs a person; give transient ones a moment to close by themselves, and a progress window (no button to
                 // press: AutoCAD Electrical's "Updating..." while a native palette switches projects) up to two minutes
@@ -403,6 +452,7 @@ sealed class Replayer
                 var waited = (DateTime.Now - _modalSince).TotalSeconds;
                 if (waited > 2 && (waited > 120 || !Native.IsProgressWindow(Native.ForegroundOfThisProcess())))
                 {
+                    if (_suite != null) { StopAtUnexpectedDialog(); return; }
                     var title = _steps.Skip(Math.Max(0, _i - 1)).FirstOrDefault(x => x.Kind == "dialog")?.DialogTitle;
                     var di = _steps.FindIndex(Math.Max(0, _i - 1), x => x.Kind == "dialog");
                     if (di >= 0) _result.Steps.Add(new StepResult { Index = di + 1, Kind = "dialog", Title = _steps[di].Title, Status = "needs-person" });
@@ -416,9 +466,11 @@ sealed class Replayer
         _modalSince = DateTime.MinValue;
         if (_awaitOpen != null) { TickAwaitOpen(); return; }
         if (!Settled()) return;
+        RestoreView();   // the step is done: the person's view comes back
         if (_i >= _steps.Count) { Finish(true, false, "finished"); return; }
 
         var s = _steps[_i];
+        _clock?.Begin(_i + 1, DateTime.Now);   // suite: this step runs from now (it is sent next) until the next one starts
         if (!_shown)
         {
             _shown = true; _stepShownAt = DateTime.Now; _modalsAtStepStart = _modalsSeen; _userNext = false;
@@ -444,6 +496,57 @@ sealed class Replayer
         _i++;
         _shown = false;
         if (_notBefore < DateTime.Now.AddMilliseconds(400)) _notBefore = DateTime.Now.AddMilliseconds(400);
+    }
+
+    /// <summary>The title of the dialog in front now; "" when it is AutoCAD's own window or there is none.</summary>
+    static string ForegroundDialogTitle()
+    {
+        var fg = Native.ForegroundOfThisProcess();
+        return fg != IntPtr.Zero && fg != AcApp.MainWindow.Handle ? (Native.TitleOf(fg) ?? "").Trim() : "";
+    }
+
+    /// <summary>Suite run: a dialog nothing in the recording opens is showing. The step that was sent (the last one started) gets the needs-person
+    /// status on its own result line and the dialog's real title goes in the message.</summary>
+    void StopAtUnexpectedDialog()
+    {
+        var title = ForegroundDialogTitle();
+        var shown = title.Length == 0 ? "(untitled)" : title;
+        if (_i == 0)
+        {
+            // before any step was sent: nothing to blame
+            var first = $"a dialog appeared before the first step: {shown}";
+            _result.Steps.Add(new StepResult { Index = 0, Kind = "start", Title = "before the first step", Status = "needs-person", Message = first });
+            Finish(false, false, $"needs a person: {first}");
+            return;
+        }
+        var n = Math.Clamp(_i, 1, Math.Max(1, _steps.Count));   // _i is already past the step that was sent
+        var step = _steps.Count >= n ? _steps[n - 1] : null;
+        var text = $"step {n} opened a dialog the recording does not have: {shown}";
+        var row = _result.Steps.LastOrDefault(x => x.Index == n);
+        if (row != null) { row.Status = "needs-person"; row.Message = text; }
+        else _result.Steps.Add(new StepResult { Index = n, Kind = step?.Kind ?? "", Title = step?.Title ?? "", Status = "needs-person", Message = text });
+        Finish(false, false, $"needs a person: {text}");
+    }
+
+    /// <summary>Suite run: the step that was sent (or is being waited for) has run longer than the limit. ^C^C, the test is ERROR "step N timed out".
+    /// True when the run ended.</summary>
+    bool CheckStepTimeout()
+    {
+        var now = DateTime.Now;
+        var clock = _clock!;
+        if (clock.Step == 0) clock.Begin(1, now);   // the start-up wait counts for the first step
+        if (!clock.Expired(now)) return false;
+        var n = Math.Clamp(clock.Step, 1, Math.Max(1, _steps.Count));
+        var secs = (int)clock.Limit.TotalSeconds;
+        try { _doc.SendStringToExecute("\u0003\u0003", true, false, true); } catch (Exception ex) { Log.Error("suite cancel", ex); }
+        var step = _steps.Count >= n ? _steps[n - 1] : null;
+        var text = $"step {n} timed out after {secs} s";
+        // a step that was sent has a result already (ok): that line becomes the timed-out one
+        var existing = _result.Steps.LastOrDefault(x => x.Index == n);
+        if (existing != null) { existing.Status = "timed-out"; existing.Message = text; }
+        else _result.Steps.Add(new StepResult { Index = n, Kind = step?.Kind ?? "", Title = step?.Title ?? "", Status = "timed-out", Message = text });
+        Finish(false, true, $"step {n} timed out");
+        return true;
     }
 
     void StopAtSecurityPrompt(string title)
@@ -481,6 +584,17 @@ sealed class Replayer
                     }
                     Log.Info($"autofill gave up on \"{step.DialogTitle}\": {_fill.Note ?? string.Join("; ", _fill.Results.Where(r => r.Status != FieldFillResult.Applied).Select(r => r.Label + " " + r.Status + (r.Message != null ? " (" + r.Message + ")" : "")))}");
                     _tdoc?.EnsureShown();
+                }
+                if (_suite != null)
+                {
+                    // unattended: nobody is there to fill it in
+                    var actual = ForegroundDialogTitle();
+                    var recorded = string.IsNullOrWhiteSpace(step.DialogTitle) ? "" : step.DialogTitle.Trim();
+                    var title = actual.Length == 0 ? (recorded.Length == 0 ? "(untitled)" : recorded)
+                        : recorded.Length > 0 && !string.Equals(actual, recorded, StringComparison.OrdinalIgnoreCase) ? $"{actual} (recorded: {recorded})" : actual;
+                    _result.Steps.Add(new StepResult { Index = _i + 1, Kind = "dialog", Title = step.Title, Status = "needs-person", Message = $"the dialog needs a person: {title}" });
+                    Finish(false, false, $"needs a person: dialog {title}");
+                    return;
                 }
                 var msg = DialogMessage(step);
                 if (!_announced) { _announced = true; Say("\n" + msg + "\n"); }
@@ -622,7 +736,7 @@ sealed class Replayer
             return;
         }
         if (now - _paletteSince < PaletteWait) { _paletteRetryAt = now.AddMilliseconds(500); return; }
-        if (_mode == ReplayMode.Auto && !_interactive)
+        if (_mode == ReplayMode.Auto && Unattended)
         {
             _result.Steps.Add(new StepResult { Index = _i + 1, Kind = "palette", Title = s.Title, Status = "needs-person", Message = problem });
             Finish(false, false, $"needs a person: palette {s.DialogTitle} ({problem})");
@@ -644,7 +758,7 @@ sealed class Replayer
         if (s.Native != null && _lastStartedAt >= _paletteClickedAt && string.Equals(_lastStarted, s.Command, StringComparison.OrdinalIgnoreCase)) _paletteCommandStarted = true;
         if (running || _paletteCommandStarted)
         {
-            var text = Plan.InputText(s, includeStart: false, handleExists: HandleExists);
+            var text = running ? WithPick(pick => Plan.InputText(s, includeStart: false, handleExists: HandleExists, pick: pick), r => !string.IsNullOrEmpty(r)) : null;
             if (running && !string.IsNullOrEmpty(text)) _doc.SendStringToExecute(text, true, false, true);
             _paletteCommand = null;
             NextPaletteStep();
@@ -794,15 +908,77 @@ sealed class Replayer
         _win.Show("Check " + cp.Index + (cp.Pass == true ? " PASS" : " FAIL"), (cp.Note.Length > 0 ? cp.Note + "\n" : "") + string.Join("\n", all), false);
     }
 
+    // ---- the view of picks and clicks (PickReplay): shown before the step's points are typed, the person's view put back once the step has settled ----
+    bool _userStopped;   // the Stop button ended the run (the only ending, with an error, that cancels a running command)
+    Autodesk.AutoCAD.DatabaseServices.ViewTableRecord? _savedView;
+    Document? _savedViewDoc;
+
+    PickReplay NewPick()
+    {
+        var checker = new PickChecker(_doc);   // reads the view, the UCS and the pickbox once, and lists the space once, for this step
+        return new() { ViewProblem = checker.ViewProblem, PickProblem = checker.Problem };
+    }
+
+    /// <summary>Builds the text of a step with pick points and views allowed, shows the view the points need, and, when that view cannot be shown, builds the text again without
+    /// them (handles, as before): a typed point is only used with its view.</summary>
+    T WithPick<T>(Func<PickReplay?, T> build, Func<T, bool> hasText)
+    {
+        var pick = NewPick();
+        var result = build(pick);
+        if (!hasText(result)) return result;
+        if (ShowPickView(pick)) return result;
+        var again = build(null);
+        Say("\n  The recorded view could not be shown: the picks and clicks of this step use handles.\n");
+        Log.Info("replay pick: the recorded view could not be shown, handles used");
+        return again;
+    }
+
+    /// <summary>Says what the pick decisions of this step were (what fell back to a handle, and why), and shows the view the typed points need. False when a view was needed and could not be shown.</summary>
+    bool ShowPickView(PickReplay pick)
+    {
+        foreach (var n in pick.Notes) { Say($"\n  {n}\n"); Log.Info("replay pick: " + n); }
+        if (pick.View is not { } view) return true;
+        var saved = ViewControl.Apply(_doc, view);
+        if (saved == null) return false;
+        if (_savedView == null) { _savedView = saved; _savedViewDoc = _doc; }   // the person's own view, kept from the first change of the step
+        else saved.Dispose();
+        Log.Info($"replay view shown: {view}");
+        return true;
+    }
+
+    /// <summary>Puts the person's view back once the step has settled: only when the drawing is quiet (no command, no queued input, no dialog); else the saved view is kept for the next tick.
+    /// A restore that fails keeps the view here too, to be tried again after the next step settles: while the run goes on it is never handed to <see cref="ViewRestorer"/>, and it stays the
+    /// person's own view (a later step does not save over it). Only a drawing that is gone has nothing to restore.</summary>
+    void RestoreView()
+    {
+        var saved = _savedView; var doc = _savedViewDoc;
+        if (saved == null) return;
+        if (doc == null || !AcApp.DocumentManager.Cast<Document>().Contains(doc)) { _savedView = null; _savedViewDoc = null; saved.Dispose(); return; }
+        if (!ViewRestorer.Quiet(doc)) return;
+        if (ViewControl.Restore(doc, saved)) { _savedView = null; _savedViewDoc = null; Log.Info("replay view restored"); }
+        else Log.Info("the view the person had could not be put back yet, tried again after the next step");   // Restore keeps the view on failure
+    }
+
+    /// <summary>The run ends: the person's view is handed to <see cref="ViewRestorer"/>, which sets it once nothing is running, no input is queued and no dialog is open (and drops it if the
+    /// person changed the view meanwhile). A running command is cancelled (Esc Esc) only when <paramref name="cancel"/>: Stop, or an error. A "needs a person" ending, a security prompt and
+    /// the unloading of the plugin leave the command and its dialogs to the person, and nothing is sent to AutoCAD then or when the replay's drawing is not the active one.</summary>
+    void HandOffView(bool cancel)
+    {
+        var saved = _savedView; var doc = _savedViewDoc;
+        _savedView = null; _savedViewDoc = null;
+        if (saved == null) return;
+        if (ViewRestorer.IsShutdown || doc == null || !AcApp.DocumentManager.Cast<Document>().Contains(doc)) { saved.Dispose(); return; }
+        if (cancel && !ViewRestorer.Quiet(doc) && ReferenceEquals(doc, AcApp.DocumentManager.MdiActiveDocument))
+        {
+            try { doc.SendStringToExecute("\u0003\u0003", false, false, false); } catch (Exception ex) { Log.Error("cancel before restoring the view", ex); }
+        }
+        ViewRestorer.Hand(doc, saved);
+    }
+
     /// <summary>Handle fallback of a recorded selection: the handle must exist in this drawing and hold the recorded kind of object.</summary>
     bool HandleExists(string handle, string? dxf)
     {
-        try
-        {
-            if (!long.TryParse(handle, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out var v)) return false;
-            if (!_doc.Database.TryGetObjectId(new Autodesk.AutoCAD.DatabaseServices.Handle(v), out var id) || id.IsNull || id.IsErased) return false;
-            return dxf == null || dxf == "?" || string.Equals(id.ObjectClass.DxfName, dxf, StringComparison.OrdinalIgnoreCase);
-        }
+        try { return HandleIds.Exists(_doc.Database, handle, dxf); }
         catch (Exception ex) { Log.Error("handle check", ex); return false; }
     }
 
@@ -822,8 +998,9 @@ sealed class Replayer
         // interactive, and this step's command opens a dialog: hold back the answers given after the dialog opened
         var dialog = _interactive && _i + 1 < _steps.Count && _steps[_i + 1].Kind == "dialog" ? _steps[_i + 1] : null;
         string? text;
-        if (dialog != null) (text, _deferred) = Plan.InputAroundDialog(s, dialog.T, HandleExists);
-        else { text = Plan.InputText(s, handleExists: HandleExists); _deferred = null; }
+        // the view the points were made in is shown before they are typed and put back after the step; without it the step uses handles
+        if (dialog != null) (text, _deferred) = WithPick(pick => Plan.InputAroundDialog(s, dialog.T, HandleExists, pick), r => !string.IsNullOrEmpty(r.First));
+        else { text = WithPick(pick => Plan.InputText(s, handleExists: HandleExists, pick: pick), r => !string.IsNullOrEmpty(r)); _deferred = null; }
         if (string.IsNullOrEmpty(text)) { Say("\n  (nothing replayable in this step)\n"); return true; }
         if (s.Kind == "ribbon") ActivateTab(s.Tab);
         // SendStringToExecute: queued, runs as typed input when AutoCAD is next quiescent; "\n" is Enter

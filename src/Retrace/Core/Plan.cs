@@ -113,6 +113,10 @@ public static class Plan
         var modalByN = new Dictionary<long, Step>();   // event n of modal_enter / modal_title -> its dialog step
         var nativeByN = new Dictionary<long, Step>();  // event n of native_select -> its step (a native_value names the entry later)
         var list = events as IReadOnlyCollection<JsonElement> ?? events.ToList();
+        // `view_stale` events: the recorder found that the view of a pick or click had changed since it was read; the answer of that event keeps no `view` (handles)
+        var staleViews = new HashSet<long>();
+        foreach (var x in list)
+            if (Str(x, "type") == "view_stale" && x.TryGetProperty("for", out var sf) && sf.ValueKind == JsonValueKind.Number && sf.TryGetInt64(out var sn)) staleViews.Add(sn);
         var startup = DrawingOpen.StartupEvents(list);   // LISP AutoCAD ran by itself while a drawing opened: not steps
         foreach (var e in list)
         {
@@ -189,7 +193,7 @@ public static class Plan
                     // Keyword result; AutoCAD then re-asks the same message as a different kind. The typed text already answers it.
                     var prev = cur.Answers.Count > 0 ? cur.Answers[^1] : null;
                     if (prev is { Status: "Keyword" } && prev.Message == Str(e, "message") && prev.Kind != Str(e, "kind")) break;
-                    cur.Answers.Add(new Answer(Str(e, "kind") ?? "?", Str(e, "status") ?? "?", e.TryGetProperty("value", out var v) ? v.Clone() : null, Str(e, "keyword"), Str(e, "message"), Bool(e, "input"), e.TryGetProperty("seq", out var sq) && sq.ValueKind == JsonValueKind.Number ? sq.GetInt64() : null, t));
+                    cur.Answers.Add(new Answer(Str(e, "kind") ?? "?", Str(e, "status") ?? "?", e.TryGetProperty("value", out var v) ? (staleViews.Contains(Num(e, "n")) ? ViewSpec.WithoutView(v) : v.Clone()) : null, Str(e, "keyword"), Str(e, "message"), Bool(e, "input"), e.TryGetProperty("seq", out var sq) && sq.ValueKind == JsonValueKind.Number ? sq.GetInt64() : null, t));
                     break;
                 }
                 case "modal_enter":
@@ -312,7 +316,7 @@ public static class Plan
 
     /// <summary>One answer as the text to type, or null if it cannot be typed. Each returned line is followed by Enter.</summary>
     /// <param name="handleExists">optional check used only for the handle fallback: (handle, recorded dxf name) -> is it in the replay drawing</param>
-    public static List<string>? TypedLines(Answer a, Func<string, string?, bool>? handleExists = null)
+    public static List<string>? TypedLines(Answer a, Func<string, string?, bool>? handleExists = null, PickReplay? pick = null)
     {
         if (a.Status == "None") return new List<string> { "" };          // Enter
         if (a.Status == "Cancel") return new List<string> { "\u0003" };  // Esc/^C
@@ -334,14 +338,34 @@ public static class Plan
             case "string":
                 return new List<string> { v.GetString() ?? "" };
             case "entity" or "nestedEntity":
-                if (Str(v, "handle") is { } h && (handleExists == null || handleExists(h, Str(v, "dxf")))) return new List<string> { $"(handent \"{h}\")" };
+                if (Str(v, "handle") is { } h && (handleExists == null || handleExists(h, Str(v, "dxf"))))
+                {
+                    // where the object was picked matters at a command line prompt (BREAK, TRIM, FILLET, nested picks): the recorded point, with the recorded view
+                    // shown, when it still hits this object; else the handle (see PickReplay)
+                    if (pick?.EntityPoint(a.Kind == "nestedEntity", h, Str(v, "dxf"), v, a.Message ?? "") is { } pt) return new List<string> { pt };
+                    return new List<string> { $"(handent \"{h}\")" };
+                }
                 return null;
             case "selection":
                 // as it was made: the text typed for it (window corners, keywords). A mouse selection replays from its handles (checked against the
                 // drawing); its clicks only where handles cannot say what was selected (attributes of -ATTEDIT: the insert's handle repeated)
-                return SelectionReplay.TypedLines(v)
-                    ?? (SelectionReplay.UseClicks(v) ? SelectionReplay.ClickLines(v) : null)
-                    ?? SelectionReplay.HandleLines(v, handleExists);
+                if (SelectionReplay.TypedLines(v) is { } typedLines) { pick?.OtherSelection(); return typedLines; }
+                if (SelectionReplay.UseClicks(v))
+                {
+                    pick?.ClicksNeedView(v);   // the clicks are typed as before; the view they were made in is shown first where it can be
+                    pick?.OtherSelection();
+                    return SelectionReplay.ClickLines(v);
+                }
+                if (pick != null)
+                {
+                    // TRIM / EXTEND: the click picks the part. Every selection answer is counted by the pick replay (a single click in SingleClick, any other in OtherSelection)
+                    bool counted = false;
+                    var oneClick = SelectionReplay.ClickLines(v);
+                    var clickLines = oneClick == null ? null : pick.SingleClick(v, oneClick, out counted);
+                    if (!counted) pick.OtherSelection();
+                    if (clickLines != null) return clickLines;
+                }
+                return SelectionReplay.HandleLines(v, handleExists);
         }
         return null;
     }
@@ -439,9 +463,10 @@ public static class Plan
     /// AutoCAD takes a space sent through SendStringToExecute as Enter, also at a prompt that takes text (checked with SETVAR CTAB and LAYOUT Set), so a
     /// string answer such as the layout name `A-101 Plan` would arrive as `A-101` and then `Plan`; and a LISP expression typed at such a prompt is
     /// taken as text. A step with such an answer is sent as one LISP form, `(command "_LAYOUT" "Set" "A-101 Plan")`, whose strings keep their spaces.</summary>
-    public static string? InputText(Step s, bool includeStart = true, Func<string, string?, bool>? handleExists = null)
+    public static string? InputText(Step s, bool includeStart = true, Func<string, string?, bool>? handleExists = null, PickReplay? pick = null)
     {
         if (Problem(s) != null) return null;
+        if (pick != null) pick.Command = s.Command;
         var start = includeStart ? StartText(s) : "";
         if (start == null) return null;
         var answerLines = new List<(string Line, bool Expr)>();   // one Enter-terminated line each; Expr = a (handent ..) made for an entity or a selection
@@ -451,7 +476,7 @@ public static class Plan
         if (SetvarNameToType(s, effective) is { } sysvar) answerLines.Add((sysvar, false));
         foreach (var a in effective)
         {
-            var typed = TypedLines(a, handleExists);
+            var typed = TypedLines(a, handleExists, pick);
             if (typed == null) break; // stop at the first untypable answer; the rest is up to the tester
             // ^C cancels on its own; an Enter after it would repeat the command (seen replaying LINE ... Esc, R25.1)
             if (a.Status == "Cancel") { cancel = true; break; }
@@ -475,7 +500,7 @@ public static class Plan
     /// <summary>Input for a step whose command opens a dialog (recorded at <paramref name="dialogT"/>): First = the start plus the answers
     /// given before the dialog opened, After = the answers given after it (null if none). After is typed only once the dialog was
     /// confirmed; sent up front it would wait in AutoCAD's input queue and run as a command if the dialog is cancelled.</summary>
-    public static (string? First, string? After) InputAroundDialog(Step s, long dialogT, Func<string, string?, bool>? handleExists = null)
+    public static (string? First, string? After) InputAroundDialog(Step s, long dialogT, Func<string, string?, bool>? handleExists = null, PickReplay? pick = null)
     {
         Step With(IEnumerable<Answer> answers) => new()
         {
@@ -483,8 +508,11 @@ public static class Plan
             Command = s.Command, Lisp = s.Lisp, T = s.T, HadDialog = s.HadDialog, Answers = answers.ToList(),
         };
         var after = With(s.Answers.Where(a => a.T >= dialogT));
-        var rest = after.Answers.Count == 0 ? null : InputText(after, includeStart: false, handleExists: handleExists);
-        return (InputText(With(s.Answers.Where(a => a.T < dialogT)), handleExists: handleExists), string.IsNullOrEmpty(rest) ? null : rest);
+        // the answers before the dialog are built first, with the same pick replay; whatever the dialog did may have changed the drawing, so every pick after it uses handles
+        var first = InputText(With(s.Answers.Where(a => a.T < dialogT)), handleExists: handleExists, pick: pick);
+        pick?.AfterPossibleEdit();
+        var rest = after.Answers.Count == 0 ? null : InputText(after, includeStart: false, handleExists: handleExists, pick: pick);
+        return (first, string.IsNullOrEmpty(rest) ? null : rest);
     }
 
     /// <summary>Menu macro -> typed input: ^C -> Esc, ; -> Enter, \ (pause) dropped (the recorded answers fill it). Null for empty macros.</summary>

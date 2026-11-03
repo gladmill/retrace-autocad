@@ -86,6 +86,9 @@ public sealed class Recorder
     bool _inOwnCmd;
     int _ownModal;   // dialogs Retrace's own commands opened (Settings, the test picker) that are open now: not part of the test
     Matrix3d _ucs = Matrix3d.Identity;
+    ViewSpec? _view;   // the command document's active viewport view: read when a command starts and by the timer while a prompt is open (never in a prompt handler); stored with picks and clicks only while still current
+    string? _viewKey;  // ViewControl.ViewKey() at that read: a plain system variable read in the result handler tells whether the view on screen is still this one
+    Document? _cmdDocument;   // the document of the running command
     string? _cmdDoc;
     string? _lastTabId;
 
@@ -159,6 +162,7 @@ public sealed class Recorder
         var w = _w;
         if (w == null) return null;
         Log.Safe("Stop palette", () => { EmitPalette(_pal.Flush(w.ElapsedMs, drop: true)); NativeTick(true); });
+        Log.Safe("Stop views", () => CheckPendingViews(ViewControl.ViewKey()));
         // the pictures still queued (the last command's result) are taken now, and their `shot` events must land before session_end
         Log.Safe("Stop shots", () => { _shots.Pump(w.ElapsedMs, force: true); _shots.Drain(); });
         Log.Safe("Stop", () => w.Event("session_end", CurDoc()));
@@ -276,11 +280,39 @@ public sealed class Recorder
         try { return AcApp.MainWindow.Handle; } catch (Exception ex) { Log.Error("main window handle", ex); return IntPtr.Zero; }
     }
 
+    /// <summary>Timer context: while a prompt is open (a pick or a click can come), keeps the view the next pick will be made in (it may have been zoomed or panned since the command started).
+    /// The key (system variables that describe the view) is compared first; the Editor is asked only when it changed.</summary>
+    void RefreshView(string? key)
+    {
+        if (_kinds.Count == 0 || _inOwnCmd || _modalOpen > 0 || key == null) return;
+        if (_view != null && key == _viewKey) return;
+        if (_cmdDocument is { } d && ViewControl.Read(d) is { } v) { _view = v; _viewKey = key; }
+    }
+
+    // A pick or click whose answer carries `view`: the handler (no AutoCAD call there) only notes the event number and the key of the last full read. The next timer tick compares that key with
+    // the view system variables: if they differ, the view may have changed before the pick (a wheel zoom just before the click), and a `view_stale` event tells the readers to drop `view` of that answer.
+    readonly List<(int N, string? Key)> _pendingViews = new();
+
+    void NotePickView(int n, object? value)
+    {
+        if (n > 0 && value is Dictionary<string, object?> d && d.ContainsKey("view")) _pendingViews.Add((n, _viewKey));
+    }
+
+    /// <summary>Timer context (or the stop): the view of the picks since the last tick is checked against <paramref name="key"/>; with no key (unreadable) every one is marked stale.</summary>
+    void CheckPendingViews(string? key)
+    {
+        if (_pendingViews.Count == 0) return;
+        var items = _pendingViews.ToArray();
+        _pendingViews.Clear();
+        foreach (var (n, k) in items)
+            if (key == null || k == null || k != key) Emit("view_stale", _cmdDoc, ("for", n));
+    }
+
     void StartShotTimer()
     {
         if (_shotTimer != null) return;
         var t = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(120) };
-        t.Tick += (_, _) => Log.Safe("shot timer", () => { var w = _w; if (w != null) { _shots.Pump(w.ElapsedMs); _dlg.Tick(w.ElapsedMs); _pal.Tick(w.ElapsedMs); NativeTick(false); } });
+        t.Tick += (_, _) => Log.Safe("shot timer", () => { var w = _w; if (w != null) { _shots.Pump(w.ElapsedMs); _dlg.Tick(w.ElapsedMs); _pal.Tick(w.ElapsedMs); NativeTick(false); var vk = _pendingViews.Count > 0 || _kinds.Count > 0 ? ViewControl.ViewKey() : null; CheckPendingViews(vk); RefreshView(vk); } });
         _shotTimer = t;
         t.Start();
     }
@@ -506,6 +538,8 @@ public sealed class Recorder
         _cmdDoc = DocName(s as Document);
         _claimedTick = _inputTick; // the click/Enter that started the command answers no prompt
         try { if (s is Document d) _ucs = d.Editor.CurrentUserCoordinateSystem; } catch { _ucs = Matrix3d.Identity; }
+        _cmdDocument = s as Document;
+        _view = ViewControl.Read(_cmdDocument); _viewKey = _view == null ? null : ViewControl.ViewKey();
         var (origin, via) = Attribute(name);
         Emit("cmd_start", DocName(s as Document), ("command", name), ("origin", origin), ("via", via));
     });
@@ -829,10 +863,11 @@ public sealed class Recorder
                 : kind == "point" && SelectionReplay.IsSelectionInput(new Answer(kind, "", null, null, msg));
             if (!selectionInput) _sel.OtherAnswer();
             _promptKeywords.TryGetValue(kind, out var kws);
-            Emit("prompt", _cmdDoc,
+            var pn = Emit("prompt", _cmdDoc,
                 ("kind", kind), ("seq", _promptSeq.TryGetValue(kind, out var q) ? q : null), ("input", ClaimInput()), ("by", _claimedBy), ("message", msg?.Trim()), ("keywords", kws is { Length: > 0 } ? kws : null),
                 ("status", r.Status.ToString()), ("value", v),
                 ("keyword", r.Status == PromptStatus.Keyword ? r.StringResult : null));
+            NotePickView(pn, v);
         });
     }
 
@@ -862,11 +897,16 @@ public sealed class Recorder
                 // `typed`: only when the typed text alone makes the whole selection. `clicks`: the same text with the mouse clicks as point lines, when a click took part
                 // and the text makes the whole selection (no Shift / Ctrl click, no half-typed line); the replay uses it only where handles cannot express the selection.
                 if (typed != null) ((Dictionary<string, object?>)value)["typed"] = typed;
-                if (clicks != null) ((Dictionary<string, object?>)value)["clicks"] = clicks;
+                if (clicks != null)
+                {
+                    ((Dictionary<string, object?>)value)["clicks"] = clicks;
+                    if (_view != null) ((Dictionary<string, object?>)value)["view"] = _view.ToJson();   // the view the clicks were made in: the replay shows it before it types them
+                }
             }
-            Emit("prompt", _cmdDoc,
+            var sn = Emit("prompt", _cmdDoc,
                 ("kind", "selection"), ("input", ClaimInput()), ("by", _claimedBy), ("message", msg?.Trim()), ("keywords", kws is { Length: > 0 } ? kws : null),
                 ("status", r.Status.ToString()), ("value", value));
+            NotePickView(sn, value);
         });
     }
 
@@ -878,20 +918,25 @@ public sealed class Recorder
     static string HandleOf(ObjectId id) { try { return id.Handle.Value.ToString("X", CultureInfo.InvariantCulture); } catch { return "?"; } }
     static string DxfOf(ObjectId id) { try { return id.ObjectClass.DxfName; } catch { return "?"; } }
 
-    static object Entity(ObjectId id, Point3d picked) => new Dictionary<string, object?>
+    /// <summary>An entity answer: the object, the pick point (as AutoCAD reports it) and the view it was picked in.</summary>
+    object Entity(ObjectId id, Point3d picked)
     {
-        ["handle"] = id.IsNull ? null : HandleOf(id),
-        ["dxf"] = id.IsNull ? null : DxfOf(id),
-        ["pick"] = Pt(picked),
-    };
+        var d = new Dictionary<string, object?>
+        {
+            ["handle"] = id.IsNull ? null : HandleOf(id),
+            ["dxf"] = id.IsNull ? null : DxfOf(id),
+            ["pick"] = Pt(picked),
+        };
+        if (_view != null) d["view"] = _view.ToJson();
+        return d;
+    }
 
     // ---- marks -------------------------------------------------------------------------------
 
-    /// <summary>Writes a checkpoint. Its automatic name (see <see cref="Checkpoints.AutoName"/>) is stored as `autoName`, and as the `note`
-    /// unless <paramref name="note"/> gives one. Returns the name used, or null when the event could not be written (nothing counted).</summary>
-    /// <param name="at">what the checkpoint shortcut found at the cursor (<see cref="CursorContext"/>): names the checkpoint before the last action does</param>
-    /// <summary>The behavior snapshot of the drawing (command / timer context only). Null when it could not be read at all.</summary>
-    public BehaviorSnapshot? Capture(Document doc, RetraceSettings settings) => BehaviorCapture.Read(doc, settings);
+    /// <summary>The behavior snapshot of the drawing (command / timer context only). Null when it could not be read at all. The opt-in behaviors
+    /// are in it only when the settings ask for them (<see cref="RetraceSettings.BehaviorsToRecord"/>).</summary>
+    public BehaviorSnapshot? Capture(Document doc, RetraceSettings settings) =>
+        BehaviorCapture.Read(doc, settings, settings.BehaviorsToRecord());
 
     /// <summary>Snapshot files are a convenience for the Checkpoints window: a failure is logged and never stops the recording.</summary>
     static void WriteSnapshot(BehaviorSnapshot snap, string path)
@@ -899,6 +944,9 @@ public sealed class Recorder
         if (!snap.Write(path, out var err)) Log.Info($"snapshot not written ({path}): {err}");
     }
 
+    /// <summary>Writes a checkpoint. Its automatic name (see <see cref="Checkpoints.AutoName"/>) is stored as `autoName`, and as the `note`
+    /// unless <paramref name="note"/> gives one. Returns the name used, or null when the event could not be written (nothing counted).</summary>
+    /// <param name="at">what the checkpoint shortcut found at the cursor (<see cref="CursorContext"/>): names the checkpoint before the last action does</param>
     /// <param name="doc">the document the checkpoint is for; its behaviors are captured now (command / timer context) and compared with ITS previous
     /// snapshot (a drawing the recording has not seen before has none: its first checkpoint then has empty `checks`). Null = no checks.</param>
     public string? Mark(string? note, DrawingDigest? state, Checkpoints.CheckpointContext? at = null, Document? doc = null)
@@ -915,7 +963,7 @@ public sealed class Recorder
         if (snapshot != null)
         {
             _snaps.TryGetValue(doc!, out var previous);
-            checks = settings.AutoDetectBehavior ? BehaviorChecks.AutoPick(previous, snapshot) : BehaviorChecks.ManualPick(settings.EffectiveCheckBehaviors(), snapshot);
+            checks = settings.AutoDetectBehavior ? BehaviorChecks.AutoPick(previous, snapshot, m => Log.Info(m)) : BehaviorChecks.ManualPick(settings.EffectiveCheckBehaviors(), snapshot);
         }
         var n = Emit("mark", CurDoc(), ("note", name), ("autoName", auto), ("state", state), ("checks", checks), ("near", at?.Description));
         if (n == 0) return null;

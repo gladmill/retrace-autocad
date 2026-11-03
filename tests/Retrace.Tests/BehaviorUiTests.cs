@@ -14,11 +14,25 @@ public class BehaviorUiTests : IDisposable
     // ---- Settings ----
 
     [Fact]
+    public void Record_ticks_come_from_recordBehaviors_in_both_modes_and_the_tip_names_them()
+    {
+        foreach (var auto in new[] { true, false })
+        {
+            var rows = BehaviorSettingsModel.Rows(auto, new[] { "layers", "paperspace" }, new[] { "APPEARANCE", "layers" });
+            Assert.Equal(new[] { "appearance" }, rows.Where(r => r.Recorded).Select(r => r.Id));
+            Assert.Equal(new[] { "paperspace" }, rows.Where(r => r.Ticked && r.Recordable).Select(r => r.Id));   // check tick is its own list
+        }
+        Assert.Contains("Record", CheckpointChecksEditor.NotRecordedTip);
+    }
+
+    [Fact]
     public void Settings_rows_list_every_behavior_and_are_disabled_while_auto_detect_is_on()
     {
         var on = BehaviorSettingsModel.Rows(true, new[] { "layers" });
         Assert.Equal(BehaviorCatalog.All.Select(b => b.Id), on.Select(r => r.Id));
         Assert.All(on, r => { Assert.False(r.Enabled); Assert.False(string.IsNullOrWhiteSpace(r.Description)); });
+        Assert.Equal(new[] { "appearance", "paperspace" }, on.Where(r => r.Recordable).Select(r => r.Id));   // the opt-in rows have a separate Record tick ...
+        Assert.False(BehaviorSettingsModel.CheckEnabled(true)); Assert.True(BehaviorSettingsModel.CheckEnabled(false));   // ... and one predicate for the check tick
         Assert.Equal(new[] { "layers" }, on.Where(r => r.Ticked).Select(r => r.Id));
 
         var off = BehaviorSettingsModel.Rows(false, new[] { "LAYERS", "sysvars", "bogus", "layers" });
@@ -128,6 +142,16 @@ public class BehaviorUiTests : IDisposable
 
     static CheckpointChecksEditor Editor(BehaviorChecks c, BehaviorSnapshot? snap, Action? onLoad = null) =>
         new(c, () => { onLoad?.Invoke(); return snap; });
+
+    [Fact]
+    public void The_record_tip_is_for_an_opt_in_behavior_missing_from_an_existing_snapshot_only()
+    {
+        var withSnap = Editor(AutoLayers(), Snap()).Rows();
+        Assert.Equal(CheckpointChecksEditor.NotRecordedTip, withSnap.Single(r => r.Id == "appearance").Tooltip);
+        Assert.Equal(CheckpointChecksEditor.NoSnapshotTip, withSnap.Single(r => r.Id == "views").Tooltip);   // not opt-in
+        var noFile = Editor(AutoLayers(), null).Rows();
+        Assert.Equal(CheckpointChecksEditor.NoSnapshotTip, noFile.Single(r => r.Id == "appearance").Tooltip);   // no snapshot at all: the general tip
+    }
 
     [Fact]
     public void Rows_show_verified_behaviors_with_their_source_and_disable_those_without_stored_data()

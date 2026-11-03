@@ -389,7 +389,7 @@ public class BehaviorChecksTests : IDisposable
     [Fact]
     public void Catalog_ids_are_the_stable_ones()
     {
-        Assert.Equal(new[] { "layers", "layouts", "viewports", "xdata", "xdicts", "symbols", "sysvars", "views", "psattributes" }, BehaviorCatalog.All.Select(b => b.Id));
+        Assert.Equal(new[] { "layers", "appearance", "layouts", "paperspace", "viewports", "xdata", "xdicts", "symbols", "sysvars", "views", "psattributes" }, BehaviorCatalog.All.Select(b => b.Id));
         Assert.All(BehaviorCatalog.All, b => { Assert.NotEmpty(b.Label); Assert.NotEmpty(b.Description); });
     }
 
@@ -473,5 +473,199 @@ public class BehaviorChecksTests : IDisposable
         foreach (var n in new[] { "ORTHOMODE", "SNAPMODE", "GRIDMODE", "CTAB", "TILEMODE", "UCSNAME", "POLARMODE", "OSMODE", "DYNMODE", "LWDISPLAY", "ANNOALLVISIBLE" })
             Assert.DoesNotContain(n, SysVarDefaults.Default);
         Assert.Contains("CLAYER", SysVarDefaults.Default);
+    }
+
+    // ---- appearance and paperspace ----
+
+    static BehaviorKeys.Look Look(string color = "ByLayer", string linetype = "ByLayer", string lw = "ByLayer", string tr = "ByLayer", string? plot = null) =>
+        new("WALLS", color, linetype, "1", lw, tr, plot, "7", "Continuous", "0.25", "0");
+
+    [Fact]
+    public void Appearance_value_resolves_only_what_is_bylayer()
+    {
+        Assert.Equal("layer=WALLS;color=ByLayer;linetype=ByLayer;ltscale=1;lineweight=ByLayer;transparency=ByLayer;rcolor=7;rlinetype=Continuous;rlineweight=0.25;rtransparency=0",
+            BehaviorKeys.AppearanceValue(Look()));
+        Assert.Equal("layer=WALLS;color=1;linetype=DASHED;ltscale=1;lineweight=0.5;transparency=127;plotstyle=Thin",
+            BehaviorKeys.AppearanceValue(Look("1", "DASHED", "0.5", "127", "Thin")));
+        Assert.Equal("layer=WALLS;color=ByBlock;linetype=ByLayer;ltscale=1;lineweight=ByLayer;transparency=ByLayer;rlinetype=Continuous;rlineweight=0.25;rtransparency=0",
+            BehaviorKeys.AppearanceValue(Look("ByBlock")));
+    }
+
+    [Fact]
+    public void Layerless_key_drops_the_layer_only_when_it_matches()
+    {
+        Assert.Equal("LINE|0,0,0-5,0,0|", BehaviorKeys.LayerlessKey("LINE|WALLS|0,0,0-5,0,0|", "WALLS"));
+        Assert.Equal("LINE|WALLS|x|", BehaviorKeys.LayerlessKey("LINE|WALLS|x|", "DIM"));
+        // the dxf part is whatever the key starts with: a dimension subclass or a block-reference subclass keyed as INSERT
+        Assert.Equal("ARC_DIMENSION|at=1,1,0|text=", BehaviorKeys.LayerlessKey("ARC_DIMENSION|DIM|at=1,1,0|text=", "DIM"));
+        Assert.Equal("INSERT|at=0,0,0|block=B", BehaviorKeys.LayerlessKey("INSERT|0|at=0,0,0|block=B", "0"));
+        Assert.Equal("LINE|WALLS2|x", BehaviorKeys.LayerlessKey("LINE|WALLS2|x", "WALLS"));   // a layer that only starts like it
+        Assert.Equal("nobar", BehaviorKeys.LayerlessKey("nobar", "0"));
+        Assert.Equal("ByLayer", BehaviorKeys.TransparencyText(false, 0, false));
+        Assert.Equal("ByBlock", BehaviorKeys.TransparencyText(false, 0, true));
+        Assert.Equal("127", BehaviorKeys.TransparencyText(true, 127, false));
+        Assert.Null(BehaviorKeys.NamedPlotStyle("ByLayer"));
+        Assert.Null(BehaviorKeys.NamedPlotStyle(""));
+        Assert.Equal("Thin", BehaviorKeys.NamedPlotStyle("Thin"));
+    }
+
+    [Fact]
+    public void Appearance_difference_names_the_entity_and_the_field()
+    {
+        const string id = "PS:A-101 Plan:LINE|0,0,0-5,0,0|#3";
+        var was = BehaviorKeys.AppearanceValue(Look("1"));
+        var now = BehaviorKeys.AppearanceValue(Look("3"));
+        var checks = BehaviorChecks.ManualPick(new[] { "appearance" }, Snap(("appearance", new[] { (id, was) })));
+        var lines = BehaviorChecks.Compare(checks, Snap(("appearance", new[] { (id, now) })));
+        Assert.Equal(new[] { $"appearance {id} color: expected 1, got 3" }, lines);
+    }
+
+    [Fact]
+    public void Paperspace_difference_names_the_entity()
+    {
+        var checks = BehaviorChecks.ManualPick(new[] { "paperspace" }, Snap(("paperspace", new[] { ("PS:A:LINE|0|0,0,0-1,0,0|", "") })));
+        Assert.Empty(BehaviorChecks.Compare(checks, Snap(("paperspace", new[] { ("PS:A:LINE|0|0,0,0-1,0,0|", "") }))));
+        var lines = BehaviorChecks.Compare(checks, Snap(("paperspace", new[] { ("PS:A:LINE|0|0,0,0-1,0,0.5|", "") })));
+        Assert.Equal(new[] { "paperspace PS:A:LINE|0|0,0,0-1,0,0| missing", "paperspace PS:A:LINE|0|0,0,0-1,0,0.5| unexpected" }, lines);
+    }
+
+    [Fact]
+    public void Checks_recorded_before_the_new_behaviors_ignore_them()
+    {
+        var checks = BehaviorChecks.ManualPick(new[] { "layers" }, Snap(("layers", new[] { ("0", Layer()) })));
+        var actual = Snap(("layers", new[] { ("0", Layer()) }), ("appearance", new[] { ("MS:x", "layer=0") }), ("paperspace", new[] { ("PS:a:y", "") }));
+        Assert.Empty(BehaviorChecks.Compare(checks, actual));
+        var prev = Snap(("layers", new[] { ("0", Layer()) }));
+        Assert.True(BehaviorChecks.AutoPick(prev, actual).IsEmpty);   // not captured before: not "everything added"
+        Assert.True(BehaviorChecks.AutoPick(actual, actual).IsEmpty);
+        var changed = Snap(("appearance", new[] { ("MS:x", "layer=1") }), ("paperspace", new[] { ("PS:a:y", ""), ("PS:a:z", "") }));
+        Assert.Equal(new[] { "appearance", "paperspace" }, BehaviorChecks.AutoPick(actual, changed).Behaviors.Keys.OrderBy(k => k));
+    }
+
+    // ---- auto pick of appearance, opt-in capture ----
+
+    static string Ap(string layer = "WALLS", string color = "ByLayer", string rcolor = "1") =>
+        $"layer={layer};color={color};linetype=ByLayer;ltscale=1;lineweight=ByLayer;transparency=ByLayer" + (color == "ByLayer" ? $";rcolor={rcolor}" : "") + ";rlinetype=Continuous;rlineweight=0.25;rtransparency=0";
+
+    static string Own(string layer = "WALLS", string color = "ByLayer") => BehaviorKeys.OwnLook(Ap(layer, color));
+
+    [Fact]
+    public void Own_look_drops_the_resolved_fields_only()
+    {
+        Assert.Equal("layer=WALLS;color=ByLayer;linetype=ByLayer;ltscale=1;lineweight=ByLayer;transparency=ByLayer", Own());
+        Assert.Equal("plain text", BehaviorKeys.OwnLook("plain text"));
+    }
+
+    [Fact]
+    public void Auto_pick_of_appearance_keeps_added_and_changed_own_look_and_leaves_the_layers_alone()
+    {
+        const string e1 = "MS:LINE|0,0,0-5,0,0|", e2 = "MS:LINE|0,5,0-5,5,0|";
+        var before = Snap(("appearance", new[] { (e1, Ap()), (e2, Ap()) }));
+        // the layer's color changed: every ByLayer entity's rcolor differs and nothing else: layers owns it
+        Assert.True(BehaviorChecks.AutoPick(before, Snap(("appearance", new[] { (e1, Ap(rcolor: "3")), (e2, Ap(rcolor: "3")) }))).IsEmpty);
+        // a new red hatch: an added item, kept with its own fields only
+        const string hatch = "MS:HATCH|0,0,0-4,4,0|";
+        var drawn = Snap(("appearance", new[] { (e1, Ap()), (e2, Ap()), (hatch, Ap(color: "1")) }));
+        var picked = BehaviorChecks.AutoPick(before, drawn).Behaviors["appearance"];
+        Assert.Equal(new[] { hatch }, picked.Items.Keys);
+        Assert.Equal(Own(color: "1"), picked.Items[hatch]);
+        Assert.Equal("auto", picked.Source); Assert.Equal("items", picked.Scope);
+        // a MOVE: the old id is removed (dropped), the new id is added (small item, own fields)
+        const string moved = "MS:LINE|0,6,0-5,6,0|";
+        var move = BehaviorChecks.AutoPick(before, Snap(("appearance", new[] { (e1, Ap()), (moved, Ap()) }))).Behaviors["appearance"];
+        Assert.Equal(new[] { moved }, move.Items.Keys);
+        Assert.DoesNotContain(move.Items, kv => kv.Value == null);
+        // MOVE plus color change: picked with the new color
+        var both = BehaviorChecks.AutoPick(before, Snap(("appearance", new[] { (e1, Ap()), (moved, Ap(color: "1")) }))).Behaviors["appearance"];
+        Assert.Equal(Own(color: "1"), both.Items[moved]);
+        // an entity's own look changed in place (layer, color): picked, own fields only
+        var own = BehaviorChecks.AutoPick(before, Snap(("appearance", new[] { (e1, Ap(color: "1")), (e2, Ap(layer: "DIM")) }))).Behaviors["appearance"];
+        Assert.Equal(new[] { e1, e2 }, own.Items.Keys);
+        Assert.Equal(Own(layer: "DIM"), own.Items[e2]);
+        // only a removal: nothing
+        Assert.True(BehaviorChecks.AutoPick(before, Snap(("appearance", new[] { (e1, Ap()) }))).IsEmpty);
+        // manual picks are unchanged: the whole map with the resolved fields
+        Assert.Equal(Ap(), BehaviorChecks.ManualPick(new[] { "appearance" }, before).Behaviors["appearance"].Items[e1]);
+        // paperspace still owns added / removed
+        var ps0 = Snap(("paperspace", new[] { ("PS:a:x", "") }));
+        var ps1 = Snap(("paperspace", new[] { ("PS:a:y", "") }));
+        Assert.Equal(new[] { "PS:a:x", "PS:a:y" }, BehaviorChecks.AutoPick(ps0, ps1).Behaviors["paperspace"].Items.Keys);
+    }
+
+    [Fact]
+    public void An_auto_pick_of_too_many_appearance_items_leaves_appearance_out_and_says_so()
+    {
+        BehaviorSnapshot Many(int n) => Snap(("appearance", Enumerable.Range(0, n).Select(k => ($"MS:LINE|{k},0,0-{k},1,0|", Ap())).ToArray()), ("paperspace", new[] { ("PS:a:x", "") }));
+        var before = Snap(("appearance", Array.Empty<(string, string)>()), ("paperspace", Array.Empty<(string, string)>()));
+        var logged = new List<string>();
+        var atLimit = BehaviorChecks.AutoPick(before, Many(BehaviorChecks.MaxAutoAppearanceItems), logged.Add);
+        Assert.Equal(BehaviorChecks.MaxAutoAppearanceItems, atLimit.Behaviors["appearance"].Items.Count);
+        Assert.Empty(logged);
+        var over = BehaviorChecks.AutoPick(before, Many(BehaviorChecks.MaxAutoAppearanceItems + 1), logged.Add);
+        Assert.False(over.Behaviors.ContainsKey("appearance"));
+        Assert.True(over.Behaviors.ContainsKey("paperspace"));   // the other behaviors are unaffected
+        Assert.Equal(new[] { "appearance: 2001 items over the 2000 limit, not checked at this checkpoint" }, logged);
+        // a manual pick has no limit
+        Assert.Equal(2001, BehaviorChecks.ManualPick(new[] { "appearance" }, Many(2001)).Behaviors["appearance"].Items.Count);
+    }
+
+    [Fact]
+    public void An_auto_picked_appearance_item_compares_its_own_fields_and_ignores_the_layers()
+    {
+        const string id = "MS:CIRCLE|0,0,0-4,4,0|";
+        var recorded = BehaviorChecks.AutoPick(Snap(("appearance", new[] { ("MS:x", Ap()) })), Snap(("appearance", new[] { ("MS:x", Ap()), (id, Ap(color: "1")) })));
+        // replayed the same: pass. The layer color is not in the recording, so a layer change later does not fail it
+        Assert.Empty(BehaviorChecks.Compare(recorded, Snap(("appearance", new[] { (id, Ap(color: "1")) }))));
+        Assert.Empty(BehaviorChecks.Compare(recorded, Snap(("appearance", new[] { (id, Ap(color: "1", rcolor: "9")) }))));
+        // replayed ByLayer (the circle came out ByLayer instead of red): fails on color, and the resolved fields the capture now has are no extra line
+        var lines = BehaviorChecks.Compare(recorded, Snap(("appearance", new[] { (id, Ap()) })));
+        Assert.Equal(new[] { $"appearance {id} color: expected 1, got ByLayer" }, lines);
+        // a manual map that has a resolved field still compares it; if the capture lacks it that is a plain difference
+        var manual = BehaviorChecks.ManualPick(new[] { "appearance" }, Snap(("appearance", new[] { (id, Ap()) })));
+        Assert.Equal(new[] { $"appearance {id} rcolor: expected 1, got 9" }, BehaviorChecks.Compare(manual, Snap(("appearance", new[] { (id, Ap(rcolor: "9")) }))));
+        Assert.Contains($"appearance {id} color: expected ByLayer, got 1", BehaviorChecks.Compare(manual, Snap(("appearance", new[] { (id, Ap(color: "1")) }))));
+        Assert.Contains($"appearance {id} rcolor: expected 1, got (none)", BehaviorChecks.Compare(manual, Snap(("appearance", new[] { (id, Ap(color: "1")) }))));
+    }
+
+    [Fact]
+    public void The_opt_in_behaviors_are_recorded_only_when_asked_for()
+    {
+        var none = BehaviorCatalog.ForRecording(Array.Empty<string>(), Array.Empty<string>());
+        Assert.DoesNotContain("appearance", none);
+        Assert.DoesNotContain("paperspace", none);
+        Assert.Equal(BehaviorCatalog.All.Count - 2, none.Count);
+        var one = BehaviorCatalog.ForRecording(new[] { "appearance" }, Array.Empty<string>());
+        Assert.Contains("appearance", one);
+        Assert.DoesNotContain("paperspace", one);
+        Assert.Equal(BehaviorCatalog.All.Count, BehaviorCatalog.ForRecording(new[] { "paperspace" }, new[] { "appearance" }).Count);
+        Assert.Contains("Record", BehaviorCatalog.Find("paperspace")!.Description);
+        Assert.Contains("Record", BehaviorCatalog.Find("appearance")!.Description);
+    }
+
+    [Fact]
+    public void Settings_decide_what_is_recorded_separately_from_what_is_checked()
+    {
+        // default: nothing opt-in, either mode
+        Assert.DoesNotContain("appearance", new RetraceSettings().BehaviorsToRecord());
+        Assert.Empty(new RetraceSettings().RecordBehaviors);
+        // record ticked: recorded in auto mode, where checkBehaviors is not what is verified
+        var auto = new RetraceSettings { AutoDetectBehavior = true, RecordBehaviors = new() { "Appearance", "layers", "bogus", "appearance" } };
+        Assert.Equal(new[] { "appearance" }, auto.EffectiveRecordBehaviors());
+        Assert.Contains("appearance", auto.BehaviorsToRecord());
+        Assert.DoesNotContain("paperspace", auto.BehaviorsToRecord());
+        // a name in checkBehaviors does not record in auto mode ...
+        var autoCheck = new RetraceSettings { AutoDetectBehavior = true, CheckBehaviors = new() { "paperspace" } };
+        Assert.DoesNotContain("paperspace", autoCheck.BehaviorsToRecord());
+        // ... but in manual mode it does (it could not be verified otherwise)
+        var manual = new RetraceSettings { AutoDetectBehavior = false, CheckBehaviors = new() { "paperspace" } };
+        Assert.Contains("paperspace", manual.BehaviorsToRecord());
+        Assert.DoesNotContain("appearance", manual.BehaviorsToRecord());
+        // an old settings file has no recordBehaviors: empty
+        var old = System.Text.Json.JsonSerializer.Deserialize<RetraceSettings>("{\"autoDetectBehavior\":true,\"checkBehaviors\":[\"layers\"]}")!;
+        Assert.Empty(old.EffectiveRecordBehaviors());
+        // round trip and clone
+        var s = new RetraceSettings { RecordBehaviors = new() { "paperspace" } };
+        Assert.Equal(new[] { "paperspace" }, System.Text.Json.JsonSerializer.Deserialize<RetraceSettings>(System.Text.Json.JsonSerializer.Serialize(s))!.RecordBehaviors);
+        Assert.Equal(new[] { "paperspace" }, s.Clone().RecordBehaviors);
     }
 }

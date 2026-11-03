@@ -109,4 +109,63 @@ public static class BehaviorKeys
 
     /// <summary>Names sorted ordinally and joined by `,` (frozen layers of a viewport).</summary>
     public static string SortedList(IEnumerable<string> names) => string.Join(",", names.OrderBy(n => n, StringComparer.Ordinal));
+
+    // ---- appearance (behavior `appearance`) ----
+
+    public const string ByLayer = "ByLayer", ByBlock = "ByBlock";
+
+    /// <summary>The entity key without its layer: `dxf|rest` for a key made by <c>DrawingDigest.Key / PlacedKey</c> (`dxf|layer|rest`). The
+    /// `appearance` behavior names an entity with this, so a layer change is a changed field (`layer: expected A, got B`) and not an entity
+    /// that vanished and another that appeared. The dxf part is whatever the key starts with (a DXF name has no `|`), so a block-reference
+    /// subclass keyed as INSERT works too. A key whose second part is not `layer` is returned unchanged.</summary>
+    public static string LayerlessKey(string key, string layer)
+    {
+        var bar = key.IndexOf('|');
+        if (bar < 0) return key;
+        var rest = key.AsSpan(bar + 1);
+        return rest.StartsWith(layer, StringComparison.Ordinal) && rest.Length > layer.Length && rest[layer.Length] == '|'
+            ? string.Concat(key.AsSpan(0, bar + 1), rest[(layer.Length + 1)..])
+            : key;
+    }
+
+    /// <summary>The look of one entity: its own values, and what its layer gives (used only for the properties set to ByLayer).</summary>
+    public sealed record Look(string Layer, string Color, string Linetype, string LtScale, string Lineweight, string Transparency, string? PlotStyle,
+        string LayerColor, string LayerLinetype, string LayerLineweight, string LayerTransparency);
+
+    /// <summary>The canonical value of an `appearance` item, fields in this order: `layer`, `color`, `linetype`, `ltscale`, `lineweight`,
+    /// `transparency`, `plotstyle` (only for a named plot style), then `rcolor`, `rlinetype`, `rlineweight`, `rtransparency` (the layer's value,
+    /// only for a property that is ByLayer, so an explicit value is not repeated). ByBlock is not resolved: it depends on the insert.</summary>
+    public static string AppearanceValue(Look l)
+    {
+        var f = new List<(string, string?)>
+        {
+            ("layer", l.Layer), ("color", l.Color), ("linetype", l.Linetype), ("ltscale", l.LtScale), ("lineweight", l.Lineweight),
+            ("transparency", l.Transparency),
+        };
+        if (!string.IsNullOrEmpty(l.PlotStyle)) f.Add(("plotstyle", l.PlotStyle));
+        if (l.Color == ByLayer) f.Add(("rcolor", l.LayerColor));
+        if (l.Linetype == ByLayer) f.Add(("rlinetype", l.LayerLinetype));
+        if (l.Lineweight == ByLayer) f.Add(("rlineweight", l.LayerLineweight));
+        if (l.Transparency == ByLayer) f.Add(("rtransparency", l.LayerTransparency));
+        return CanonicalValue.Join(f);
+    }
+
+    /// <summary>The resolved fields of an `appearance` value: what the layer gives, owned by the `layers` behavior.</summary>
+    public static bool IsResolvedField(string name) => name is "rcolor" or "rlinetype" or "rlineweight" or "rtransparency";
+
+    /// <summary>An `appearance` value without its resolved (`r...`) fields: the entity's own look. Text that is not a canonical value is returned unchanged.</summary>
+    public static string OwnLook(string value) =>
+        CanonicalValue.TryParse(value, out var f) && f != null ? CanonicalValue.Join(f.Where(x => !IsResolvedField(x.Name)).Select(x => (x.Name, (string?)x.Value))) : value;
+
+    /// <summary>A plot style name worth recording: not empty and not an AutoCAD default (`ByLayer`, `ByColor`); null otherwise.</summary>
+    public static string? NamedPlotStyle(string? name) =>
+        string.IsNullOrEmpty(name) || name.Equals("ByLayer", StringComparison.OrdinalIgnoreCase) || name.Equals("ByColor", StringComparison.OrdinalIgnoreCase) ? null : name;
+
+    /// <summary>The Transparency text used by the layers behavior and `appearance`: the alpha (0-255), `ByBlock` or `ByLayer`.</summary>
+    public static string TransparencyText(bool byAlpha, byte alpha, bool byBlock) =>
+        byAlpha ? alpha.ToString(CultureInfo.InvariantCulture) : byBlock ? ByBlock : ByLayer;
+
+    /// <summary>Most items `appearance` or `paperspace` will hold; a drawing with more leaves the behavior out ("could not be read", logged once)
+    /// so a snapshot stays a few tens of megabytes.</summary>
+    public const int MaxEntityItems = 100_000;
 }

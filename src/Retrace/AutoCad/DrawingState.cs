@@ -58,10 +58,21 @@ static class DrawingState
 
     /// <summary>Reads layer properties inside one transaction. A property that throws is left out (null) and never fails the digest;
     /// the first failure of a digest read goes to retrace.log. Linetype names are cached by id (one open per linetype).</summary>
-    sealed class LayerReader(Transaction tr)
+    internal sealed class LayerReader(Transaction tr)
     {
         readonly Dictionary<ObjectId, string> linetypes = new();
         bool logged;
+
+        /// <summary>A linetype's name, cached by id (one open per linetype). A null id (a proxy entity, an entity with no linetype record) is "",
+        /// as <c>BehaviorCapture.NameOf</c> does, so one such entity cannot make the whole `appearance` behavior unreadable.
+        /// (AutoCAD objects: not reachable from the unit tests.)</summary>
+        public string LinetypeName(ObjectId id)
+        {
+            if (id.IsNull) return "";
+            if (!linetypes.TryGetValue(id, out var name))
+                linetypes[id] = name = ((LinetypeTableRecord)tr.GetObject(id, OpenMode.ForRead)).Name;
+            return name;
+        }
 
         void Fail(string what, Exception ex)
         {
@@ -84,10 +95,7 @@ static class DrawingState
             catch (Exception ex) { Fail("color", ex); }
             try
             {
-                var id = ltr.LinetypeObjectId;
-                if (!linetypes.TryGetValue(id, out var name))
-                    linetypes[id] = name = ((LinetypeTableRecord)tr.GetObject(id, OpenMode.ForRead)).Name;
-                p.Linetype = name;
+                p.Linetype = LinetypeName(ltr.LinetypeObjectId);
             }
             catch (Exception ex) { Fail("linetype", ex); }
             try { p.Lineweight = DrawingDigest.LineweightText((int)ltr.LineWeight); } catch (Exception ex) { Fail("lineweight", ex); }

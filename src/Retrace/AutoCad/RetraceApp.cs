@@ -30,6 +30,7 @@ public sealed class RetraceApp : IExtensionApplication
     public void Terminate()
     {
         // each step on its own: one failing must not skip the rest
+        Log.Safe("Terminate: view restorer", ViewRestorer.Shutdown);   // first: a replay that ends below must not send input or start a timer
         Log.Safe("Terminate: shutdown", () => Commands.Instance.Shutdown());
         Log.Safe("Terminate: palette", () => GuidePalette.Dispose());
         Log.Safe("Terminate: ribbon", () => RibbonInstaller.Uninstall());
@@ -79,6 +80,8 @@ public sealed class RetraceApp : IExtensionApplication
     [CommandMethod("RETRACEOPEN")] public static void OpenTestWindow() => Run("RETRACEOPEN", Commands.Instance.OpenTest);
     [CommandMethod("RETRACETDOC")] public static void TrainingDoc() => Run("RETRACETDOC", Commands.Instance.Tdoc);
     [CommandMethod("-RETRACETDOC")] public static void TrainingDocCommandLine() => Run("-RETRACETDOC", Commands.Instance.TdocCommandLine);
+    [CommandMethod("RETRACESUITE")] public static void Suite() => Run("RETRACESUITE", Commands.Instance.Suite);
+    [CommandMethod("-RETRACESUITE")] public static void SuiteCommandLine() => Run("-RETRACESUITE", Commands.Instance.SuiteCommandLine);
     [CommandMethod("RETRACEMAP")] public static void MapRibbon() => Run("RETRACEMAP", Commands.Instance.Map);
     [CommandMethod("-RETRACEMAP")] public static void MapRibbonCommandLine() => Run("-RETRACEMAP", Commands.Instance.MapCommandLine);
     [CommandMethod("RETRACEFOLDER")] public static void Folder() => Run("RETRACEFOLDER", Commands.Instance.Folder);
