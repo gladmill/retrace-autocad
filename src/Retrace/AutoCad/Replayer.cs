@@ -15,7 +15,8 @@ public enum ReplayMode { Auto, Step }
 /// Replays a recorded session. Design: a DispatcherTimer state machine on the UI thread (never blocks AutoCAD).
 /// Each tick, once AutoCAD has settled (no command running, no modal dialog, no queued input), the next step runs:
 ///  - ribbon step with no recorded answers: find the RibbonItem by Id and run its CommandHandler (what a click does);
-///    if the item is gone or has no handler, send the recorded macro instead;
+///    if the item is gone or has no handler, or the click starts no command within 2 s, send the recorded macro instead
+///    (the log says which, and names the item's type and handler);
 ///  - ribbon/command/lisp step WITH recorded answers: one SendStringToExecute with "command + answers" so the answers
 ///    reach the prompts in order (typed input is the only input path that is deterministic and needs no prompt hooks);
 ///  - dialog step: tell the user to fill the dialog in; continue after LeaveModal;
@@ -61,6 +62,7 @@ sealed class Replayer
     int _modalsSeen;
     int _modalsAtStepStart;
     bool _pendingStart;
+    Step? _clicked; int _clickedIndex;   // the ribbon step whose live item was just invoked (and its 1-based index): if no command starts within 2 s, its macro is typed instead
     DateTime _notBefore = DateTime.MinValue, _sentAt, _stepShownAt;
     bool _shown;
     bool _alert;
@@ -378,7 +380,7 @@ sealed class Replayer
     void OnCmdStart(object? s, CommandEventArgs e)
     {
         if (OwnCommands.IsOwnCommand(e.GlobalCommandName)) return;
-        _pendingStart = false;
+        _pendingStart = false; _clicked = null;
         _lastStarted = e.GlobalCommandName; _lastStartedAt = DateTime.Now;
         // a command without prompts can start and end between two ticks: remember that the palette button's command started
         if (_paletteCommand != null && string.Equals(e.GlobalCommandName, _paletteCommand.Command, StringComparison.OrdinalIgnoreCase)) _paletteCommandStarted = true;
@@ -389,6 +391,7 @@ sealed class Replayer
         if (_modalDepth > 0) return false;
         if (DateTime.Now < _notBefore) return false;
         if (_pendingStart && (DateTime.Now - _sentAt).TotalSeconds < 2) return false; // wait for the command to actually start
+        if (_pendingStart && _clicked is { } clicked) { _clicked = null; if (TypeAfterSilentClick(clicked)) return false; }
         _pendingStart = false;
         var inProgress = _doc.CommandInProgress;
         // our own RETRACEREPLAY command has already returned (the timer runs after it), so anything in progress is replayed work
@@ -994,7 +997,14 @@ sealed class Replayer
             Finish(false, false, $"needs a person: {problem}");
             return false;
         }
-        if (s.Kind == "ribbon" && s.Answers.Count == 0 && !s.HadDialog && TryClick(s)) { _pendingStart = true; _sentAt = DateTime.Now; return true; }
+        _clicked = null;
+        if (s.Kind == "ribbon" && s.Answers.Count == 0 && !s.HadDialog)
+        {
+            // armed before the handler runs: a command it starts at once clears this in OnCmdStart and is neither waited for nor typed again
+            _clicked = s; _clickedIndex = _i + 1; _pendingStart = true; _sentAt = DateTime.Now; _deferred = null;
+            if (TryClick(s)) return true;
+            _clicked = null; _pendingStart = false;
+        }
         // interactive, and this step's command opens a dialog: hold back the answers given after the dialog opened
         var dialog = _interactive && _i + 1 < _steps.Count && _steps[_i + 1].Kind == "dialog" ? _steps[_i + 1] : null;
         string? text;
@@ -1002,14 +1012,22 @@ sealed class Replayer
         if (dialog != null) (text, _deferred) = WithPick(pick => Plan.InputAroundDialog(s, dialog.T, HandleExists, pick), r => !string.IsNullOrEmpty(r.First));
         else { text = WithPick(pick => Plan.InputText(s, handleExists: HandleExists, pick: pick), r => !string.IsNullOrEmpty(r)); _deferred = null; }
         if (string.IsNullOrEmpty(text)) { Say("\n  (nothing replayable in this step)\n"); return true; }
-        if (s.Kind == "ribbon") ActivateTab(s.Tab);
-        // SendStringToExecute: queued, runs as typed input when AutoCAD is next quiescent; "\n" is Enter
-        _doc.SendStringToExecute(text, true, false, true);
-        _pendingStart = true; _sentAt = DateTime.Now;
+        Type(s, text);
         return true;
     }
 
-    /// <summary>Invoke the live RibbonItem the way a click does: its CommandHandler.Execute(item).</summary>
+    /// <summary>Types a step's text. SendStringToExecute: queued, runs as typed input when AutoCAD is next quiescent; "\n" is Enter.</summary>
+    void Type(Step s, string text)
+    {
+        if (s.Kind == "ribbon") ActivateTab(s.Tab);
+        _doc.SendStringToExecute(text, true, false, true);
+        _pendingStart = true; _sentAt = DateTime.Now;
+    }
+
+    /// <summary>Invoke the live RibbonItem the way a click does: its CommandHandler.Execute(item). AutoCAD's own buttons (a RibbonCommandButton,
+    /// its own handler, the macro in its Tag) and code-built buttons (a RibbonButton with an ICommand) both start their command this way from a
+    /// timer tick (checked on AutoCAD 2026, 2026-11-04). The log names the item's type, handler and parameter, so an item that does nothing
+    /// from code can be told apart from one that is gone.</summary>
     bool TryClick(Step s)
     {
         try
@@ -1017,14 +1035,51 @@ sealed class Replayer
             var ribbon = ComponentManager.Ribbon;
             if (ribbon == null || string.IsNullOrEmpty(s.ItemId)) return false;
             var item = ribbon.FindItem(s.ItemId, false, true);
-            if (item is not RibbonCommandItem ci || !ci.IsEnabled) return false;
-            var handler = ci.CommandHandler;
-            if (handler == null || !handler.CanExecute(ci)) return false;
-            ActivateTab(s.Tab);
-            handler.Execute(ci);
-            return true;
+            string why;
+            if (item is not RibbonCommandItem ci) why = item == null ? "not in the ribbon" : $"a {item.GetType().Name}, not a command item";
+            else if (!ci.IsEnabled) why = "disabled";
+            else if (ci.CommandHandler is not { } handler) why = "without a handler";
+            else if (!handler.CanExecute(ci)) why = "a handler that cannot execute now";
+            else
+            {
+                var parameter = ci.CommandParameter is string m ? $"macro '{m}'" : ci.CommandParameter?.GetType().FullName ?? "none";
+                Log.Info($"replay click: {s.ItemId} is a {ci.GetType().Name}, handler {handler.GetType().FullName}, parameter {parameter}, tag {ci.Tag?.GetType().Name ?? "none"}");
+                ActivateTab(s.Tab);
+                handler.Execute(ci);
+                return true;
+            }
+            Log.Info($"replay click: {s.ItemId} is {why}; typing the macro instead");
+            return false;
         }
         catch (Exception ex) { Log.Error("TryClick", ex); return false; }
+    }
+
+    /// <summary>The live item was invoked 2 s ago and no command started. When the recording has a command for that click, the handler did
+    /// nothing from code (say a toggle that reads its own state first, or one that needs the click's own events), and the recorded macro or
+    /// command is typed instead, as for an item that is gone; the result and the log say so. A click that recorded no command, or that opened
+    /// a dialog, did its work without one, and nothing is typed. False when nothing was typed.</summary>
+    bool TypeAfterSilentClick(Step s)
+    {
+        if (_modalsSeen > _modalsAtStepStart) { Log.Info($"replay click: {s.ItemId} started no command within 2 s but opened a dialog; nothing typed"); return false; }
+        if (s.Command == null) { Log.Info($"replay click: {s.ItemId} started no command within 2 s; its recording has none either, nothing typed"); return false; }
+        var text = Plan.InputText(s, handleExists: HandleExists);
+        var row = _result.Steps.LastOrDefault(x => x.Index == _clickedIndex);
+        if (string.IsNullOrEmpty(text))
+        {
+            var none = $"the click started no command within 2 s ({s.Command} when recorded), and the step has nothing to type instead";
+            Say($"\n  WARNING: {none}\n");
+            Log.Info($"replay click: {s.ItemId}: {none}");
+            _warnings.Add($"step {_clickedIndex}: {none}");
+            if (row != null) row.Message = none;
+            return false;
+        }
+        var typed = $"the click started no command within 2 s ({s.Command} when recorded); its macro was typed instead";
+        Say($"\n  {typed}\n");
+        Log.Info($"replay click: {s.ItemId}: {typed}: '{text.Replace("\u0003", "^C").Replace("\u001b", "^C").Replace("\n", ";")}'");
+        _warnings.Add($"step {_clickedIndex}: {typed}");
+        if (row != null) row.Message = typed;
+        Type(s, text);
+        return true;
     }
 
     internal static void ActivateTab(string? title)
