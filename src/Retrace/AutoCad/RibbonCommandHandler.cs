@@ -22,6 +22,7 @@ public sealed class RibbonCommandHandler : System.Windows.Input.ICommand
             var macro = button.CommandParameter as string;
             if (string.IsNullOrWhiteSpace(macro)) macro = "_" + button.Id + " ";
             var text = macro.Replace("^C", "\u001b").Replace(";", "\n");
+            StatusBoardHost.UserClicked(macro);   // a person clicked: the run this starts is the user's (status board owner)
             doc.SendStringToExecute(text, true, false, false);
         }
         catch (System.Exception ex) { Log.Error("ribbon click", ex); }

@@ -238,8 +238,8 @@ public class MapFoldersTests : IDisposable
     [InlineData("C:/", "C:/")]
     [InlineData("C:", "C:")]
     [InlineData("\"C:\\\"", @"C:\")]
-    [InlineData("/Users/x/src/", "/Users/x/src")]
-    [InlineData("/Users/x/src//", "/Users/x/src")]
+    [InlineData("/home/x/src/", "/home/x/src")]
+    [InlineData("/home/x/src//", "/home/x/src")]
     [InlineData("/", "/")]
     [InlineData(@"\\server\share\", @"\\server\share")]
     [InlineData(@"C:\a b\c", @"C:\a b\c")]
@@ -255,10 +255,10 @@ public class MapFoldersTests : IDisposable
         var f = MapFolders.Load(_root);
         f.Add("\"C:\\src\\\"");
         f.Add("   ");
-        f.Add("/Users/x/src/");
-        Assert.Equal(new[] { "/Users/x/src", @"C:\src" }, Names(f));
+        f.Add("/home/x/src/");
+        Assert.Equal(new[] { "/home/x/src", @"C:\src" }, Names(f));
         f.Add(@"C:\SRC\");   // the same folder
-        Assert.Equal(new[] { @"C:\SRC", "/Users/x/src" }, Names(f));
+        Assert.Equal(new[] { @"C:\SRC", "/home/x/src" }, Names(f));
     }
 
     [Fact]

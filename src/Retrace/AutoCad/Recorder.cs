@@ -93,6 +93,11 @@ public sealed class Recorder
     string? _lastTabId;
 
     public bool IsRecording => _w != null;
+    /// <summary>About the steps a replay will show, recorded since this recording started: ribbon clicks and tab switches, commands at the top level, LISP calls, checkpoints,
+    /// palette steps, clicks in native palettes and drawings opened outside a command; not a drawing's start-up LISP, nor a command nested in another
+    /// (<see cref="StatusBoard.CountsAsStep"/>, <see cref="StepTally"/>). Dialogs are not counted. For the status board ("Rec 12").</summary>
+    internal int StepCount => _tally.Count;
+    readonly StepTally _tally = new();
     /// <summary>The text of the prompt the user is answering now (without its leading line break), or null when none is open.</summary>
     internal string? OpenPrompt => _openPrompts > 0 && !string.IsNullOrWhiteSpace(_lastPromptMsg) ? _lastPromptMsg.TrimStart('\n', '\r') : null;
     string? _lastPromptMsg;
@@ -120,6 +125,7 @@ public sealed class Recorder
         _sel.Reset();
         _lastCtx = null; _startup = new(); _ctxCmdDepth = 0; _ctxLispDepth = 0;
         _marks = 0;
+        _tally.Reset();
         _lastRibbonConsumed = true;
         // initial drawing state, right after the header; read here (command/idle context), never in an event handler
         Log.Safe("initial state", () =>
@@ -139,6 +145,7 @@ public sealed class Recorder
         });
         Subscribe();
         SnapshotDocs();
+        StatusBoardHost.RecordingStarted();
         return _w.Path;
     }
 
@@ -154,6 +161,7 @@ public sealed class Recorder
         _w = null;
         var path = w.Path;
         w.Dispose();
+        StatusBoardHost.Changed();
         return path;
     }
 
@@ -171,6 +179,7 @@ public sealed class Recorder
         _w = null;
         var r = (w.Path, w.Events, w.ElapsedMs);
         w.Dispose();
+        StatusBoardHost.Changed();
         return r;
     }
 
@@ -203,6 +212,7 @@ public sealed class Recorder
         // them out of the steps (DrawingOpen.StartupEvents, same tracker), so they name no checkpoint either
         var startupFlag = f.FirstOrDefault(x => x.Item1 == "startup").Item2 as bool?;
         if (_startup.Feed(type, _w?.ElapsedMs ?? 0, startupFlag)) return;
+        _tally.Note(type, F("origin"), _ctxCmdDepth, _ctxLispDepth, F("path"), F("id"), F("palette"), F("set"));   // before the depth moves; data only: the status board reads it on its timer
         switch (type)
         {
             case "cmd_start": _ctxCmdDepth++; break;

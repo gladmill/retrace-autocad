@@ -52,9 +52,14 @@ sealed class TdocRun : ITestQueueOwner
         message = $"Tdoc: {recordings.Count} test(s), written to {run._folder} (as {Path.GetFileName(run._docxPath)} beside it).";
         run.Say(message);
         if (!s.AutoFillDialogs) run.Say("Tdoc: the setting autoFillDialogs is off, so dialogs are not filled in and get no picture.");
+        StatusBoardHost.RunStarted();
         run._queue.Begin();
         return true;
     }
+
+    /// <summary>For the status board: the queue (which test of how many).</summary>
+    public TestQueue Queue => _queue;
+    readonly List<string> _verdicts = new();   // the verdict of every test that ran, and NOT-RUN for each the queue skipped, for the status board's "Last Tdoc" line
 
     /// <summary>For <see cref="Commands.Test"/>, which has read the steps of <paramref name="path"/>: the capture for the replayer, or null when the
     /// run did not ask for this test.</summary>
@@ -86,6 +91,7 @@ sealed class TdocRun : ITestQueueOwner
         capture.Test.Verdict = r.Verdict;
         capture.Test.Message = string.IsNullOrWhiteSpace(r.Message) ? null : r.Message;
         run._summary.Add($"{capture.Test.Name}: {r.Verdict}, {capture.PictureCount} picture(s)");
+        run._verdicts.Add(r.Verdict);
         run.Say($"{capture.Label}: {capture.Test.Name} {r.Verdict}, {capture.PictureCount} picture(s)");
         capture.Dispose();
         if (capture.StopRequested) run._queue.Stopped = true;
@@ -130,6 +136,7 @@ sealed class TdocRun : ITestQueueOwner
     {
         var name = TestList.NameOf(TestFolders.NameOf(path));
         _summary.Add($"{name}: not run ({why})");
+        _verdicts.Add(SuiteTest.NotRun);   // counted like the suite counts it
         Say($"test {index + 1}/{_queue.Recordings.Count} ({name}) was not run: {why}");
     }
 
@@ -149,6 +156,7 @@ sealed class TdocRun : ITestQueueOwner
         if (Current != this) return;
         Current = null;
         _queue.End();
+        StatusBoardHost.TdocEnded(StatusBoard.PadNotRun(_verdicts, _queue.Recordings.Count), _captures.Sum(c => c.PictureCount), _queue.Stopped);
         foreach (var line in _summary) Say("  " + line);
         if (_manifest.Tests.Count == 0) { Say("no test ran; no document written."); return; }
         if (!WriteManifest()) return;

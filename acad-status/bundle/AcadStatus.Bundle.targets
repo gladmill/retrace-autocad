@@ -1,0 +1,83 @@
+<Project>
+  <!--
+    The AutoCAD autoloader bundle. Imported by src/AcadStatus/AcadStatus.csproj; runs after every build of it.
+
+    AcadStatusBundle (any OS) lays out src/AcadStatus/bin/<Configuration>/AcadStatus.bundle (a fixed path: it is deleted and rewritten):
+      PackageContents.xml                bundle/PackageContents.template.xml with {Version} (<Version>) and {Series} (<AutoCADSeries>)
+      Contents/AcadStatus.dll, AcadStatus.pdb  the build output (one dll: it uses only the framework and AutoCAD's own assemblies)
+      Contents/trust-acadstatus.ps1         scripts/trust-acadstatus.ps1
+      Contents/LICENSE                      LICENSE (MIT)
+
+    AcadStatusDeploy then installs it for this Windows user. It runs by default on Windows, outside CI, once this user has started
+    AutoCAD <AutoCADSeries> (its HKCU key holds CurVer). It replaces $(AcadStatusDeployDir), by default
+    %APPDATA%\Autodesk\ApplicationPlugins\AcadStatus.bundle, so AutoCAD loads the new build at its next start, and runs
+    trust-acadstatus.ps1 on it, which adds the folder to TRUSTEDPATHS in every AutoCAD profile of that release so that AutoCAD does
+    not stop at "Security - Unsigned Executable File". It changes nothing else (not SECURELOAD).
+    While AutoCAD has the installed AcadStatus.dll loaded, nothing is replaced (warning); while any AutoCAD runs, the trust step is
+    skipped (warning), because AutoCAD writes its profiles back when it exits.
+
+    Switches (also as environment variables): AcadStatusDeploy=false (bundle only) or true (install even without an AutoCAD
+    profile), AcadStatusTrust=false (install, leave TRUSTEDPATHS alone), AcadStatusDeployDir=<one folder ending in .bundle>.
+  -->
+  <PropertyGroup>
+    <_AcadStatusBundleDir>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', 'bin', '$(Configuration)', 'AcadStatus.bundle'))</_AcadStatusBundleDir>
+    <_AcadStatusCI Condition="'$(CI)' == 'true' Or '$(TF_BUILD)' != '' Or '$(JENKINS_URL)' != '' Or '$(TEAMCITY_VERSION)' != '' Or '$(ContinuousIntegrationBuild)' == 'true'">true</_AcadStatusCI>
+    <_AcadStatusAcadProfile Condition="'$(OS)' == 'Windows_NT'">$([MSBuild]::GetRegistryValue('HKEY_CURRENT_USER\Software\Autodesk\AutoCAD\$(AutoCADSeries)', 'CurVer'))</_AcadStatusAcadProfile>
+    <AcadStatusDeploy Condition="'$(AcadStatusDeploy)' == '' And '$(OS)' == 'Windows_NT' And '$(_AcadStatusCI)' != 'true' And '$(APPDATA)' != '' And '$(_AcadStatusAcadProfile)' != ''">true</AcadStatusDeploy>
+    <AcadStatusTrust Condition="'$(AcadStatusTrust)' == ''">true</AcadStatusTrust>
+    <AcadStatusDeployDir Condition="'$(AcadStatusDeployDir)' == '' And '$(APPDATA)' != ''">$(APPDATA)\Autodesk\ApplicationPlugins\AcadStatus.bundle</AcadStatusDeployDir>
+  </PropertyGroup>
+
+  <Target Name="AcadStatusBundle" AfterTargets="Build" Condition="'$(DesignTimeBuild)' != 'true'">
+    <Error Condition="'$(AutoCADSeries)' == ''" Text="AcadStatus.Bundle.targets: set AutoCADSeries (for example R25.1) in AcadStatus.csproj." />
+    <PropertyGroup>
+      <_AcadStatusManifest>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)PackageContents.template.xml').Replace('{Version}', '$(Version)').Replace('{Series}', '$(AutoCADSeries)').TrimEnd())</_AcadStatusManifest>
+    </PropertyGroup>
+    <ItemGroup>
+      <_AcadStatusContents Include="$(TargetPath)" />
+      <_AcadStatusContents Include="$(TargetDir)$(TargetName).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
+      <_AcadStatusContents Include="$(MSBuildThisFileDirectory)..\scripts\trust-acadstatus.ps1" />
+      <_AcadStatusContents Include="$(MSBuildThisFileDirectory)..\LICENSE" />
+    </ItemGroup>
+    <RemoveDir Directories="$(_AcadStatusBundleDir)" />
+    <Copy SourceFiles="@(_AcadStatusContents)" DestinationFolder="$(_AcadStatusBundleDir)Contents" />
+    <!-- Escape: the manifest holds characters MSBuild would otherwise treat as list separators or wildcards (Platform="AutoCAD*"). -->
+    <WriteLinesToFile File="$(_AcadStatusBundleDir)PackageContents.xml" Lines="$([MSBuild]::Escape($(_AcadStatusManifest)))" Overwrite="true" />
+    <Message Importance="high" Text="$(MSBuildProjectName) bundle -> $(_AcadStatusBundleDir)" />
+    <Message Importance="high" Condition="'$(OS)' == 'Windows_NT' And '$(AcadStatusDeploy)' == '' And '$(_AcadStatusCI)' != 'true'"
+             Text="$(MSBuildProjectName) not installed: this Windows user has not started AutoCAD $(AutoCADSeries) yet. Start it once, close it, and build again (or build with -p:AcadStatusDeploy=true)." />
+  </Target>
+
+  <Target Name="AcadStatusDeploy" AfterTargets="AcadStatusBundle" Condition="'$(AcadStatusDeploy)' == 'true' And '$(DesignTimeBuild)' != 'true'">
+    <Error Condition="'$(AcadStatusDeployDir)' == ''" Text="AcadStatus: APPDATA is not set, so there is no ApplicationPlugins folder to install to. Build with -p:AcadStatusDeploy=false, or set AcadStatusDeployDir." />
+    <!-- the folder is deleted and rewritten on every build: only ever one *.bundle folder (RemoveDir would split a list at ';') -->
+    <Error Condition="$(AcadStatusDeployDir.Contains(';')) Or $(AcadStatusDeployDir.Contains('*')) Or $(AcadStatusDeployDir.Contains('?')) Or !$(AcadStatusDeployDir.TrimEnd('\').ToLowerInvariant().EndsWith('.bundle'))"
+           Text="AcadStatus: AcadStatusDeployDir must be one folder whose name ends in .bundle (it is deleted and rewritten), not '$(AcadStatusDeployDir)'." />
+
+    <!-- AutoCAD keeps a loaded AcadStatus.dll open: try to remove the installed dll first, and change nothing else if it stays -->
+    <Delete Files="$(AcadStatusDeployDir)\Contents\AcadStatus.dll" ContinueOnError="true" />
+    <PropertyGroup>
+      <_AcadStatusInUse Condition="Exists('$(AcadStatusDeployDir)\Contents\AcadStatus.dll')">true</_AcadStatusInUse>
+    </PropertyGroup>
+    <Warning Condition="'$(_AcadStatusInUse)' == 'true'" Text="AcadStatus: $(AcadStatusDeployDir)\Contents\AcadStatus.dll is in use (AutoCAD has it loaded), so this build was not installed. Close AutoCAD and build again." />
+
+    <ItemGroup Condition="'$(_AcadStatusInUse)' != 'true'">
+      <_AcadStatusBundleFile Include="$(_AcadStatusBundleDir)**" />
+    </ItemGroup>
+    <RemoveDir Condition="'$(_AcadStatusInUse)' != 'true'" Directories="$([MSBuild]::Escape($(AcadStatusDeployDir)))" />
+    <Copy Condition="'$(_AcadStatusInUse)' != 'true'" SourceFiles="@(_AcadStatusBundleFile)" DestinationFiles="@(_AcadStatusBundleFile->'$(AcadStatusDeployDir)\%(RecursiveDir)%(Filename)%(Extension)')" />
+    <Message Condition="'$(_AcadStatusInUse)' != 'true'" Importance="high" Text="$(MSBuildProjectName) installed -> $(AcadStatusDeployDir) (AutoCAD loads it at its next start)" />
+
+    <!-- no trailing backslash before a closing quote: \" would escape the quote -->
+    <Exec Condition="'$(_AcadStatusInUse)' != 'true' And '$(AcadStatusTrust)' == 'true'"
+          Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(AcadStatusDeployDir.TrimEnd('\'))\Contents\trust-acadstatus.ps1&quot; -Folder &quot;$(AcadStatusDeployDir.TrimEnd('\'))&quot; -Series $(AutoCADSeries)"
+          ConsoleToMSBuild="true" IgnoreExitCode="true" IgnoreStandardErrorWarningFormat="true" EchoOff="true" StandardOutputImportance="normal">
+      <Output TaskParameter="ExitCode" PropertyName="_AcadStatusTrustExit" />
+      <Output TaskParameter="ConsoleOutput" PropertyName="_AcadStatusTrustOut" />
+    </Exec>
+    <Message Condition="'$(_AcadStatusTrustExit)' == '0'" Importance="high" Text="$(MSBuildProjectName) trusted -> $(AcadStatusDeployDir.TrimEnd('\'))\... is a Trusted Location in every AutoCAD $(AutoCADSeries) profile" />
+    <Warning Condition="'$(_AcadStatusTrustExit)' == '2'" Text="AcadStatus: AutoCAD is running, so the installed bundle was not made a Trusted Location (AutoCAD writes its profiles back when it exits). Close AutoCAD and build again." />
+    <Warning Condition="'$(_AcadStatusTrustExit)' == '3'" Text="AcadStatus: this Windows user has no AutoCAD $(AutoCADSeries) profile yet, so the bundle is not a Trusted Location. Start AutoCAD once (answer its security prompt with Load Once), close it, and build again." />
+    <Warning Condition="'$(_AcadStatusTrustExit)' != '' And '$(_AcadStatusTrustExit)' != '0' And '$(_AcadStatusTrustExit)' != '2' And '$(_AcadStatusTrustExit)' != '3'" Text="AcadStatus: trust-acadstatus.ps1 exited with $(_AcadStatusTrustExit): $(_AcadStatusTrustOut)" />
+  </Target>
+</Project>

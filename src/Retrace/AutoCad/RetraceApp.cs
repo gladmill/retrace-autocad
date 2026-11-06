@@ -23,6 +23,7 @@ public sealed class RetraceApp : IExtensionApplication
         {
             try { RibbonInstaller.Install(); } catch (Exception ex) { Log.Error("ribbon install", ex); }
             Commands.Instance.Initialize();
+            StatusBoardHost.Start();   // the status board file (setting statusBoard); never throws
         }
         catch (Exception ex) { Log.Error("Initialize", ex); }
     }
@@ -34,6 +35,7 @@ public sealed class RetraceApp : IExtensionApplication
         Log.Safe("Terminate: shutdown", () => Commands.Instance.Shutdown());
         Log.Safe("Terminate: palette", () => GuidePalette.Dispose());
         Log.Safe("Terminate: ribbon", () => RibbonInstaller.Uninstall());
+        Log.Safe("Terminate: status board", StatusBoardHost.Shutdown);   // last: it says "stopped"
     }
 
     /// <summary>Palette buttons run commands this way (the palette is modeless). False with a message when no drawing is open.</summary>
@@ -53,8 +55,10 @@ public sealed class RetraceApp : IExtensionApplication
     /// <summary>Runs a command body; a failure is logged and printed, never thrown into AutoCAD.</summary>
     static void Run(string name, Action call)
     {
+        StatusBoardHost.CommandStarted(name);   // the status board: who owns a run this command starts
         try { call(); }
         catch (Exception ex) { Log.Error(name, ex); Commands.Print($"{name} failed: {ex.Message}"); }
+        finally { StatusBoardHost.CommandEnded(name); }
     }
 
     // ---- commands ----------------------------------------------------------------------------

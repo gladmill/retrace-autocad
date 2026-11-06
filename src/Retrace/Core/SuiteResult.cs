@@ -73,7 +73,7 @@ public sealed class SuiteResult
     /// <summary>Why the suite ended before its last test; "" when it ran to the end.</summary>
     [JsonPropertyName("stopReason")] public string StopReason { get; set; } = "";
     [JsonPropertyName("stepTimeoutSeconds")] public int StepTimeoutSeconds { get; set; }
-    [JsonPropertyName("counts")] public Dictionary<string, int> Counts => Tests.GroupBy(t => t.Verdict).OrderBy(g => g.Key, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Count());
+    [JsonPropertyName("counts")] public Dictionary<string, int> Counts => OrderedCounts(Tests.Select(t => t.Verdict)).ToDictionary(kv => kv.Key, kv => kv.Value);
     [JsonPropertyName("tests")] public List<SuiteTest> Tests { get; set; } = new();
 
     public const string FileSuffix = "_suite";
@@ -83,10 +83,18 @@ public sealed class SuiteResult
 
     public string ToJson() => JsonSerializer.Serialize(this, Json);
 
-    /// <summary>"3 PASS, 1 FAIL, 1 ERROR" (counts of the verdicts that occur).</summary>
-    public string CountsText() => string.Join(", ", Counts.Select(kv => $"{kv.Value} {kv.Key}"));
+    /// <summary>The verdicts that occur with how often, in the one fixed order (by name, ordinal: ERROR, FAIL, INCOMPLETE, NEEDS-PERSON, NOT-RUN, PASS). The `counts` of the
+    /// summary file, <see cref="CountsText()"/> and the status board's "Last Tdoc" line all come from it.</summary>
+    public static IReadOnlyList<KeyValuePair<string, int>> OrderedCounts(IEnumerable<string> verdicts) =>
+        verdicts.GroupBy(v => v).OrderBy(g => g.Key, StringComparer.Ordinal).Select(g => new KeyValuePair<string, int>(g.Key, g.Count())).ToList();
 
-    /// <summary>One line: `suite FAIL: 3 PASS, 1 FAIL, 1 ERROR (5 tests)`; a stopped suite also says why.</summary>
+    /// <summary>"1 ERROR, 1 FAIL, 3 PASS" (counts of the verdicts that occur, in the order of <see cref="OrderedCounts"/>).</summary>
+    public string CountsText() => CountsText(Tests.Select(t => t.Verdict));
+
+    /// <summary>The same for any list of verdicts.</summary>
+    public static string CountsText(IEnumerable<string> verdicts) => string.Join(", ", OrderedCounts(verdicts).Select(kv => $"{kv.Value} {kv.Key}"));
+
+    /// <summary>One line: `suite FAIL: 1 ERROR, 1 FAIL, 3 PASS (5 tests)` (the counts in the order of <see cref="OrderedCounts"/>); a stopped suite also says why.</summary>
     public string Summary() => $"suite {Verdict}: {(Tests.Count == 0 ? "no tests" : CountsText())} ({Tests.Count} test{(Tests.Count == 1 ? "" : "s")})"
         + (StopReason.Length > 0 ? ". Stopped: " + StopReason : "");
 

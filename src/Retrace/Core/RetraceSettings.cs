@@ -64,6 +64,10 @@ public sealed class RetraceSettings
     int _suiteTimeout = 120;
     public const int MinSuiteTimeoutSeconds = 5, MaxSuiteTimeoutSeconds = 3600;
 
+    /// <summary>Write Retrace's state to the AutoCAD status board (`retrace-&lt;acad pid&gt;.json` in `%ProgramData%\Gladmill\acad-status`, or the folder
+    /// `ACAD_STATUS_DIR` names), so a person or a tool outside AutoCAD can see what Retrace is doing. On by default. Off: nothing is written.</summary>
+    [JsonPropertyName("statusBoard")] public bool StatusBoard { get; set; } = true;
+
     /// <summary>Where the Retrace ribbon tab goes: "" / "afterHome" (right of Home), "first", "last" or "after:&lt;tab id or title&gt;".</summary>
     [JsonPropertyName("ribbonTabPosition")] public string RibbonTabPosition { get; set; } = "";
 
@@ -171,18 +175,34 @@ public sealed class RetraceSettings
     /// <summary>Never throws: a missing or broken file gives the defaults.</summary>
     public static RetraceSettings Load(string root = Paths.Root)
     {
+        TryLoad(out var s, root);
+        return s;
+    }
+
+    /// <summary>Like <see cref="Load"/>, and says whether the file was understood: false when it exists but cannot be read or parsed (<paramref name="settings"/> then holds the
+    /// defaults). A missing file is true: its settings are the defaults. A caller that must not act on defaults it did not read (the status board, which a broken file must not
+    /// turn back on) keeps its previous value on false.</summary>
+    public static bool TryLoad(out RetraceSettings settings, string root = Paths.Root)
+    {
         try
         {
             var file = Paths.SettingsFile(root);
             if (File.Exists(file))
             {
-                var s = JsonSerializer.Deserialize<RetraceSettings>(File.ReadAllText(file), ReadOptions) ?? new();
+                var s = JsonSerializer.Deserialize<RetraceSettings>(File.ReadAllText(file), ReadOptions);
+                if (s == null) { settings = new() { RootDir = root }; return false; }
                 s.RootDir = root;
-                return s;
+                settings = s;
+                return true;
             }
+            settings = new() { RootDir = root };
+            return true;
         }
-        catch (Exception) { }
-        return new() { RootDir = root };
+        catch (Exception)
+        {
+            settings = new() { RootDir = root };
+            return false;
+        }
     }
 
     public bool Save(out string error)

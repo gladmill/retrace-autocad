@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ApplicationPackage SchemaVersion="1.0"
+                    ProductType="Application"
+                    Name="AcadStatus"
+                    Description="Writes what AutoCAD is doing (idle, running, waiting at a prompt, blocked by a dialog) to a status file and shows it as a small pane on the status bar."
+                    AppVersion="{Version}"
+                    Author="AcadStatus contributors"
+                    ProductCode="{6D3B1F2E-8A47-4C5D-9E10-52B7A04C93D1}"
+                    UpgradeCode="{C48E7A15-3F62-4B09-A1D8-7E5C20F96B34}">
+  <CompanyDetails Name="AcadStatus contributors" />
+  <Components>
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SeriesMin="{Series}" SeriesMax="{Series}" />
+    <ComponentEntry AppName="AcadStatus"
+                    Version="{Version}"
+                    ModuleName="./Contents/AcadStatus.dll"
+                    AppDescription="AcadStatus status file writer and status bar pane"
+                    LoadOnAutoCADStartup="True"
+                    LoadOnCommandInvocation="False" />
+  </Components>
+</ApplicationPackage>

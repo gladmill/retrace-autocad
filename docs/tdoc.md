@@ -51,6 +51,10 @@ The title is part of both names, with characters Windows does not allow replaced
 
 Stop in the replay window ends the run: the document is written with the tests so far (the stopped one included, verdict `INCOMPLETE`) and its title ends in "(incomplete)". Between two tests `RETRACETDOC` ends the run. Closing AutoCAD writes `tdoc.json` only.
 
+## Status board
+
+While a Tdoc run is active, Retrace writes `Tdoc i/n` and the current test and step to the AutoCAD status board (owner `tdoc`), and `needs-person` when a dialog it cannot fill waits for you. At the end it is idle with the counts, `Last Tdoc: 3 tests (1 FAIL, 2 PASS), 24 pictures` (by verdict name, as in the suite summary; a test the run skipped or never reached counts as `NOT-RUN`); a run with an ERROR test ends in state `error`. See [README, Status board](../README.md#status-board).
+
 ## Limits
 
 - Leave the mouse and keyboard alone during a run. A click or a tool tip ends up in a picture, and windows are brought to the front.
