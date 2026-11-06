@@ -311,6 +311,7 @@ public sealed partial class Commands
                $"  Tdoc boxes       : {(s.TdocAnnotate ? "on" : "off")} (green numbered boxes on the pictures where the user gives input)\n" +
                $"  Tdoc pause       : {s.TdocStepDelayMs} ms (before each picture, so the screen has repainted)\n" +
                $"  Suite timeout    : {s.SuiteStepTimeoutSeconds} s (RETRACESUITE cancels a step that runs longer and records the test as ERROR)\n" +
+               $"  Status board     : {(s.StatusBoard ? "on" : "off")} (Retrace writes what it is doing to retrace-<acad pid>.json in the AutoCAD status board folder; set in the Settings window or settings.json)\n" +
                $"  Checkpoint key   : {(s.CheckpointChord(out var warn) is { } kc ? kc.Format() : "off")} (while recording; Ctrl+Shift+K, F8, None = off){(warn.Length > 0 ? "\n  WARNING: " + warn : "")}\n";
     }
 

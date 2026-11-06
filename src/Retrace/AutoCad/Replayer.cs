@@ -97,6 +97,7 @@ sealed class Replayer
             try { Tick(); }
             catch (Exception ex) { Log.Error("Replay tick", ex); Finish(false, true, "exception: " + ex.Message); }
             finally { _inTick = false; }
+            StatusBoardHost.Changed();   // the status board: written only when what it shows changed; never throws
         };
         _win.NextClicked += () => _userNext = true;
         _win.StopClicked += () =>
@@ -106,6 +107,37 @@ sealed class Replayer
             _userStopped = true;
             Finish(false, false, "stopped by the user");
         };
+    }
+
+    string _testName = "";   // the test's name for the status board (the test folder's name without its date)
+    bool _stoppedForPerson;  // Finish was called because a step needs a person
+
+    /// <summary>Where the replay is, for the status board (read-only; UI thread). The step is the one being run: the one shown, or the one just sent;
+    /// during a dialog wait the dialog's step, as the replay window shows it.</summary>
+    internal ReplayProgress Status()
+    {
+        var n = _steps.Count;
+        var cur = Math.Clamp(_dialog.Active || _shown ? _i + 1 : Math.Max(_i, 1), 1, Math.Max(n, 1));
+        var step = n > 0 ? _steps[cur - 1] : null;
+        var text = step == null ? "" : !string.IsNullOrWhiteSpace(step.Command) ? step.Command! : step.Title;
+        string? note = null, person = null;
+        if (_paletteForPerson) person = $"a palette step Retrace cannot do: {(string.IsNullOrWhiteSpace(step?.DialogTitle) ? "(untitled)" : step!.DialogTitle)}";
+        else if (_dialog.Active && step != null)
+        {
+            var title = string.IsNullOrWhiteSpace(step.DialogTitle) ? "(untitled)" : step.DialogTitle!.Trim();
+            switch (_dialog.Phase)
+            {
+                case DialogWaitPhase.WaitingForOpen: note = $"waiting for dialog {title}"; break;
+                case DialogWaitPhase.WaitingForPerson:
+                    if (!_fillTried) note = $"dialog {title} is open";
+                    else if (_fill != null && _fill.State != DialogAutoFiller.Phase.GaveUp) note = $"filling dialog {title}";
+                    else if (_suite == null) person = $"a dialog Retrace cannot fill: {title}";   // a suite run ends the test at once instead
+                    break;
+            }
+        }
+        else if (_mode == ReplayMode.Step && _shown && !_userNext) note = "waiting for Next";
+        else if (_modalDepth > 0) note = "a dialog is open";
+        return new ReplayProgress(_testName, cur, n, text, note, person);
     }
 
     /// <summary>Stops a running replay (timer, event handlers, panel). Used when the plugin is shut down.</summary>
@@ -138,6 +170,7 @@ sealed class Replayer
     void Begin(DrawingDigest? initial)
     {
         _result.Session = TestFolders.NameOf(_sessionPath);
+        _testName = TestList.NameOf(_result.Session);
         _result.StartedUtc = DateTime.UtcNow.ToString("o");
         _result.CoreVersion = typeof(Replayer).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
             .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion ?? "unknown";
@@ -161,6 +194,7 @@ sealed class Replayer
         _win.Show();
         _win.Show("Retrace replay", "Starting...", false);
         _timer.Start();
+        StatusBoardHost.ReplayStarted(queued: _tdoc != null || _suite != null);
     }
 
     /// <summary>A line on the command line of the drawing that is active now: a drawing opened by a palette click becomes active at once, and
@@ -315,10 +349,13 @@ sealed class Replayer
     }
 
     /// <summary>Ends the run: detaches everything, writes the result file and prints the one-line summary.</summary>
-    void Finish(bool completed, bool errored, string message)
+    /// <param name="needsPerson">the run stops because a step needs a person (a dialog it cannot fill, a security prompt, a palette it cannot drive): the status board
+    /// says needs-person while that dialog is open</param>
+    void Finish(bool completed, bool errored, string message, bool needsPerson = false)
     {
         if (!_running) return;
         _running = false;
+        _stoppedForPerson = needsPerson;
         CursorBack();
         _timer.Stop();
         Log.Safe("Replay restore view", () => HandOffView(cancel: _userStopped || errored));
@@ -347,6 +384,7 @@ sealed class Replayer
             var written = _result.Write(_sessionPath, ex => Log.Error("write result", ex));
             Say($"\nRetrace replay ended at step {_result.StepsRun}/{_steps.Count}: {message}\n");
             Say($"\n{_result.Summary()}\n" + (written != null ? $"Result: {written}\n" : "Result file could not be written (see retrace.log).\n"));
+            StatusBoardHost.ReplayEnded(_result, queued: _tdoc != null || _suite != null, _stoppedForPerson);   // before the verdict box: it blocks until someone closes it
             if (_alert) ShowAlert(written);
         });
         if (_finished != null) Log.Safe("Replay finished callback", () => _finished(_result));
@@ -459,7 +497,7 @@ sealed class Replayer
                     var title = _steps.Skip(Math.Max(0, _i - 1)).FirstOrDefault(x => x.Kind == "dialog")?.DialogTitle;
                     var di = _steps.FindIndex(Math.Max(0, _i - 1), x => x.Kind == "dialog");
                     if (di >= 0) _result.Steps.Add(new StepResult { Index = di + 1, Kind = "dialog", Title = _steps[di].Title, Status = "needs-person" });
-                    Finish(false, false, $"needs a person: dialog {(string.IsNullOrWhiteSpace(title) ? "(untitled)" : title)}");
+                    Finish(false, false, $"needs a person: dialog {(string.IsNullOrWhiteSpace(title) ? "(untitled)" : title)}", needsPerson: true);
                     return;
                 }
             }
@@ -489,7 +527,7 @@ sealed class Replayer
         if (s.Kind == "dialog" && _mode == ReplayMode.Auto)
         {
             _result.Steps.Add(new StepResult { Index = _i + 1, Kind = "dialog", Title = s.Title, Status = "needs-person" });
-            Finish(false, false, $"needs a person: dialog {(string.IsNullOrWhiteSpace(s.DialogTitle) ? "(untitled)" : s.DialogTitle)}");
+            Finish(false, false, $"needs a person: dialog {(string.IsNullOrWhiteSpace(s.DialogTitle) ? "(untitled)" : s.DialogTitle)}", needsPerson: true);
             return;
         }
 
@@ -519,7 +557,7 @@ sealed class Replayer
             // before any step was sent: nothing to blame
             var first = $"a dialog appeared before the first step: {shown}";
             _result.Steps.Add(new StepResult { Index = 0, Kind = "start", Title = "before the first step", Status = "needs-person", Message = first });
-            Finish(false, false, $"needs a person: {first}");
+            Finish(false, false, $"needs a person: {first}", needsPerson: true);
             return;
         }
         var n = Math.Clamp(_i, 1, Math.Max(1, _steps.Count));   // _i is already past the step that was sent
@@ -528,7 +566,7 @@ sealed class Replayer
         var row = _result.Steps.LastOrDefault(x => x.Index == n);
         if (row != null) { row.Status = "needs-person"; row.Message = text; }
         else _result.Steps.Add(new StepResult { Index = n, Kind = step?.Kind ?? "", Title = step?.Title ?? "", Status = "needs-person", Message = text });
-        Finish(false, false, $"needs a person: {text}");
+        Finish(false, false, $"needs a person: {text}", needsPerson: true);
     }
 
     /// <summary>Suite run: the step that was sent (or is being waited for) has run longer than the limit. ^C^C, the test is ERROR "step N timed out".
@@ -558,7 +596,7 @@ sealed class Replayer
         // the step that loaded the file is the last one started (_i was advanced past it); 1 if none had started yet
         _result.Steps.Add(new StepResult { Index = Math.Max(1, Math.Min(_i, _steps.Count)), Kind = "security-prompt", Title = title.Trim(), Status = "blocked", Message = msg });
         _alert = false;   // an alert box on top of the open prompt would only be a second dialog to answer; the command line and the result file say it
-        Finish(false, false, msg);
+        Finish(false, false, msg, needsPerson: true);
     }
 
     /// <summary>Interactive dialog pause: see DialogWait. Runs instead of the normal step logic while a dialog step is pending.</summary>
@@ -596,7 +634,7 @@ sealed class Replayer
                     var title = actual.Length == 0 ? (recorded.Length == 0 ? "(untitled)" : recorded)
                         : recorded.Length > 0 && !string.Equals(actual, recorded, StringComparison.OrdinalIgnoreCase) ? $"{actual} (recorded: {recorded})" : actual;
                     _result.Steps.Add(new StepResult { Index = _i + 1, Kind = "dialog", Title = step.Title, Status = "needs-person", Message = $"the dialog needs a person: {title}" });
-                    Finish(false, false, $"needs a person: dialog {title}");
+                    Finish(false, false, $"needs a person: dialog {title}", needsPerson: true);
                     return;
                 }
                 var msg = DialogMessage(step);
@@ -742,7 +780,7 @@ sealed class Replayer
         if (_mode == ReplayMode.Auto && Unattended)
         {
             _result.Steps.Add(new StepResult { Index = _i + 1, Kind = "palette", Title = s.Title, Status = "needs-person", Message = problem });
-            Finish(false, false, $"needs a person: palette {s.DialogTitle} ({problem})");
+            Finish(false, false, $"needs a person: palette {s.DialogTitle} ({problem})", needsPerson: true);
             return;
         }
         Say($"\n  Palette \"{s.DialogTitle}\": {problem}. Do it by hand, then click Next.\n");
@@ -994,7 +1032,7 @@ sealed class Replayer
             Say($"\n  WARNING: {problem}\n");
             _deferred = null;
             _result.Steps.Add(new StepResult { Index = _i + 1, Kind = s.Kind, Title = s.Title, Status = "needs-person", Message = problem });
-            Finish(false, false, $"needs a person: {problem}");
+            Finish(false, false, $"needs a person: {problem}", needsPerson: true);
             return false;
         }
         _clicked = null;

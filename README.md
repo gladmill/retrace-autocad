@@ -7,13 +7,14 @@ tells you pass or fail. It can also read your customization folder (`.cuix`, C#,
 write Markdown docs: ribbons, commands, dialogs, a source map, and an editable user guide with how-tos built from your recordings.
 And it maps each ribbon button to the LISP, C++, C# or VB.NET code it runs.
 
-Status: pre-1.0 (0.4.1). AutoCAD 2026 (R25.1), Windows x64. Written against the `AutoCAD.NET` 25.1.0 packages.
+Status: pre-1.0 (0.5.0). AutoCAD 2026 (R25.1), Windows x64. Written against the `AutoCAD.NET` 25.1.0 packages.
 Verified in AutoCAD only in part: see [Limitations](#limitations).
 
 ## Install
 
 **Without building:** download `Retrace-<version>.zip` from the [Releases](https://github.com/gladmill/retrace-autocad/releases) page, unzip it,
 copy the `Retrace.bundle` folder to `%APPDATA%\Autodesk\ApplicationPlugins\` and trust it as shown under "Installing a copy by hand" below.
+The zip also holds `AcadStatus.bundle`, a small separate add-in that shows on AutoCAD's status bar what AutoCAD and Retrace are doing: see [AcadStatus](#acadstatus-add-in).
 
 You need the [.NET 10 SDK](https://dotnet.microsoft.com/download) or newer (`global.json` asks for it) on Windows, macOS or Linux; in Visual Studio,
 version 2026. AutoCAD is not needed to build: the AutoCAD reference assemblies come from Autodesk's `AutoCAD.NET` NuGet package, and
@@ -134,6 +135,63 @@ Three settings (Settings window, group "Training documents (Tdoc)"; `-RETRACESET
    A test that opens a drawing you already have open gets a copy of the file, which loses relative xrefs, images and AutoCAD Electrical project membership: close project drawings before running a suite that opens them.
 4. The summary is `C:\temp\retrace\results\<stamp>_suite.json` and `.md`: one line per test with its verdict, duration, the checkpoints that differed and the path to its own result. The Open test window's Last suite button opens it.
 
+## Status board
+
+Retrace writes what it is doing to one small JSON file, so a person or a tool outside AutoCAD can see it: is a test recording or replaying, at which step, is a suite
+on test 3 of 7, does a step need a person, how did the last run end.
+
+- **The file.** `retrace-<acad pid>.json` (for example `retrace-4812.json`) in `%ProgramData%\Gladmill\acad-status\`, or in the folder the environment variable
+  `ACAD_STATUS_DIR` names. One file per AutoCAD session; it is written while Retrace is loaded and set to `state: "stopped"` when AutoCAD closes Retrace.
+  The format is the status board file contract: [acad-status/CONTRACT.md](acad-status/CONTRACT.md) (`source` `retrace`, `detail` described there). `pid` is AutoCAD's process id and `pidStart`
+  the time AutoCAD started (UTC): Windows reuses process ids, and a reader that finds the pid alive with another start time knows the file is a dead session's.
+- **How to see it.** Open the file in any editor, or use the AcadStatus add-in (in the release zip, see [AcadStatus add-in](#acadstatus-add-in)), which shows the files of all tools on AutoCAD's status bar and in a details window:
+  [acad-status](acad-status/).
+- **What it says.**
+
+  | Retrace is | `state` | `short` | `summary` (example) |
+  |---|---|---|---|
+  | doing nothing | `idle` | | `Idle`; after a run `Last: smoke032 PASS (2/2 checkpoints)` |
+  | recording | `running` | `Rec 12` (about the steps a replay will show: ribbon clicks and tab switches, commands typed at the top level, LISP calls, checkpoints, palette steps, clicks in native palettes, drawings opened outside a command; not a drawing's start-up LISP, commands nested in another, or dialogs; an Auto replay leaves out the tab switches) | `Recording smoke040: 12 steps` |
+  | replaying (RETRACERUN, RETRACEREPLAY, RETRACESTEP) | `running` | `Step 4/5` | `Replay smoke040: step 4/5 (BREAK)`; at a dialog it fills itself: `..., filling dialog Plot` |
+  | running a suite or Tdoc | `running` | `Suite 3/7`, `Tdoc 3/7` | `Suite 3/7: smoke040, step 4/5 (BREAK)` |
+  | stuck on a step only a person can do (a dialog it cannot fill, a palette it cannot drive, a dialog that stays open between suite tests) | `needs-person` | `Needs person` | `Replay smoke040: step 4/5 (PLOT) needs a person: a dialog Retrace cannot fill: Plot` (also `detail.needsPerson`) |
+  | stopped at a dialog that is still open (RETRACEREPLAY Auto) | `needs-person` until the dialog closes, then `idle` | `Needs person` | `Last: smoke040 INCOMPLETE: needs a person: dialog Plot` |
+  | done with a test that ended in ERROR, or a suite or Tdoc run with an ERROR test | `error` until the next run starts | `Test ERROR` | `Last: smoke040 ERROR: step 3 timed out`, `Last suite FAIL: 1 ERROR, 2 PASS (3 tests)` |
+  | done with a suite or Tdoc run | `idle` | | `Last suite PASS: 2 PASS (2 tests)`, `Last Tdoc: 3 tests (1 FAIL, 2 PASS), 24 pictures` (the counts are in the suite summary's order: by verdict name; a test the run skipped or never reached counts as `NOT-RUN`, as in the suite) |
+  | Retrace could not work out what to write | `error` | `Board error` | `status board error: InvalidOperationException` (the exception's type only; the file keeps being written, and the details are in `retrace.log`) |
+  | a suite stopped because a dialog or security prompt stayed open between two tests | `needs-person` until the dialog closes, then `idle` | `Needs person` | `Last suite STOPPED: 1 NEEDS-PERSON, 1 PASS (2 tests). Stopped: AutoCAD did not answer: a dialog stayed open after st-pass1` |
+  | unloaded | `stopped` | | `Retrace unloaded` |
+
+  `owner` is set only when Retrace knows how the work started: `user` (a click on a Retrace ribbon button, or on a button in the Open test window, typed the command that started
+  the recording or replay; the click counts for that one command only, and only if the command starts within 15 s), `suite` (a suite run), `tdoc` (a Tdoc run).
+  A command typed at the command line cannot be told from one sent over COM, so those runs have no `owner`.
+- **How often.** Immediately when what the board shows changes, and at least every 3 seconds (`ttlSec` is 15). The timer runs on AutoCAD's UI thread, so when AutoCAD hangs
+  the file goes stale; the status board then shows AutoCAD as busy. That is intended.
+- **Cost and safety.** A write is one small file (a temporary file, then a move over the old one). A failed write is logged once in `retrace.log` and never reaches the
+  test or the recording. Turn the whole thing off with the setting `statusBoard`.
+
+## AcadStatus add-in
+
+The release zip holds a second, independent add-in next to Retrace: **AcadStatus**. It answers one question at a glance: what is AutoCAD doing right now? It shows a coloured dot
+and a few words on AutoCAD's status bar (idle, a command running, waiting at a prompt, blocked by a dialog nobody answered, not responding) and merges the status board files of
+every tool, so a Retrace test run that needs a person shows up there too. Click the pane for a small details window; **Copy for Claude** copies a plain-text dump you can paste into a chat.
+The commands are `ACADSTATUS` (prints the dump) and `ACADSTATUSPANE` (shows or hides the pane). AcadStatus only looks: it never touches your drawing and never presses anything in a dialog.
+
+Retrace does not need AcadStatus, and AcadStatus does not need Retrace. To use both:
+
+1. With AutoCAD 2026 closed, unzip `Retrace-<version>.zip` and copy **both** folders, `Retrace.bundle` and `AcadStatus.bundle`, to `%APPDATA%\Autodesk\ApplicationPlugins\`.
+2. Trust each bundle once (each is a separate unsigned dll and a separate Trusted Location):
+
+   ```powershell
+   $b = "$env:APPDATA\Autodesk\ApplicationPlugins\Retrace.bundle"
+   powershell -NoProfile -ExecutionPolicy Bypass -File "$b\Contents\trust-retrace.ps1" -Folder $b
+   $b = "$env:APPDATA\Autodesk\ApplicationPlugins\AcadStatus.bundle"
+   powershell -NoProfile -ExecutionPolicy Bypass -File "$b\Contents\trust-acadstatus.ps1" -Folder $b
+   ```
+3. Start AutoCAD. The pane appears at the right end of the status bar a second later.
+
+Details, the pane's colours, what it cannot see and the file format: [acad-status/README.md](acad-status/README.md).
+
 ## Ribbon map
 
 Map (`RETRACEMAP`, ribbon Retrace > Guide > Map) answers "which code runs when I click this ribbon button?". It writes one row per ribbon item: its tab, panel and label, what a click runs (a command, a LISP function, a method, a class), and where your code defines that, in LISP, C++, C# or VB.NET.
@@ -178,6 +236,8 @@ C:\temp\retrace\
   cache\native\<version>\             the extracted native WebView2 loader
 ```
 
+The one file outside this folder is the status board file, `%ProgramData%\Gladmill\acad-status\retrace-<acad pid>.json` (see [Status board](#status-board)).
+
 Recordings hold drawing names, typed text, coordinates and object handles. Treat them as your data. The map files hold full local paths and the names of your buttons and code.
 
 ## Settings
@@ -199,6 +259,7 @@ Recordings hold drawing names, typed text, coordinates and object handles. Treat
 | `tdocBringToFront` | `true` | Tdoc run (training document): before every picture, bring the UI of the step to the front (AutoCAD's window, the dialog being filled, the palette), move a dialog that is off screen onto it and keep Retrace's own replay window out of the picture. |
 | `tdocAnnotate` | `true` | Tdoc run: draw green numbered boxes on the pictures where the reader gives input (the ribbon button, the command line for typed answers, each dialog field that is filled, the button that closes the dialog, palette controls). The legend under the picture says what each number is. |
 | `suiteStepTimeoutSeconds` | `120` | Suite run (`RETRACESUITE`): a test step that takes longer than this many seconds is cancelled with `^C^C` and the test is recorded as `ERROR`, "step N timed out". 5 to 3600; a value outside that range is clamped when the settings are read. |
+| `statusBoard` | `true` | Write what Retrace is doing to the AutoCAD status board, `retrace-<acad pid>.json` in `%ProgramData%\Gladmill\acad-status` (see [Status board](#status-board)). Off: nothing is written, and a file written earlier in this session is set to `stopped`. Set it in the Settings window or in `settings.json`; the setting is read again when the file changes (a `settings.json` that cannot be parsed keeps the value from before). `-RETRACESETTINGS` shows it but does not ask for it. |
 | `tdocStepDelayMs` | `1500` | Tdoc run: milliseconds to wait before each picture and between steps, so the screen has repainted (tool tips gone, dialogs drawn). 0 to 10000; a value outside that range is clamped when the settings are read. |
 | `autoDetectBehavior` | `true` | Checkpoints verify what changed in the drawing since the previous checkpoint (the first: since recording started), besides the model-space entities. Off: the behaviors in `checkBehaviors` are verified whole. See [recording format](docs/recording-format.md), "Behavior checks". |
 | `checkBehaviors` | `["layers","layouts","symbols"]` | Behavior ids verified when `autoDetectBehavior` is off. Ids: `layers`, `appearance`, `layouts`, `paperspace`, `viewports`, `xdata`, `xdicts`, `symbols`, `sysvars`, `views`, `psattributes`. In manual mode `appearance` and `paperspace` listed here are recorded as well. |
@@ -229,6 +290,7 @@ Recordings hold drawing names, typed text, coordinates and object handles. Treat
 ## Limitations
 
 - Pre-1.0. Run in AutoCAD Electrical 2026 (R25.1) on 2026-10-22: the bundle loads, the Retrace tab appears, and record / checkpoint / stop, `steps.md` with Word and Excel export, `RETRACEREPLAY` (PASS), `RETRACEDOCS` and the guide palette work. The ribbon map was run in plain AutoCAD 2026 on 2026-10-28: `-RETRACEMAP` and the Map window (ribbon button, Map, filter, Open code, Add folders) on test folders with CUIX, CUI, LISP, C++, C#, VB.NET and the live ribbon, including a tab a plugin builds at run time. Run it in your AutoCAD before you rely on it.
+- The status board was run in AutoCAD 2026 on 2026-11-05: idle, recording (`owner` `user` after a click on the Record button, none after a refused click and a COM command), `RETRACEREPLAY` Auto (also one that stopped at a LISP `alert` left open: `needs-person` until the alert was closed), `-RETRACESUITE`, the `statusBoard` setting turned off and on (and a `settings.json` that cannot be parsed keeping it off), and AutoCAD closing (`stopped`). The `error` state, a suite stopped by an open dialog, a Tdoc run and a palette step that needs a person were checked in unit tests only.
 - The engine that builds the docs runs inside the AutoCAD process (on a background thread). A bug in it is caught and reported, but it shares memory with AutoCAD. Screenshots are queued and taken a moment later, never inside an AutoCAD event handler.
 - Replay is not a pixel-exact replay: a ribbon click with no recorded answers runs the live button's handler; one with answers, one whose button is gone, and one whose handler starts no command within 2 s are replayed through the macro (the log says so, with the button's type and handler). Handles refer to the drawing the test was recorded in. A pick on an object (BREAK, FILLET, TRIM, EXTEND, nested picks) is replayed at the recorded point, in the view it was made in, when the point still hits that object; otherwise by its handle (the replay says so). The view is set before and put back after, so a test needs no `ZOOM` step and no particular window size for those picks and for mouse clicks (a window typed on the keyboard still selects what is visible: start such a test with `ZOOM E`). Points are typed absolute, angles in degrees (assumes `AUNITS` 0). Text answers with spaces break at the first space.
 - Palette sets (your plugin's `PaletteSet`, WinForms or WPF content): the fields you change and the push buttons you click are recorded, as one step per

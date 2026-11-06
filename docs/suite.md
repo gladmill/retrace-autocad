@@ -31,6 +31,10 @@ RETRACERUN and the Open test window's Run this test are refused while a suite or
 - **Start watchdog**: a test whose RETRACERUN did not start within 90 s is `NOT-RUN` and the suite goes on (as in Tdoc).
 - **Security prompt or dialog**: the test ends at once (`NEEDS-PERSON`, or `ERROR` after the step timeout) with the reason. An unexpected dialog is blamed on the step that was sent (that step's own result line becomes `needs-person`) and the message names the dialog's title. The prompt or dialog is not answered by Retrace. If it is still open 30 s after the test, or a drawing cannot be closed for 30 s, the suite stops: the summary says why and lists the tests not reached as `NOT-RUN`. A test that was running or starting when the suite ended is listed as `INCOMPLETE` or `NOT-RUN`; a suite never ends as PASS with a test missing. If AutoCAD (or a person) closes it within 30 s, the suite goes on. A dialog that stays open also keeps the test's drawing open (it cannot be closed while the dialog is modal): close it yourself after dismissing the dialog.
 
+## Status board
+
+While a suite runs, Retrace writes `Suite i/n` and the current test and step to the AutoCAD status board (`retrace-<acad pid>.json`, owner `suite`), and a dialog that stays open between two tests as `needs-person`. At the end it is idle with the counts, `Last suite PASS: 2 PASS (2 tests)` (by verdict name, as in the summary: `1 ERROR, 1 FAIL, 2 PASS`). A suite with an ERROR test ends in state `error`; one the gate stopped because a dialog or security prompt stayed open stays `needs-person` until that dialog closes. See [README, Status board](../README.md#status-board).
+
 ## The summary
 
 `C:\temp\retrace\results\<stamp>_suite.json` and `<stamp>_suite.md` (written through temp files; a second suite in the same second is `<stamp>_suite_2.json`, `_3`...; the latest is the newest by write time). The Open test window's **Last suite** button opens the newest `.md`.

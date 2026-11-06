@@ -80,9 +80,18 @@ sealed class SuiteRun : ITestQueueOwner
         AcApp.LeaveModal += run.OnLeaveModal;
         message = $"Suite: {recordings.Count} test(s), step timeout {run._settings.SuiteStepTimeoutSeconds} s. The summary goes to {run._settings.Results}.";
         run.Say(message);
+        StatusBoardHost.RunStarted();
         run._queue.Begin();
         return true;
     }
+
+    /// <summary>For the status board: the queue (which test of how many).</summary>
+    public TestQueue Queue => _queue;
+
+    /// <summary>For the status board: why the suite waits for a person right now (a dialog or security prompt has stayed open for a few seconds
+    /// between two tests), else null. The suite gives up on it after 30 s.</summary>
+    public string? NeedsPersonReason => _blockedSince is { } since && DateTime.Now - since > TimeSpan.FromSeconds(3) ? _blockedReason : null;
+    string? _blockedReason;
 
     void OnEnterModal(object? s, EventArgs e) => _modal++;
     void OnLeaveModal(object? s, EventArgs e) { if (_modal > 0) _modal--; }
@@ -175,13 +184,14 @@ sealed class SuiteRun : ITestQueueOwner
         if (prompt != null || _modal > 0)
         {
             _blockedSince ??= now;
+            _blockedReason = prompt != null ? $"a security prompt is open: {prompt.Trim()}" : $"a dialog is open after {last}";
             if (now - _blockedSince < BlockedLimit) return QueueGate.Wait;
             Finish(prompt != null
                 ? $"AutoCAD did not answer: a security prompt (\"{prompt.Trim()}\") stayed open after {last}"
-                : $"AutoCAD did not answer: a dialog stayed open after {last}");
+                : $"AutoCAD did not answer: a dialog stayed open after {last}", blockedByDialog: true);
             return QueueGate.Halt;
         }
-        _blockedSince = null;
+        _blockedSince = null; _blockedReason = null;
         var docs = AcApp.DocumentManager.Cast<Document>().ToList();
         // AutoCAD closed every drawing that was open at the start (an untouched new drawing is closed when a file is opened): a blank drawing of the
         // suite's own is what the next tests start from. A test's drawing is never taken over for that, and never counts as the person's.
@@ -269,8 +279,9 @@ sealed class SuiteRun : ITestQueueOwner
 
     /// <summary>Writes the summary. <paramref name="stopReason"/> "" = the suite ran to its end. A test that was started but has no result, and the tests
     /// not reached, are listed (INCOMPLETE / NOT-RUN). The drawings of the suite are closed from application context, retrying until they are gone;
-    /// at shutdown (<paramref name="shutdown"/>, or Retrace's view restorer shutting down) only the summary is written.</summary>
-    void Finish(string stopReason, bool shutdown = false)
+    /// at shutdown (<paramref name="shutdown"/>, or Retrace's view restorer shutting down) only the summary is written.
+    /// <paramref name="blockedByDialog"/>: the gate gave up because a dialog or security prompt stayed open for 30 s (the status board then says needs-person while it is open).</summary>
+    void Finish(string stopReason, bool shutdown = false, bool blockedByDialog = false)
     {
         if (_done) return;
         _done = true;
@@ -282,6 +293,7 @@ sealed class SuiteRun : ITestQueueOwner
         _result.StopReason = stopReason;
         _result.AddMissing(_queue.Recordings, inFlight, ran);
         _result.FinishedUtc = DateTime.UtcNow.ToString("o");
+        StatusBoardHost.SuiteEnded(_result, blockedByDialog);
         // the exact drawings to close, taken now: what the person opens afterwards is never touched. The blank start drawing goes too, if it is still untouched.
         if (!shutdown && !ViewRestorer.IsShutdown)
         {

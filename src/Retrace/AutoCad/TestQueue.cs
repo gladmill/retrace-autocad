@@ -46,6 +46,9 @@ sealed class TestQueue
 
     public IReadOnlyList<string> Recordings { get; }
     public int Index { get; private set; } = -1;
+    /// <summary>The test being run (or sent, or the last one between two tests) as a number, 1-based; 1 before the first is sent. With <see cref="Total"/> for the status board ("Suite 2/3").</summary>
+    public int Position => Math.Max(Index + 1, 1);
+    public int Total => Recordings.Count;
     public State Current { get; private set; } = State.Idle;
     public string? SentPath { get; private set; }
     public DateTime SentAt { get; private set; }
@@ -120,6 +123,7 @@ sealed class TestQueue
         // Test() asks TakeExpected for the recording; this is what the Run test button types, ^C^C first: the test before may have left a
         // prompt open (a step that failed), and the text would answer it instead of starting the next test
         doc.SendStringToExecute("\u0003\u0003_RETRACERUN ", true, false, false);
+        StatusBoardHost.Changed();   // the status board: "Suite i/n" moves to the next test
     }
 
     void Watch()
