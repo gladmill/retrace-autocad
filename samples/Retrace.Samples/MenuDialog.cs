@@ -19,9 +19,15 @@ namespace Retrace.Samples
         };
         private readonly NativeMenuListBox files = new() { Name = "FilesList", AccessibleName = "Files", Location = new Point(16, 190), Size = new Size(288, 70), TabIndex = 2 };
         private readonly ContextMenuStrip catalogMenu = new() { Name = "CatalogMenu" };
-        private readonly Button ok = new() { Name = "okButton", Text = "OK", Location = new Point(148, 330), Size = new Size(75, 27), TabIndex = 3 };
-        private readonly Button cancel = new() { Name = "cancelButton", Text = "Cancel", Location = new Point(229, 330), Size = new Size(75, 27), TabIndex = 4, DialogResult = DialogResult.Cancel };
-        private readonly Label status = new() { Name = "StatusLabel", AutoSize = true, Location = new Point(16, 270), Text = "No menu used yet" };
+        private readonly ListView tools = new()
+        {
+            Name = "ToolsList", AccessibleName = "Tools", View = View.Details, HeaderStyle = ColumnHeaderStyle.Nonclickable, FullRowSelect = true, HideSelection = false, MultiSelect = false,
+            Location = new Point(16, 288), Size = new Size(288, 92), TabIndex = 3,
+        };
+        private readonly ContextMenuStrip toolsMenu = new() { Name = "ToolsMenu" };
+        private readonly Button ok = new() { Name = "okButton", Text = "OK", Location = new Point(148, 418), Size = new Size(75, 27), TabIndex = 4 };
+        private readonly Button cancel = new() { Name = "cancelButton", Text = "Cancel", Location = new Point(229, 418), Size = new Size(75, 27), TabIndex = 5, DialogResult = DialogResult.Cancel };
+        private readonly Label status = new() { Name = "StatusLabel", AutoSize = true, Location = new Point(16, 388), Text = "No menu used yet" };
 
         private const int IdMark = 9001, IdUnmark = 9002, IdClearAll = 9003;
 
@@ -29,7 +35,7 @@ namespace Retrace.Samples
         {
             Text = "Menu practice";
             AutoScaleMode = AutoScaleMode.Font;
-            ClientSize = new Size(320, 372);
+            ClientSize = new Size(320, 460);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
@@ -41,10 +47,28 @@ namespace Retrace.Samples
             Controls.Add(tree);
             Controls.Add(new Label { Name = "filesLabel", AutoSize = true, Location = new Point(16, 172), Text = "Files:" });
             Controls.Add(files);
+            Controls.Add(new Label { Name = "toolsLabel", AutoSize = true, Location = new Point(16, 270), Text = "Tools:" });
+            Controls.Add(tools);
             Controls.Add(status);
             Controls.Add(ok);
             Controls.Add(cancel);
             PartCatalog.Fill(tree);
+            tools.Columns.Add("Tool", 270);
+            foreach (var t in new[] { "Hammer", "Wrench", "Pliers" }) tools.Items.Add(t);
+
+            // a list view (SysListView32) with a ContextMenuStrip: Flag / Unflag act on the selected item (a right-click selects the item under the mouse natively), Clear flags on all
+            ToolStripMenuItem Flagger(string name, string text, Func<string, string> change)
+            {
+                var item = new ToolStripMenuItem(text) { Name = name };
+                item.Click += (_, _) => { if (tools.SelectedItems.Count > 0) { var i = tools.SelectedItems[0]; i.Text = change(i.Text); status.Text = text.Replace("&", ""); } };
+                return item;
+            }
+            toolsMenu.Items.Add(Flagger("flagItem", "&Flag", t => t.TrimEnd('*') + "*"));
+            toolsMenu.Items.Add(Flagger("unflagItem", "&Unflag", t => t.TrimEnd('*')));
+            var clearFlags = new ToolStripMenuItem("&Clear flags") { Name = "clearFlagsItem" };
+            clearFlags.Click += (_, _) => { foreach (ListViewItem i in tools.Items) i.Text = i.Text.TrimEnd('*'); status.Text = tools.SelectedItems.Count == 0 ? "Flags cleared, no item selected" : "Flags cleared, " + tools.SelectedItems.Count + " selected"; };
+            toolsMenu.Items.Add(clearFlags);
+            tools.ContextMenuStrip = toolsMenu;
             foreach (var f in new[] { "plan.dwg", "section.dwg", "detail.dwg" }) files.Items.Add(f);
 
             var rename = new ToolStripMenuItem("&Rename") { Name = "renameItem" };
@@ -84,6 +108,8 @@ namespace Retrace.Samples
         public string Note => tree.SelectedNode?.Tag as string ?? "";
         /// <summary>The number of nodes under Tools (a Duplicate there adds one).</summary>
         public int ToolsCount => tree.Nodes.Cast<TreeNode>().FirstOrDefault(n => n.Text == "Tools")?.Nodes.Count ?? 0;
+        /// <summary>The tools list with the flagged items marked by *.</summary>
+        public string ToolList => string.Join(",", tools.Items.Cast<ListViewItem>().Select(i => i.Text));
         public string FileList => string.Join(",", files.Items.Cast<string>());
 
         protected override void WndProc(ref Message m)

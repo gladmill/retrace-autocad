@@ -77,6 +77,10 @@ sealed partial class DialogWatch
         public readonly TreeTickCache Ticks = new();
         /// <summary>The labels of trees whose check boxes were cut at <see cref="TreeChecks.MaxItems"/> items: `truncated` of the dialog's <c>dialog_values</c>.</summary>
         public readonly HashSet<string> Truncated = new();
+        /// <summary>The tree views, grids, lists and tab controls of a WPF dialog (kind and name) that the log line already named: each new one is named once.</summary>
+        public readonly Dictionary<string, Retrace.Core.WpfPresses.Unsupported> WpfParts = new();
+        /// <summary>When the parts of the window were last looked for (a periodic read looks about once a second; a press or the close always).</summary>
+        public long PartsMs = -10000;
         /// <summary>A WPF dialog (<see cref="WpfDialogs.IsWindow"/>), once known; its presses are in DialogWatch.Wpf.cs.</summary>
         public bool? Wpf;
     }
@@ -89,7 +93,7 @@ sealed partial class DialogWatch
 
     /// <summary>ParentN: the <c>for</c> of the dialog this one was opened from (null: it was opened with no other tracked dialog open). Statics: the static texts of the last read
     /// that asked for them. ClosedBy: with <c>closedWith</c> "click", the button whose click closed the dialog. CloseTab: the tab showing when it closed (null: it has no tabs).</summary>
-    public sealed record Result(int ForN, string? Title, string Source, List<FieldChange> Changes, int Read, string? ClosedWith, int? ParentN = null, List<DialogStatic>? Statics = null, string? ClosedBy = null, string? CloseTab = null, List<string>? Truncated = null);
+    public sealed record Result(int ForN, string? Title, string Source, List<FieldChange> Changes, int Read, string? ClosedWith, int? ParentN = null, List<DialogStatic>? Statics = null, string? ClosedBy = null, string? CloseTab = null, List<string>? Truncated = null, List<Retrace.Core.WpfPresses.Unsupported>? Parts = null);
 
     readonly DialogStack<Entry> _stack = new();
     readonly HashSet<IntPtr> _notNested = new();   // windows that opened over a dialog but could not be recorded: looked at once
@@ -595,7 +599,7 @@ sealed partial class DialogWatch
     {
         if (!Native.Exists(e.Hwnd)) return;   // gone: keep the last snapshot
         e.LastReadMs = nowMs;
-        if (IsWpf(e)) { WpfRead(e, nowMs); return; }   // in process, on this thread: no UI Automation
+        if (IsWpf(e)) { WpfRead(e, nowMs, statics); return; }   // in process, on this thread: no UI Automation
         if (statics && DialogReader.ReadStatics(e.Hwnd) is { Count: > 0 } st) e.Statics = st;
         if (e.Source == "win32")
         {
@@ -654,6 +658,6 @@ sealed partial class DialogWatch
         Read(e, nowMs, statics: true);
         var (closedWith, by) = e.Trail.Final(e.ClosedWith, nowMs);
         return new Result(e.ForN, e.Title, e.Source, e.Tracker.Changes(), e.Tracker.ReadCount, closedWith, e.Parent?.ForN, e.Statics, by, e.Showing.Length > 0 ? e.Showing : null,
-            e.Truncated.Count > 0 ? e.Truncated.ToList() : null);
+            e.Truncated.Count > 0 ? e.Truncated.ToList() : null, e.WpfParts.Count > 0 ? e.WpfParts.Values.ToList() : null);
     }
 }

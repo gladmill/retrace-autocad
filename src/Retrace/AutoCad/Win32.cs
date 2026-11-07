@@ -105,6 +105,7 @@ internal static unsafe class Win32
     [DllImport("user32")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT r);
     [DllImport("user32")] public static extern bool GetClientRect(IntPtr hwnd, out RECT r);
     [DllImport("user32")] public static extern bool ClientToScreen(IntPtr hwnd, ref POINT p);
+    [DllImport("user32")] public static extern bool ScreenToClient(IntPtr hwnd, ref POINT p);
     [DllImport("user32")] public static extern bool MapDialogRect(IntPtr hwnd, ref RECT r);
     [DllImport("user32")] public static extern bool EnumChildWindows(IntPtr hwnd, EnumChildProc proc, IntPtr lParam);
     [DllImport("user32", EntryPoint = "GetClassNameW", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hwnd, char* buf, int max);

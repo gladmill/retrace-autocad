@@ -276,4 +276,166 @@ public class ContextMenuTests : IDisposable
         Assert.Single(Build(withFields).Single(s => s.Kind == "palette").Values!);
         Assert.Contains("Set **Filter** to `b`", Script(withFields));
     }
+
+    // ---- the keys that open a menu, a list view as the target -------------------------------------------------------------------
+
+    [Theory]
+    [InlineData(0x0100u, 0x5Du, false, false, true)]    // the Menu key
+    [InlineData(0x0104u, 0x79u, true, false, true)]     // Shift+F10 arrives as WM_SYSKEYDOWN (the VM test of 2026-11-07 recorded nothing before this was accepted)
+    [InlineData(0x0100u, 0x79u, true, false, false)]    // not as WM_KEYDOWN
+    [InlineData(0x0104u, 0x79u, false, false, false)]   // F10 alone is the menu bar
+    [InlineData(0x0104u, 0x79u, true, true, false)]     // Alt held
+    [InlineData(0x0100u, 0x5Du, false, true, false)]
+    [InlineData(0x0104u, 0x5Du, false, false, false)]   // the Menu key only as WM_KEYDOWN
+    [InlineData(0x0100u, 0x41u, true, false, false)]
+    [InlineData(0x0101u, 0x5Du, false, false, false)]   // key up
+    public void MenuKeysOpenAMenu(uint message, uint vk, bool shift, bool alt, bool opens) => Assert.Equal(opens, MenuKeys.Opens(message, vk, shift, alt));
+
+    [Fact]
+    public void AListViewMenuKeepsItsControlAndItem()
+    {
+        var line = """{"t":5,"n":3,"type":"context_menu","kind":"winforms","target":"name:ToolsList","label":"Tools","targetKind":"listview","item":"Wrench","path":["Flag"]}""";
+        var choice = MenuChoice.From(JsonDocument.Parse(line).RootElement)!;
+        Assert.Equal("listview", choice.TargetKind);
+        Assert.Equal("name:ToolsList", choice.Target);
+        Assert.Equal("Right-click **Wrench** in **Tools**, choose **Flag**", choice.Wording());
+        Assert.Contains(choice.ToFields(), f => f.Item1 == "targetKind" && (string?)f.Item2 == "listview");
+        Assert.Contains(choice.ToFields(), f => f.Item1 == "item" && (string?)f.Item2 == "Wrench");
+    }
+
+    [Fact]
+    public void AListViewMenuOnNoItemAndAMultiSelectionAreKept()
+    {
+        var none = MenuChoice.From(JsonDocument.Parse("""{"type":"context_menu","kind":"winforms","target":"name:ToolsList","label":"Tools","targetKind":"listview","path":["Clear flags"],"noItem":true}""").RootElement)!;
+        Assert.True(none.NoItem);
+        Assert.Contains(none.ToFields(), f => f.Item1 == "noItem" && f.Item2 is true);
+        Assert.Equal("Right-click empty space in **Tools**, choose **Clear flags**", none.Wording());
+
+        var many = MenuChoice.From(JsonDocument.Parse("""{"type":"context_menu","kind":"winforms","target":"name:ToolsList","label":"Tools","targetKind":"listview","item":"Wrench","selection":["Hammer","Wrench"],"path":["Flag"]}""").RootElement)!;
+        Assert.False(many.NoItem);
+        Assert.Equal(new[] { "Hammer", "Wrench" }, many.Selection);
+        Assert.Equal(new[] { "Hammer", "Wrench" }, (IEnumerable<string>)many.ToFields().First(f => f.Item1 == "selection").Item2!);
+
+        // a recording from before noItem / selection: neither is set, and neither is written back
+        var old = MenuChoice.From(JsonDocument.Parse("""{"type":"context_menu","kind":"winforms","target":"name:ToolsList","targetKind":"listview","path":["Flag"]}""").RootElement)!;
+        Assert.False(old.NoItem);
+        Assert.Null(old.Selection);
+        Assert.DoesNotContain(old.ToFields(), f => f.Item1 is "noItem" or "selection" && f.Item2 != null);
+    }
+
+    [Fact]
+    public void AListViewMenuKeepsRowTruncationHeaderAndIsNotSplitOnTheTreeSeparator()
+    {
+        var line = """{"type":"context_menu","kind":"winforms","target":"name:ToolsList","label":"Tools","targetKind":"listview","item":"A › B","itemIndex":3,"occurrence":2,"selection":["A › B","C"],"path":["Flag"]}""";
+        var c = MenuChoice.From(JsonDocument.Parse(line).RootElement)!;
+        Assert.Equal(3, c.ItemIndex);
+        Assert.Equal(2, c.Occurrence);
+        Assert.Equal("A › B", c.ItemLeaf);   // a list view's text is one row, not a tree path
+        Assert.Equal("With **A › B**, **C** selected, right-click **A › B** in **Tools**, choose **Flag**", c.Wording());
+        Assert.Equal("with A › B, C selected, right-click A › B in Tools, choose Flag", c.Phrase());
+        Assert.Contains(c.ToFields(), f => f.Item1 == "itemIndex" && (int?)f.Item2 == 3);
+        Assert.Contains(c.ToFields(), f => f.Item1 == "occurrence" && (int?)f.Item2 == 2);
+
+        var many = new MenuChoice("winforms", "name:L", "L", "x", new[] { "Flag" }, TargetKind: "listview", Selection: Enumerable.Range(1, 8).Select(i => "i" + i).ToList());
+        Assert.Contains("i1, i2, i3, i4, i5 and 3 more selected", many.Wording(false));
+        Assert.StartsWith("With many items selected, ", (many with { SelectionTruncated = true }).Wording(false));
+
+        var header = MenuChoice.From(JsonDocument.Parse("""{"type":"context_menu","kind":"winforms","target":"name:ToolsList","label":"Tools","targetKind":"listview","onHeader":true,"path":["Clear flags"]}""").RootElement)!;
+        Assert.True(header.OnHeader);
+        Assert.False(header.NoItem);
+        Assert.Equal("Right-click the header of **Tools**, choose **Clear flags**", header.Wording());
+        Assert.Contains(header.ToFields(), f => f.Item1 == "onHeader" && f.Item2 is true);
+
+        var truncated = MenuChoice.From(JsonDocument.Parse("""{"type":"context_menu","kind":"winforms","target":"name:ToolsList","targetKind":"listview","item":"x","selectionTruncated":true,"path":["Flag"]}""").RootElement)!;
+        Assert.True(truncated.SelectionTruncated);
+        Assert.Null(truncated.Selection);
+        Assert.Equal(-1, truncated.ItemIndex);   // an older recording: no row recorded
+    }
+
+    // ---- list view rows: one comparison, occurrence, duplicate texts ------------------------------------------------------------
+
+    [Fact]
+    public void ListViewRowsCompareTextsTheSameWayOnBothSides()
+    {
+        Assert.True(ListViewRows.Same(" Hammer ", "hammer"));
+        Assert.False(ListViewRows.Same("Hammer", "Hammers"));
+        var texts = new[] { "A", " a", "B", "A " };
+        Assert.Equal(1, ListViewRows.OccurrenceOf(texts, 0));
+        Assert.Equal(2, ListViewRows.OccurrenceOf(texts, 1));   // the recorder counts with the same comparison ...
+        Assert.Equal(3, ListViewRows.OccurrenceOf(texts, 3));
+        Assert.Equal(1, ListViewRows.Resolve(texts, "A", 2, 1, out _)); // ... and replay finds the row it counted
+        Assert.Equal(3, ListViewRows.Resolve(texts, "a", 3, 3, out _));
+        Assert.Equal(1, ListViewRows.Resolve(texts, "A", 0, 1, out _)); // an older recording: the recorded row while it still has the text
+        Assert.Equal(0, ListViewRows.Resolve(texts, "A", 0, 9, out _)); // ... else the first row with it
+        Assert.Equal(-1, ListViewRows.Resolve(texts, "Z", 1, 0, out var none));
+        Assert.Equal("no item \"Z\" in the list", none);
+        Assert.Equal(2, ListViewRows.Resolve(new[] { "x", "", "" }, "", 1, 2, out _));   // blank text: by row
+
+        // fewer rows with the text than the recording used: a reason, never another row
+        Assert.Equal(-1, ListViewRows.Resolve(new[] { "A", "B" }, "A", 2, 0, out var few));
+        Assert.Equal("only 1 row \"A\", the recording used the 2nd", few);
+    }
+
+    static MenuChoice ListMenu(string item, int index, int occurrence, string[]? selection = null, int[]? occurrences = null) =>
+        new("winforms", "name:L", "L", item, new[] { "Flag" }, TargetKind: "listview", ItemIndex: index, Occurrence: occurrence, Selection: selection, SelectionOccurrences: occurrences);
+
+    [Fact]
+    public void ADuplicateTextSelectionMapsEachEntryToItsOwnRow()
+    {
+        var texts = new[] { "A", "B", "A", "C", "A" };
+        var plan = ListViewRows.Plan(texts, ListMenu("A", 2, 2, new[] { "A", "A", "C" }, new[] { 2, 3, 1 }), out var problem)!.Value;
+        Assert.Null(problem);
+        Assert.Equal(2, plan.At);
+        Assert.Equal(new[] { 2, 4, 3 }, plan.Rows);   // the item's own row once, the other A is the third, never a second row for the item
+
+        // an older recording with no occurrences: the item's entry is the item's row, the other entry the first row not taken
+        var old = ListViewRows.Plan(texts, ListMenu("A", 2, 0, new[] { "A", "A" }), out problem)!.Value;
+        Assert.Equal(2, old.At);
+        Assert.Equal(new[] { 2, 0 }, old.Rows);
+    }
+
+    [Fact]
+    public void AMissingRowIsNamedAndNothingIsPlanned()
+    {
+        var texts = new[] { "A", "B" };
+        Assert.Null(ListViewRows.Plan(texts, ListMenu("A", 0, 1, new[] { "A", "Gone" }, new[] { 1, 1 }), out var problem));
+        Assert.Equal("no item \"Gone\" in the list", problem);
+        Assert.Null(ListViewRows.Plan(texts, ListMenu("Missing", 5, 1), out problem));
+        Assert.Equal("no item \"Missing\" in the list", problem);
+    }
+
+    [Fact]
+    public void SelectionOccurrencesRoundTripAndAreLeftOutWhenThereIsNoSelection()
+    {
+        var c = ListMenu("A", 2, 2, new[] { "A", "C" }, new[] { 2, 1 });
+        var json = JsonSerializer.Serialize(c.ToFields().Where(f => f.Item2 != null).ToDictionary(f => f.Item1, f => f.Item2));
+        var back = MenuChoice.From(JsonDocument.Parse("{\"type\":\"context_menu\"," + json[1..]).RootElement)!;
+        Assert.Equal(new[] { 2, 1 }, back.SelectionOccurrences);
+        Assert.DoesNotContain(ListMenu("A", 2, 2).ToFields(), f => f.Item1 == "selectionOccurrences" && f.Item2 != null);
+        Assert.StartsWith("Right-click", ListMenu("", -1, 0).Wording());   // no item recorded: no "With ... selected"
+    }
+
+    [Fact]
+    public void ABlankTextSelectionEntryIsFoundByItsRow()
+    {
+        var texts = new[] { "A", "", "B", "" };
+        var menu = ListMenu("A", 0, 1, new[] { "A", "", "" }, new[] { 1, 1, 2 }) with { SelectionRows = new[] { 0, 1, 3 } };
+        var plan = ListViewRows.Plan(texts, menu, out var problem)!.Value;
+        Assert.Null(problem);
+        Assert.Equal(new[] { 0, 1, 3 }, plan.Rows);
+        Assert.Null(ListViewRows.Plan(new[] { "A", "x" }, menu, out problem));   // the recorded blank row is not blank now
+        Assert.Equal("no blank row 1 in the list", problem);
+
+        var json = JsonSerializer.Serialize(menu.ToFields().Where(f => f.Item2 != null).ToDictionary(f => f.Item1, f => f.Item2));
+        Assert.Equal(new[] { 0, 1, 3 }, MenuChoice.From(JsonDocument.Parse("{\"type\":\"context_menu\"," + json[1..]).RootElement)!.SelectionRows);
+    }
+
+    [Fact]
+    public void AListWithAKeyButNoLabelIsTheListNotTheDialog()
+    {
+        var m = new MenuChoice("win32", "id:1004", "", "", new[] { "Clear" }, TargetKind: "listview", NoItem: true);
+        Assert.Equal("Right-click empty space in the list, choose Clear", m.Wording(false));
+        Assert.Equal("Right-click the header of the list, choose Clear", (m with { OnHeader = true, NoItem = false }).Wording(false));
+        Assert.Equal("Right-click the dialog, choose Clear", (m with { Target = "", TargetKind = "" }).Wording(false));
+    }
 }

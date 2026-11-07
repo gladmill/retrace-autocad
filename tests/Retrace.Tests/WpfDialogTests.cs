@@ -177,4 +177,91 @@ public class WpfDialogTests
         c.MouseDown(null);                        // a mouse press ends a key whose key-up was never seen
         Assert.False(c.IsPress(b, 9000));
     }
+
+    [Fact]
+    public void Texts_inside_a_control_are_not_static_texts_of_the_window()
+    {
+        // a button, a tab header, a list / tree / menu item, a combo box and a grid show their own value or label, never a static text
+        foreach (var chain in new[] { C("Button", "ButtonBase"), C("CheckBox", "ToggleButton", "ButtonBase"), C("TabItem", "HeaderedContentControl"), C("ComboBox", "Selector"), C("ListBoxItem", "ContentControl"),
+                                      C("TreeViewItem", "HeaderedItemsControl"), C("MenuItem", "HeaderedItemsControl"), C("DataGrid", "MultiSelector"), C("TextBox", "TextBoxBase"), C("ToolTip", "ContentControl") })
+            Assert.True(DialogStatics.WpfOwnsItsTexts(chain), chain[0]);
+        // a label, a group box, a tab control (its page content is the window's text) and a plain panel are not
+        foreach (var chain in new[] { C("Label", "ContentControl"), C("GroupBox", "HeaderedContentControl"), C("TabControl", "Selector"), C("TreeView", "ItemsControl"), C("StackPanel", "Panel") })
+            Assert.False(DialogStatics.WpfOwnsItsTexts(chain), chain[0]);
+    }
+
+    [Fact]
+    public void A_dialog_with_a_tree_or_tab_control_says_so_in_its_replay_result()
+    {
+        Assert.Null(WpfPresses.UnsupportedNote(new List<WpfPresses.Unsupported>()));
+        Assert.Equal("unverified: the dialog has a tree \"PartsTree\", which is not recorded or replayed (what a person chose or switched there is not repeated)",
+            WpfPresses.UnsupportedNote(new[] { new WpfPresses.Unsupported("tree", "PartsTree") }));
+        Assert.Equal("unverified: the dialog has a tab control \"MainTabs\" and a tree, which are not recorded or replayed (what a person chose or switched there is not repeated)",
+            WpfPresses.UnsupportedNote(new[] { new WpfPresses.Unsupported("tabs", "MainTabs"), new WpfPresses.Unsupported("tree", "") }));
+        Assert.Equal("unverified: the dialog has a tab control \"A\", a tree and a tab control \"B\", which are not recorded or replayed (what a person chose or switched there is not repeated)",
+            WpfPresses.UnsupportedNote(new[] { new WpfPresses.Unsupported("tabs", "A"), new WpfPresses.Unsupported("tree", ""), new WpfPresses.Unsupported("tabs", "B"), new WpfPresses.Unsupported("tree", "") }));
+    }
+
+    [Fact]
+    public void A_missing_field_in_a_dialog_with_a_tab_control_is_explained()
+    {
+        Assert.Equal("", WpfPresses.TabHint(new[] { new WpfPresses.Unsupported("tree", "T") }));
+        Assert.Contains("tab control", WpfPresses.TabHint(new[] { new WpfPresses.Unsupported("tabs", "MainTabs") }));
+    }
+
+    [Fact]
+    public void A_wpf_text_keeps_its_ampersand_and_is_still_cut_and_capped()
+    {
+        var wpf = DialogStatics.Build(new (int, string?)[] { (0, "Nuts & Bolts"), (0, "A && B"), (0, " "), (0, new string('x', 300)) }, stripMnemonics: false);
+        Assert.Equal(new[] { "Nuts & Bolts", "A && B" }, wpf.Take(2).Select(x => x.Text));
+        Assert.Equal(DialogStatics.MaxTextLength, wpf[2].Text.Length);
+        // the Win32 rule is unchanged
+        Assert.Equal("Nuts  Bolts", DialogStatics.Build(new (int, string?)[] { (0, "Nuts & Bolts") })[0].Text);
+    }
+
+    [Fact]
+    public void The_unsupported_note_names_grids_and_lists_and_survives_a_null_name()
+    {
+        Assert.Contains("a grid \"G\"", WpfPresses.UnsupportedNote(new[] { new WpfPresses.Unsupported("grid", "G") }));
+        Assert.Contains("a list", WpfPresses.UnsupportedNote(new[] { new WpfPresses.Unsupported("list", "") }));
+        Assert.Equal("the dialog has a tree, which is not recorded or replayed (what a person chose or switched there is not repeated)", WpfPresses.UnsupportedParts(new[] { new WpfPresses.Unsupported("tree", null!) }));
+        Assert.StartsWith("unverified: ", WpfPresses.UnsupportedNote(new[] { new WpfPresses.Unsupported("tabs", null!) }));
+        Assert.Null(WpfPresses.UnsupportedParts(new List<WpfPresses.Unsupported>()));
+    }
+
+    [Fact]
+    public void An_unknown_part_kind_is_named_neutrally_and_unnamed_parts_differ_by_place()
+    {
+        Assert.Contains("a carousel", WpfPresses.UnsupportedParts(new[] { new WpfPresses.Unsupported("carousel", "") }));
+        Assert.DoesNotContain("tab control", WpfPresses.UnsupportedParts(new[] { new WpfPresses.Unsupported("carousel", "") }));
+        Assert.NotEqual(new WpfPresses.Unsupported("tree", "", ">General").Key, new WpfPresses.Unsupported("tree", "", ">Size").Key);   // unnamed parts of one kind on two tab pages
+        Assert.Equal(new WpfPresses.Unsupported("tree", "T", "0/1").Key, new WpfPresses.Unsupported("tree", "T", "5").Key);   // a named part is the same wherever it sits
+    }
+
+    [Fact]
+    public void The_recorded_parts_round_trip_and_join_the_live_ones()
+    {
+        var parts = new[] { new WpfPresses.Unsupported("tree", "PartsTree"), new WpfPresses.Unsupported("tabs", "", ">Style") };
+        var json = System.Text.Json.JsonSerializer.Serialize(WpfPresses.PartsToJson(parts));
+        var back = WpfPresses.PartsFromJson(System.Text.Json.JsonDocument.Parse(json).RootElement);
+        Assert.Equal(parts, back);
+        Assert.Null(WpfPresses.PartsToJson(new List<WpfPresses.Unsupported>()));
+        Assert.Empty(WpfPresses.PartsFromJson(System.Text.Json.JsonDocument.Parse("{}").RootElement));      // a recording from before
+        Assert.Empty(WpfPresses.PartsFromJson(System.Text.Json.JsonDocument.Parse("[1,{\"x\":2}]").RootElement));
+        // the recording saw a tree on a page that is not showing now; the window shows a grid the recording never saw; the tab control is in both
+        var union = WpfPresses.Union(parts, new[] { new WpfPresses.Unsupported("tabs", "", ">Style"), new WpfPresses.Unsupported("grid", "G") });
+        Assert.Equal(new[] { "tree", "tabs", "grid" }, union.Select(p => p.Kind));
+        Assert.Equal(new[] { "grid" }, WpfPresses.Union(null, new[] { new WpfPresses.Unsupported("grid", "G") }).Select(p => p.Kind));
+    }
+
+    [Fact]
+    public void Unnamed_parts_of_a_kind_on_one_page_are_one_warning_and_the_json_has_no_nulls()
+    {
+        var two = new[] { new WpfPresses.Unsupported("list", "", ">General"), new WpfPresses.Unsupported("list", "", ">General") };
+        Assert.Single(WpfPresses.Union(null, two));
+        Assert.Equal("unverified: the dialog has a list, which is not recorded or replayed (what a person chose or switched there is not repeated)", WpfPresses.UnsupportedNote(two));
+        var json = System.Text.Json.JsonSerializer.Serialize(WpfPresses.PartsToJson(new[] { new WpfPresses.Unsupported("tree", "T", "Size"), new WpfPresses.Unsupported("list", "", "Size"), new WpfPresses.Unsupported("grid", "") }));
+        Assert.Equal("[{\"kind\":\"tree\",\"name\":\"T\"},{\"kind\":\"list\",\"page\":\"Size\"},{\"kind\":\"grid\"}]", json);
+        Assert.DoesNotContain("null", json);
+    }
 }

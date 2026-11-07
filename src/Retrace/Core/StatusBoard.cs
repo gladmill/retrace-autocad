@@ -75,7 +75,7 @@ public static class StatusBoard
     /// <summary>`retrace-4812.json`: the AutoCAD process id is the instance, so two AutoCAD sessions never share a file.</summary>
     public static string FileName(int pid) => $"{Source}-{pid}.json";
 
-    /// <summary>"Retrace 0.6.0": the version without the build metadata (`+commit`) the SDK may append.</summary>
+    /// <summary>"Retrace 0.6.1": the version without the build metadata (`+commit`) the SDK may append.</summary>
     public static string WriterName(string? version)
     {
         var v = (version ?? "").Trim();

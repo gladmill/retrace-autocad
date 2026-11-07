@@ -17,7 +17,13 @@ namespace Retrace.Samples
         private static PaletteSet? set;
 
         [CommandMethod("DRAWPALETTE")]
-        public void Show()
+        public void Show() => ShowSet(false);
+
+        /// <summary>The same palette set, set to roll up when the mouse leaves it (<c>AutoRollUp</c>, what the palette's auto-hide button does), so a test starts with a hidden palette every time: a recording or a replay opens it by resting the mouse on its title strip.</summary>
+        [CommandMethod("DRAWPALETTEHIDE")]
+        public void ShowHidden() => ShowSet(true);
+
+        private static void ShowSet(bool autoHide)
         {
             if (set == null)
             {
@@ -31,6 +37,7 @@ namespace Retrace.Samples
                 set.Add("Menus", new MenusPage());
             }
             set.Visible = true;
+            set.AutoRollUp = autoHide;   // DRAWPALETTE after DRAWPALETTEHIDE pins it again
         }
 
         /// <summary>Draws in model space of the active drawing, from a palette button (outside any command).</summary>

@@ -9,6 +9,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using System.Windows.Interop;
 using System.Windows.Media;
+using Retrace.Core;
 
 namespace Retrace.AutoCad;
 
@@ -30,7 +31,25 @@ static class WpfPalette
         public List<DialogField> Fields = new();
         public List<FrameworkElement> Elements = new();
         public List<(ButtonBase Button, string Text)> Buttons = new();
+        DependencyObject? _root;
+        bool _hiddenToo;
+        internal void SetRoot(DependencyObject root, bool hiddenToo) { _root = root; _hiddenToo = hiddenToo; }
+
+        /// <summary>The parts of the window as it is at the time of the call, in a pruned pass of its own over the scan's root (capped at <see cref="MaxElements"/>; it does not look at what the scan saw): the tab controls, trees,
+        /// grids and lists Retrace does not follow, and with <paramref name="statics"/> the static texts too. Call it when the answer is wanted: a press, the close, a replay segment's end, about once a second while recording
+        /// (parts only), and from replay ticks only at a segment's end or for a field that is not found; never in a palette's scan or a plain replay poll. Never throws.</summary>
+        public Parts ReadParts(bool statics = true)
+        {
+            var ctx = new WalkContext(_root, _hiddenToo, false, fields: false, texts: statics, parts: true);
+            try { if (_root != null) Walk(_root, ctx); }
+            catch (Exception ex) { Log.Error("dialog parts (wpf)", ex); }
+            return new Parts(DialogStatics.Build(ctx.Texts, stripMnemonics: false), ctx.Unsupported);   // "&" is literal in WPF
+        }
     }
+
+    /// <summary>The static texts (the visible TextBlocks and Labels that are not part of a control, and read-only text boxes, in tree order, control id 0 (WPF has none), "&amp;" kept) and the tab controls, trees, grids and
+    /// lists with a selection that is no field (<see cref="WpfPresses.UnsupportedNote"/>).</summary>
+    internal sealed record Parts(List<DialogStatic> Statics, List<WpfPresses.Unsupported> Unsupported);
 
     /// <summary>The first WPF host window (HwndWrapper) under <paramref name="page"/>, or zero.</summary>
     public static IntPtr Host(IntPtr page)
@@ -56,27 +75,104 @@ static class WpfPalette
     internal static Scan ScanHost(IntPtr host, bool hiddenToo = false, bool disabledToo = false)
     {
         var scan = new Scan();
-        var raw = new List<RawControl>();
-        var rawEl = new List<FrameworkElement>();
+        WalkContext? ctx = null;
         try
         {
             if (host == IntPtr.Zero || HwndSource.FromHwnd(host)?.RootVisual is not DependencyObject root) return scan;
-            int seen = 0;
-            Walk(root, raw, rawEl, scan.Buttons, hiddenToo, disabledToo, ref seen);
+            scan.SetRoot(root, hiddenToo);
+            ctx = new WalkContext(root, hiddenToo, disabledToo, fields: true, texts: false, parts: false);   // the root lets LogCap say it once per window
+            Walk(root, ctx);
         }
         catch (Exception ex) { Log.Error("palette fields (wpf)", ex); }
-        foreach (var (f, idx) in DialogFieldsCore.BuildMapped(raw)) { scan.Fields.Add(f); scan.Elements.Add(rawEl[idx[0]]); }
+        if (ctx == null) return scan;
+        scan.Buttons = ctx.Buttons;
+        foreach (var (f, idx) in DialogFieldsCore.BuildMapped(ctx.Raw)) { scan.Fields.Add(f); scan.Elements.Add(ctx.RawEl[idx[0]]); }
         return scan;
     }
 
-    static void Walk(DependencyObject d, List<RawControl> raw, List<FrameworkElement> rawEl, List<(ButtonBase, string)> buttons, bool hiddenToo, bool disabledToo, ref int seen)
+    /// <summary>What one walk over the visual tree looks for (fields and buttons, static texts, parts that are not followed: any mix of the three) and carries: the findings, the options and the element count. A walk
+    /// for texts or parts only is pruned below controls that own their texts; one for fields goes through everything but the parts of a combo or list box.</summary>
+    sealed class WalkContext
     {
-        if (++seen > MaxElements) { if (seen == MaxElements + 1) Log.Info($"palette fields (wpf): stopped after {MaxElements} elements; later fields are not recorded"); return; }
-        if (d is UIElement u && (hiddenToo ? u.Visibility != Visibility.Visible : !u.IsVisible)) return;
-        if (Field(d) is { } f) { raw.Add(f); rawEl.Add((FrameworkElement)d); if (d is ComboBox or ListBox) return; }   // their own parts are part of them
-        if (d is ButtonBase b && IsPushButton(b) && (disabledToo || b.IsEnabled)) buttons.Add((b, ButtonText(b)));
-        for (int i = 0, n = VisualTreeHelper.GetChildrenCount(d); i < n; i++) Walk(VisualTreeHelper.GetChild(d, i), raw, rawEl, buttons, hiddenToo, disabledToo, ref seen);
+        public readonly bool HiddenToo, DisabledToo, Fields, WantTexts, WantParts;
+        public readonly List<RawControl> Raw = new();
+        public readonly List<FrameworkElement> RawEl = new();
+        public List<(ButtonBase Button, string Text)> Buttons = new();
+        public readonly List<(int, string?)> Texts = new();
+        public readonly List<WpfPresses.Unsupported> Unsupported = new();
+        /// <summary>The tab page the walk is in (the selected pages' headers of the tab controls above; parts walks only): the page of an unnamed part.</summary>
+        public string Page = "";
+        public readonly DependencyObject? Root;
+        public int Seen;
+        public WalkContext(DependencyObject? root, bool hiddenToo, bool disabledToo, bool fields, bool texts, bool parts) { Root = root; HiddenToo = hiddenToo; DisabledToo = disabledToo; Fields = fields; WantTexts = texts; WantParts = parts; }
     }
+
+    static void Walk(DependencyObject d, WalkContext x)
+    {
+        if (++x.Seen > MaxElements) { if (x.Seen == MaxElements + 1) LogCap(x); return; }
+        if (d is UIElement u && (x.HiddenToo ? u.Visibility != Visibility.Visible : !u.IsVisible)) return;
+        if (x.WantParts && UnsupportedKind(d) is { } kind)
+            x.Unsupported.Add(new WpfPresses.Unsupported(kind, (d is FrameworkElement { Name.Length: > 0 } fe ? fe.Name : AutomationProperties.GetName(d)) ?? "", x.Page));
+        if (x.Fields)
+        {
+            if (Field(d) is { } f) { x.Raw.Add(f); x.RawEl.Add((FrameworkElement)d); if (d is ComboBox or ListBox) return; }   // their own parts are part of them
+            if (d is ButtonBase b && IsPushButton(b) && (x.DisabledToo || b.IsEnabled)) x.Buttons.Add((b, ButtonText(b)));
+        }
+        else
+        {
+            if (x.WantTexts && d is TextBlock { Text.Length: > 0 } tb) { x.Texts.Add((0, tb.Text)); return; }
+            if (x.WantTexts && d is TextBox { IsReadOnly: true } ro) { x.Texts.Add((0, ro.Text)); return; }   // its template's texts (a placeholder) are not the window's
+            if (d is Control c && OwnsTexts(c.GetType())) return;   // a button, an item, a combo box: its texts are its own, and there is nothing of ours below
+        }
+        var page = x.Page;
+        if (x.WantParts && d is TabControl tabs) x.Page = page + ">" + PageName(tabs);
+        for (int i = 0, n = VisualTreeHelper.GetChildrenCount(d); i < n; i++) Walk(VisualTreeHelper.GetChild(d, i), x);
+        x.Page = page;
+    }
+
+    /// <summary>The selected page of a tab control by its header text (a string or a TextBlock, <see cref="TabPath.Clean"/>), else by its index (a non-string header, a bound control).</summary>
+    static string PageName(TabControl tabs)
+    {
+        var text = tabs.SelectedItem switch
+        {
+            TabItem { Header: string s } => s,
+            TabItem { Header: TextBlock tb } => tb.Text,
+            _ => null,
+        };
+        return TabPath.Clean(text) is { Length: > 0 } clean ? clean : "#" + tabs.SelectedIndex;
+    }
+
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<DependencyObject, HashSet<string>> CapLogged = new();
+    /// <summary>The walk stopped at <see cref="MaxElements"/>: said once per window and kind of walk, whoever asked.</summary>
+    static void LogCap(WalkContext x)
+    {
+        var kind = x.Fields ? "fields" : "parts/statics";
+        if (x.Root != null && !CapLogged.GetOrCreateValue(x.Root).Add(kind)) return;
+        Log.Info($"palette {kind} (wpf): stopped after {MaxElements} elements; later ones are not read");
+    }
+
+    /// <summary>The type names of <paramref name="o"/>, most derived first (one helper for the rules that go by type name).</summary>
+    static List<string> Chain(object o) => Chain(o.GetType());
+
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, bool> OwnsCache = new();
+    /// <summary>Does a control of this type own the texts inside it (<see cref="DialogStatics.WpfOwnsItsTexts"/>)? Cached per type: a scan asks for every control.</summary>
+    static bool OwnsTexts(Type t)
+    {
+        return OwnsCache.GetOrAdd(t, type => DialogStatics.WpfOwnsItsTexts(Chain(type)));
+    }
+    static List<string> Chain(Type t) { var l = new List<string>(); for (; t != null && t != typeof(object); t = t.BaseType!) l.Add(t.Name); return l; }
+
+    /// <summary>A visible part of the window that has a selection or pages Retrace does not follow and that is no field: a tab control ("tabs"), a tree ("tree"), a data grid ("grid"), any other list or item
+    /// control with a selection that is not a field (a multi-select list box or list view: "list"). Null for anything else (a single-select list box or a combo box is a field).</summary>
+    static string? UnsupportedKind(DependencyObject d) => d switch
+    {
+        TabControl => "tabs",
+        TreeView => "tree",
+        DataGrid => "grid",
+        ListBox { SelectionMode: SelectionMode.Single } => null,   // a field, a list view too (Field() reads any single-select ListBox)
+        System.Windows.Controls.Primitives.Selector and not ComboBox => "list",
+        _ => null,
+    };
 
     static RawControl? Field(DependencyObject d)
     {
@@ -172,8 +268,8 @@ static class WpfPalette
         if (AutomationProperties.GetName(b) is { Length: > 0 } n) text = DialogFieldsCore.CleanLabel(n);
         else text = b.Content switch
         {
-            string s => Retrace.Core.WpfPresses.StripAccess(s),
-            AccessText at => Retrace.Core.WpfPresses.StripAccess(at.Text),
+            string s => WpfPresses.StripAccess(s),
+            AccessText at => WpfPresses.StripAccess(at.Text),
             null => DialogFieldsCore.CleanLabel(b.Name),
             var other => DialogFieldsCore.CleanLabel(Content(other)),
         };
@@ -183,10 +279,9 @@ static class WpfPalette
     /// <summary>Is <paramref name="b"/> a real push button (<see cref="WpfPresses.IsPushButton"/>): not a toggle, repeat button, column header or a part of a scroll bar, slider, combo box or date picker?</summary>
     internal static bool IsPushButton(ButtonBase b)
     {
-        static List<string> Chain(object o) { var l = new List<string>(); for (var t = o.GetType(); t != null && t != typeof(object); t = t.BaseType) l.Add(t.Name); return l; }
         var parents = new List<IReadOnlyList<string>>();
         for (var p = b.TemplatedParent; p != null && parents.Count < 8; p = (p as FrameworkElement)?.TemplatedParent) parents.Add(Chain(p));
-        return Retrace.Core.WpfPresses.IsPushButton(Chain(b), parents);
+        return WpfPresses.IsPushButton(Chain(b), parents);
     }
 
     /// <summary>The text of the push button under a click at <paramref name="lParam"/> (client coordinates of <paramref name="hwnd"/>), or null

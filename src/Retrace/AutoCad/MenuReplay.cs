@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Controls;
 using Retrace.Core;
+using static Retrace.AutoCad.Win32;
 using static Retrace.AutoCad.DialogReader;
 
 namespace Retrace.AutoCad;
@@ -58,9 +59,7 @@ sealed class MenuReplay
     [DllImport("user32.dll")] static extern IntPtr GetSubMenu(IntPtr menu, int pos);
     [DllImport("user32.dll")] static extern uint GetMenuState(IntPtr menu, uint item, uint flags);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetMenuStringW(IntPtr menu, uint item, StringBuilder text, int max, uint flags);
-    [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr h, ref POINT p);
     [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h, out RECT r);
-    [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }
     [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
 
     const uint WM_CONTEXTMENU = 0x007B, WM_COMMAND = 0x0111, WM_RBUTTONDOWN = 0x0204, WM_RBUTTONUP = 0x0205, WM_KEYDOWN = 0x0100, MN_GETHMENU = 0x01E1, GW_OWNER = 4,
@@ -87,7 +86,7 @@ sealed class MenuReplay
     {
         if (_t0 == DateTime.MinValue) _t0 = now;
         if (_stage == Stage.Finished) return Message == null ? Status.Done : Status.Failed;
-        if (now - _t0 > Overall && _stage != Stage.Closing) return Fail($"the context menu ({_menu.PathText}) did not work in time");
+        if (now - _t0 > Overall && _stage != Stage.Closing) return Fail($"the context menu ({_menu.PathText}) did not work in time" + (Message is { Length: > 0 } last && _stage is Stage.Find or Stage.Open ? ": " + last : ""));
         switch (_stage)
         {
             case Stage.Find: return FindTarget(now, scan);
@@ -111,10 +110,30 @@ sealed class MenuReplay
             _stage = Stage.Open;
             return Pending("opening the menu");
         }
-        scan ??= Scan(_container, _hidden);
         IntPtr control = _container;
-        if (_menu.Target.Length > 0)
+        if (_menu.TargetKind == MenuListView.Kind && _menu.Target.Length > 0)
         {
+            // a list view is no field: found by its name or id, the selection and focus restored as a click would leave them, the menu opened on the item (or, for no item, on empty space)
+            control = MenuListView.Find(_container, _menu.Target, _hidden);
+            if (control == IntPtr.Zero) return Pending($"no list \"{(_menu.TargetLabel.Length > 0 ? _menu.TargetLabel : _menu.Target)}\" for the menu");
+            if (_menu.SelectionTruncated) return Fail("more items were selected in the list than a recording keeps; select them yourself and open the menu");
+            if (_menu.Item.Length > 0 || _menu.ItemIndex >= 0 || _menu.NoItem || _menu.OnHeader)
+            {
+                var at = MenuListView.Prepare(control, _menu, _listCache, _container, _hidden, out var why);
+                if (at == null) return Pending(why ?? "the list is not ready");
+                _control = control;
+                _postTo = at.PostTo;
+                _keyboard = at.Keyboard;
+                _point = (at.X, at.Y);
+                _stage = Stage.Open;
+                return Pending("opening the menu");
+            }
+            // the list could not be read when this was recorded (a row past the cap, a failed read): right-clicking its middle would act on whatever row is there
+            return Fail("the list could not be read when this was recorded, so which item the menu was opened on is not known; open the menu yourself");
+        }
+        else if (_menu.Target.Length > 0)
+        {
+            scan ??= Scan(_container, _hidden);
             var change = new FieldChange(_menu.Target, _menu.TargetLabel, _menu.TargetKind, "", _menu.Item, "");   // as a tree or list value: the item to select
             var map = FillMatcher.Match(new[] { change }, scan.Fields.Select(LiveField.Of).ToList());
             if (map[0] < 0 || scan.Handles[map[0]].Count == 0) return Pending($"no control \"{_menu.TargetLabel}\" for the menu");
@@ -192,6 +211,11 @@ sealed class MenuReplay
 
     int _attempt;
     bool _wpfDirect;
+    readonly MenuListView.TextCache _listCache = new();
+    /// <summary>The window the right-click is posted to when it is not the control itself (a list view's header); the control's strip is still the one asked for its menu.</summary>
+    IntPtr _postTo;
+    /// <summary>Open the menu with WM_CONTEXTMENU in its keyboard form (lParam -1): a list view whose rows fill it, nothing selected.</summary>
+    bool _keyboard;
 
     /// <summary>One way of asking the program for its menu, posted so that it shows it from its own message loop. A Win32 popup menu: WM_CONTEXTMENU first (what a right-click leads to), then the mouse messages. A WinForms
     /// control: the mouse messages first (a TreeView only shows a menu for the right-click it saw itself), then WM_CONTEXTMENU, then the strip is shown where the item is. false = no way left.</summary>
@@ -209,15 +233,17 @@ sealed class MenuReplay
             _attempt++;
             return true;
         }
-        if (mouse)
+        var to = _postTo != IntPtr.Zero ? _postTo : _control;
+        if (_keyboard) Post(to, WM_CONTEXTMENU, to, (IntPtr)(-1));
+        else if (mouse)
         {
             var client = new POINT { X = _point.X, Y = _point.Y };
-            ScreenToClient(_control, ref client);
+            ScreenToClient(to, ref client);
             var l = (IntPtr)(((client.Y & 0xFFFF) << 16) | (client.X & 0xFFFF));
-            Post(_control, WM_RBUTTONDOWN, (IntPtr)2, l);
-            Post(_control, WM_RBUTTONUP, IntPtr.Zero, l);
+            Post(to, WM_RBUTTONDOWN, (IntPtr)2, l);
+            Post(to, WM_RBUTTONUP, IntPtr.Zero, l);
         }
-        else Post(_control, WM_CONTEXTMENU, _control, (IntPtr)(((_point.Y & 0xFFFF) << 16) | (_point.X & 0xFFFF)));
+        else Post(to, WM_CONTEXTMENU, to, (IntPtr)(((_point.Y & 0xFFFF) << 16) | (_point.X & 0xFFFF)));
         _attempt++;
         return true;
     }
@@ -253,7 +279,6 @@ sealed class MenuReplay
         return Pending("closing the menu");
     }
 
-    [DllImport("user32.dll")] static extern bool ScreenToClient(IntPtr h, ref POINT p);
 
     string? _before;
 

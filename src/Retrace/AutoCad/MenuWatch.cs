@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Text;
 using Retrace.Core;
+using static Retrace.AutoCad.Win32;
 
 namespace Retrace.AutoCad;
 
@@ -28,6 +29,10 @@ sealed class MenuWatch
         public string Key { get; init; } = "";
         public string Label { get; init; } = "";
         public string Kind { get; init; } = "";
+        /// <summary>A list view: what the menu opened on (null = not a list view, or it could not be read).</summary>
+        public MenuListView.Opened? ListView { get; init; }
+        /// <summary>A list view: the right-click went to the column header.</summary>
+        public bool OnHeader { get; init; }
     }
 
     /// <summary>A menu item was chosen: the choice and where it was right-clicked (Spot null = a tracked dialog).</summary>
@@ -40,7 +45,7 @@ sealed class MenuWatch
     public Func<IntPtr> DialogTop { get; set; } = () => IntPtr.Zero;
     public bool Enabled { get; set; }
 
-    const uint WM_COMMAND = 0x0111, WM_MENUSELECT = 0x011F, WM_ENTERMENULOOP = 0x0211, WM_EXITMENULOOP = 0x0212, WM_KEYDOWN = 0x0100, WM_RBUTTONDOWN = 0x0204, WM_LBUTTONUP = 0x0202;
+    const uint WM_COMMAND = 0x0111, WM_MENUSELECT = 0x011F, WM_ENTERMENULOOP = 0x0211, WM_EXITMENULOOP = 0x0212, WM_KEYDOWN = 0x0100, WM_SYSKEYDOWN = 0x0104, WM_RBUTTONDOWN = 0x0204, WM_LBUTTONUP = 0x0202;
     const int WH_GETMESSAGE = 3, WH_CALLWNDPROC = 4;
     /// <summary>A right-click that opened no menu within this long is forgotten.</summary>
     const long OpenWithinMs = 1000;
@@ -143,7 +148,7 @@ sealed class MenuWatch
             if (code >= 0 && wParam == (IntPtr)1)
             {
                 var message = (uint)Marshal.ReadInt32(lParam, IntPtr.Size);
-                if (message is WM_RBUTTONDOWN or WM_KEYDOWN or WM_COMMAND or WM_LBUTTONUP) OnPosted(Marshal.PtrToStructure<Native.Msg>(lParam), Clock());
+                if (message is WM_RBUTTONDOWN or WM_KEYDOWN or WM_SYSKEYDOWN or WM_COMMAND or WM_LBUTTONUP) OnPosted(Marshal.PtrToStructure<Native.Msg>(lParam), Clock());
             }
         }
         catch (Exception ex) { Log.Error("menu hook", ex); }
@@ -157,7 +162,7 @@ sealed class MenuWatch
             case WM_RBUTTONDOWN:
                 Arm(m.hwnd, (short)((long)m.lParam & 0xFFFF), (short)(((long)m.lParam >> 16) & 0xFFFF), now);
                 break;
-            case WM_KEYDOWN when IsMenuKey((long)m.wParam):
+            case WM_KEYDOWN or WM_SYSKEYDOWN when MenuKeys.Opens(m.message, (long)m.wParam, GetKeyState(0x10) < 0, GetKeyState(0x12) < 0):
                 Arm(GetFocus() is var f && f != IntPtr.Zero ? f : m.hwnd, null, null, now);
                 break;
             case WM_COMMAND when _armed != null && _tracker.Active && ((long)m.wParam >> 16) == 0:   // HIWORD 0: a menu item (1 is an accelerator, others notifications of a control)
@@ -170,9 +175,6 @@ sealed class MenuWatch
                 break;
         }
     }
-
-    /// <summary>The Menu key, or Shift+F10: the keys that open a context menu.</summary>
-    static bool IsMenuKey(long vk) => vk == 0x5D || (vk == 0x79 && GetKeyState(0x10) < 0);
 
     // ---- the sent messages -----------------------------------------------------------------------------------------------------
 
@@ -239,12 +241,19 @@ sealed class MenuWatch
         {
             var (container, spot) = Where(hwnd);
             if (container == IntPtr.Zero) return;
+            // a right-click on a list view's header belongs to the list view; it opens on no item and leaves the selection alone
+            bool header = false;
+            var headerOwner = MenuListView.OwnerOfHeader(hwnd);
+            if (headerOwner != IntPtr.Zero) { hwnd = headerOwner; header = true; }
             var segment = DialogReader.Segment(DialogReader.ClassOf(hwnd));
             string item = "";
+            MenuListView.Opened? listView = null;
             if (segment == "systreeview32") item = MenuTargets.TreeItem(hwnd, hwnd, x, y);
             else if (segment == "listbox") item = MenuTargets.ListItem(hwnd, hwnd, x, y);
+            else if (segment == "syslistview32" && !header) { listView = MenuListView.Read(hwnd, x, y); item = listView.Item; }
             _armed = new Armed(hwnd, container, spot, item, now)
             {
+                ListView = listView, OnHeader = header,
                 Picture = spot != null ? PaletteSnap?.Invoke(spot) : null,
             };
             StartCalls();
@@ -268,7 +277,16 @@ sealed class MenuWatch
         for (var h = a.Hwnd; at < 0 && h != IntPtr.Zero && h != a.Container; h = DialogReader.GetParent(h))
             at = scan.Handles.FindIndex(l => l.Contains(h));
         string key = at >= 0 ? scan.Fields[at].Key : "", label = at >= 0 ? scan.Fields[at].Label : "", kind = at >= 0 ? scan.Fields[at].Kind : "";
-        Chosen?.Invoke(choice with { Target = key, TargetLabel = label, TargetKind = kind, Item = a.Item }, a with { Key = key, Label = label, Kind = kind });
+        // a list view is no field (its value is not recorded), but the menu belongs to it: keep the control and the item as a target of its own
+        if (at < 0 && MenuListView.Is(a.Hwnd) && Native.OwnedByThisThread(a.Hwnd)) { (key, label) = MenuListView.KeyOf(a.Hwnd, a.Container); kind = MenuListView.Kind; }
+        var lv = kind == MenuListView.Kind ? a.ListView : null;
+        if (kind == MenuListView.Kind && !a.OnHeader && lv is not { Known: true }) { Log.Info("menu on a list view: the list could not be read, no item is recorded"); lv = null; }
+        Chosen?.Invoke(choice with
+        {
+            Target = key, TargetLabel = label, TargetKind = kind, Item = a.Item,
+            NoItem = lv is { NoItem: true }, Selection = lv is { Selection.Count: > 0 } ? lv.Selection : null, SelectionOccurrences = lv is { Selection.Count: > 0 } ? lv.SelectionOccurrences : null, SelectionRows = lv is { Selection.Count: > 0 } ? lv.SelectionRows : null, ItemIndex = lv?.Index ?? -1, Occurrence = lv?.Occurrence ?? 0,
+            SelectionTruncated = lv is { Truncated: true }, OnHeader = kind == MenuListView.Kind && a.OnHeader,
+        }, a with { Key = key, Label = label, Kind = kind });
     }
 
     /// <summary>A WPF menu item was clicked (from <see cref="WpfMenus"/>): <paramref name="source"/> is the window the menu belongs to.</summary>
@@ -289,9 +307,6 @@ static class MenuTargets
 {
     const uint TVM_HITTEST = 0x1111, LB_ITEMFROMPOINT = 0x01A9, LB_GETTEXT = 0x0189, LB_GETTEXTLEN = 0x018A, LB_GETCURSEL = 0x0188;
     const uint SMTO_ABORTIFHUNG = 2;
-    [DllImport("user32.dll")] static extern bool ScreenToClient(IntPtr h, ref POINT p);
-    [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr h, ref POINT p);
-    [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }
 
     /// <summary>The path of the tree item under the click ((x, y) client coordinates of <paramref name="hit"/>, the window the click went to); with no point (the Menu key) the selected item.</summary>
     public static string TreeItem(IntPtr tree, IntPtr hit, int? x, int? y)

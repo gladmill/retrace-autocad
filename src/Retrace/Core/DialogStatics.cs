@@ -18,19 +18,26 @@ public static class DialogStatics
     public const int MaxCount = 100;
 
     /// <summary>The statics from the texts of the window's static and read-only edit controls, in window order: mnemonic ampersands taken out
-    /// (<c>&amp;&amp;</c> stays one <c>&amp;</c>), empty texts left out, each text cut at <see cref="MaxTextLength"/>, at most <see cref="MaxCount"/>.</summary>
-    public static List<DialogStatic> Build(IEnumerable<(int Id, string? Text)> texts)
+    /// (<c>&amp;&amp;</c> stays one <c>&amp;</c>; not with <paramref name="stripMnemonics"/> false, which WPF texts use: there "&amp;" is literal), empty texts left out, each text cut at <see cref="MaxTextLength"/>, at most <see cref="MaxCount"/>.</summary>
+    public static List<DialogStatic> Build(IEnumerable<(int Id, string? Text)> texts, bool stripMnemonics = true)
     {
         var list = new List<DialogStatic>();
         foreach (var (id, raw) in texts)
         {
             if (list.Count >= MaxCount) break;
-            var t = StripMnemonics(raw).Trim();
+            var t = (stripMnemonics ? StripMnemonics(raw) : raw ?? "").Trim();
             if (t.Length == 0) continue;
             list.Add(new DialogStatic(id, t.Length <= MaxTextLength ? t : t[..MaxTextLength]));
         }
         return list;
     }
+
+    /// <summary>Is a WPF element whose type chain (<paramref name="typeChain"/>: the type names, most derived first) is this one a control whose inner texts are not static texts of the window? The text of a button, a tab header,
+    /// an item of a list, tree, menu or grid, a combo box, a tool tip is the control's own value or label (a field, a click, a tab, a tree path), not a text the window shows. A <c>Label</c> or a <c>TextBlock</c> is not
+    /// one: it is what a person reads next to a field. Used by the WPF scan to skip what lies below such a control.</summary>
+    public static bool WpfOwnsItsTexts(IReadOnlyList<string> typeChain) =>
+        typeChain.Any(t => t is "ButtonBase" or "TabItem" or "ComboBox" or "ListBoxItem" or "TreeViewItem" or "MenuItem" or "DataGrid" or "GridViewColumnHeader"
+                         or "GridViewHeaderRowPresenter" or "ToolTip" or "TextBoxBase" or "DatePicker" or "Calendar");
 
     /// <summary>"&amp;Name" gives "Name", "A &amp;&amp; B" gives "A &amp; B".</summary>
     public static string StripMnemonics(string? s)
