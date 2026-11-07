@@ -16,7 +16,7 @@ namespace Retrace.Samples
 
             using var dialog = new MenuDialog();
             if (Application.ShowModalDialog(dialog) != System.Windows.Forms.DialogResult.OK) return;
-            var lines = new[] { "part: " + dialog.Selected, "note: " + dialog.Note, "tools: " + dialog.ToolsCount, "files: " + dialog.FileList };
+            var lines = new[] { "part: " + dialog.Selected, "note: " + dialog.Note, "tools: " + dialog.ToolsCount, "files: " + dialog.FileList, "tools list: " + dialog.ToolList };
 
             using (doc.LockDocument())
             using (var tr = doc.Database.TransactionManager.StartTransaction())

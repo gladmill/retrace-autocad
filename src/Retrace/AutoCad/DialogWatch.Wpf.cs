@@ -58,13 +58,30 @@ sealed partial class DialogWatch
     }
 
     /// <summary>One read of a WPF dialog, in process; its source is "wpf".</summary>
-    void WpfRead(Entry e, long nowMs)
+    void WpfRead(Entry e, long nowMs, bool statics = false, WpfPalette.Scan? taken = null)
     {
         e.Source = "wpf";
-        var fields = WpfDialogs.Read(e.Hwnd).Fields;
+        var scan = taken ?? WpfDialogs.Read(e.Hwnd);
+        // the static texts on request (a press, the input that closes the dialog), the parts Retrace does not follow then or about once a second: a part on another tab page shows up when its page does
+        // (a window that is closing or hidden shows nothing: its read keeps what the click took, and walks nothing again)
+        if ((statics || nowMs - e.PartsMs >= 1000) && Native.IsVisible(e.Hwnd))
+        {
+            e.PartsMs = nowMs;
+            var parts = scan.ReadParts(statics);
+            if (statics) e.Statics = parts.Statics;   // none now: none for this event, not the last page's texts
+            NotePartsOf(e, parts);
+        }
+        var fields = scan.Fields;
         if (fields.Count == 0) return;
         e.FieldSeen = true; e.Tracker.Observe(fields);
         if (e.Settle.OnRead(nowMs)) e.Tracker.Rebase();   // the first read after a click, when no input has come first: what the handler did is not the person's change
+    }
+
+    /// <summary>The parts of the window Retrace does not follow are kept for the dialog's `unsupported`, and a new one is named in the log, once (by <see cref="WpfPresses.Unsupported.Key"/>).</summary>
+    static void NotePartsOf(Entry e, WpfPalette.Parts parts)
+    {
+        var fresh = parts.Unsupported.Where(u => e.WpfParts.TryAdd(u.Key, u)).ToList();
+        if (WpfPresses.UnsupportedParts(fresh) is { } note) Log.Info($"dialog \"{e.Title}\" (wpf): {note}");
     }
 
     /// <summary>The message hook leaves the mouse and the keys of a WPF dialog to WPF's own events (true = nothing more to do with the message); the close box, Alt+F4 and the rest are the common code's.</summary>
@@ -142,16 +159,20 @@ sealed partial class DialogWatch
             return;
         }
         SettleIfPending(e, null);
-        ReadAtInput(e, now);
+        e.LastReadMs = now;
+        WpfRead(e, now, statics: true, taken: scan);   // the read for the input that closes the dialog: the scan this handler took before the button's own handlers
         if (role == "ok") Confirmed?.Invoke(e.ForN, e.Hwnd);
     }
 
-    /// <summary>The press is a click: the fields of <paramref name="scan"/> (read in the Click class handler, before the button's handlers; no static texts, which are Win32 texts), the click goes out, and the baseline moves to
+    /// <summary>The press is a click: the fields and static texts of <paramref name="scan"/> (read in the Click class handler, before the button's handlers), the click goes out, and the baseline moves to
     /// the values read, so the close holds only what changes after this click.</summary>
     void WpfCommit(Entry e, WpfPalette.Scan scan, string text, int index, long now)
     {
         e.LastReadMs = now;
         if (scan.Fields.Count > 0) { e.FieldSeen = true; e.Tracker.Observe(scan.Fields); }
+        var parts = scan.ReadParts();
+        e.Statics = parts.Statics;   // none: none for this click, not the last page's texts
+        NotePartsOf(e, parts);
         SettleIfPending(e, null);
         var click = new Click(e.ForN, text, 0, index, e.Tracker.Changes(), e.Tracker.ReadCount, e.Statics);
         e.Tracker.Rebase();

@@ -11,6 +11,7 @@ static partial class DialogReader
     {
         try
         {
+            if (WpfDialogs.IsWindow(window)) return WpfPalette.ScanHost(window, hiddenToo).ReadParts().Statics;   // a WPF window has no child windows: its texts come from its visual tree
             var handles = new List<IntPtr>();
             EnumChildWindows(window, (h, _) => { handles.Add(h); return true; }, IntPtr.Zero);
             return DialogStatics.Build(StaticTexts(window, handles, hiddenToo));

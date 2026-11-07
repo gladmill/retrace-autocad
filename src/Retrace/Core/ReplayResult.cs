@@ -54,6 +54,8 @@ public sealed class SegmentResult
     [JsonPropertyName("fields")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public List<FieldFillResult>? Fields { get; set; }
     /// <summary>The static texts the dialog showed just before the button was pressed (the closing segment: just before the close); left out when it read none.</summary>
     [JsonPropertyName("statics")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public List<DialogStatic>? Statics { get; set; }
+    /// <summary>What the dialog has that Retrace does not record or replay (a WPF tab control, tree, grid or list: <c>unverified: the dialog has a tree "PartsTree", ...</c>), whatever the segment's status; it is never the cause of a failure. Left out when none.</summary>
+    [JsonPropertyName("note")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Note { get; set; }
     /// <summary>The dialogs the button opened and the replay did; left out when none.</summary>
     [JsonPropertyName("nested")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public List<NestedDialogResult>? Nested { get; set; }
 }

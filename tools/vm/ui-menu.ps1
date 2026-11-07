@@ -6,6 +6,7 @@
 #   dblclick <ControlType>|<Name> real double click                                    expand <ControlType>|<Name>   ExpandCollapse pattern
 #   menuitem <Name>               real left click on the MenuItem with that name; waits up to 4 s for it to show (a context menu is up)
 #   menuitems                     the names of the MenuItems visible now (what a menu offers)
+#   vk <hex>                      real key press by virtual-key code, e.g. vk 5D = the Menu (Apps) key (SendKeys has none; Shift+F10 is key +{F10})
 #   key <sendkeys>                real keys (SendKeys syntax) to whatever has the focus      sleep <ms>
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Windows.Forms
 Add-Type @'
@@ -13,6 +14,8 @@ using System; using System.Runtime.InteropServices;
 public static class M {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, int x, int y, uint d, UIntPtr e);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+  [DllImport("user32.dll")] public static extern uint MapVirtualKey(uint code, uint mapType);
 }
 '@
 $o = 'C:\retrace-vm\out\act.txt'
@@ -53,6 +56,12 @@ foreach ($line in (Get-Content 'C:\retrace-vm\act.txt')) {
       foreach ($e in $ae::RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $c)) { if (-not $e.Current.IsOffscreen) { $log.Add("menu item: '" + $e.Current.Name + "'") } } }
     'findany' { # every element (any type) whose name starts with the text
       foreach ($e in $ae::RootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)) { if ($e.Current.Name -like "$arg*") { $log.Add("any: " + $e.Current.ControlType.ProgrammaticName + " '" + $e.Current.Name + "' off=" + $e.Current.IsOffscreen) } } }
+    'vk' { $v = [Convert]::ToByte($arg.Trim(), 16)
+      # KEYEVENTF_EXTENDEDKEY (1) only for the extended keys: Menu (Apps), Ins/Del/Home/End/PgUp/PgDn, the arrows, right Ctrl/Alt, LWin/RWin, Num Lock, Divide, Print Screen
+      $ext = @(0x5D, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E, 0xA3, 0xA5, 0x90, 0x6F, 0x2C, 0x5B, 0x5C) -contains [int]$v
+      $scan = [byte][M]::MapVirtualKey([uint32]$v, 0)
+      $f = if ($ext) { 1 } else { 0 }
+      [M]::keybd_event($v, $scan, $f, [UIntPtr]::Zero); [M]::keybd_event($v, $scan, $f -bor 2, [UIntPtr]::Zero); $log.Add("vk $arg (scan $scan, extended $ext)") }
     'key' { [System.Windows.Forms.SendKeys]::SendWait($arg); $log.Add("keys '$arg'") }
     'sleep' { Start-Sleep -Milliseconds ([int]$arg) }
   }

@@ -12,6 +12,12 @@ namespace Retrace.AutoCad;
 sealed partial class DialogAutoFiller
 {
     bool? _wpf;
+    /// <summary>The tab controls, trees, grids and lists the recording saw (`unsupported`): named in each segment's note together with the ones the window shows at the segment's end.</summary>
+    readonly List<WpfPresses.Unsupported> _recordedParts;
+    /// <summary>What the window showed of them at the ends of the segments so far (by <see cref="WpfPresses.Unsupported.Key"/>); the note of every segment is the recorded and these together.</summary>
+    readonly Dictionary<string, WpfPresses.Unsupported> _liveParts = new();
+    /// <summary>The note of a segment of this dialog: what the recording saw and what the window showed (null when none; a recording that has parts says so even if the window was never found).</summary>
+    string? PartsNote() => WpfPresses.UnsupportedNote(WpfPresses.Union(_recordedParts, _liveParts.Values));
     /// <summary>Why a queued press could not be done (set from the dispatcher, on the UI thread); <see cref="TickCore"/> gives up with it, in any phase.</summary>
     string? _pressFailure;
     /// <summary>Where the buttons pressed on the way were, for the boxes of a Tdoc picture.</summary>
@@ -40,13 +46,14 @@ sealed partial class DialogAutoFiller
         var scan = WpfDialogs.Read(_dlg);
         var map = FillMatcher.Match(values, scan.Fields.Select(LiveField.Of).ToList());
         var results = Cur.Results;
+        string? tabHint = null;   // asked once, for the first value that is not found
         for (int i = 0; i < values.Count; i++)
         {
             if (results[i].Status != FieldFillResult.NotFound) continue;
             if (FillMatcher.IsNoOp(values[i])) { results[i] = FieldFillResult.Ok(values[i].Label, "nothing to choose"); continue; }
             if (map[i] < 0)
             {
-                if (expired) results[i] = FieldFillResult.Fail(values[i].Label, "no matching control in the dialog");
+                if (expired) results[i] = FieldFillResult.Fail(values[i].Label, "no matching control in the dialog" + (tabHint ??= WpfPresses.TabHint(WpfPresses.Union(_recordedParts, scan.ReadParts(statics: false).Unsupported))));
                 continue;
             }
             // a value that did not go in is tried again until the controls timeout: a handler may still be filling the dialog
@@ -65,7 +72,7 @@ sealed partial class DialogAutoFiller
         for (int i = 0; i < values.Count; i++)
             if (results[i].Status == FieldFillResult.Applied && !FillMatcher.IsNoOp(values[i]))
                 results[i] = DialogFill.Verify(values[i], map[i] < 0 ? null : scan.Fields[map[i]].Value, results[i]);
-        if (results.Any(r => r.Status != FieldFillResult.Applied)) { GiveUp(null); return; }
+        if (results.Any(r => r.Status != FieldFillResult.Applied)) { NoteSegment(scan, gaveUp: true); GiveUp(null); return; }
         FinishWpf(scan, now);
     }
 
@@ -81,7 +88,7 @@ sealed partial class DialogAutoFiller
         int at = WpfPresses.Find(WpfDialogs.Texts(scan), seg.Button!, seg.ButtonIndex);
         if (at < 0)
         {
-            if (now - _segStart > ControlsTimeout) GiveUp($"no enabled button \"{seg.Button}\" in the dialog");
+            if (now - _segStart > ControlsTimeout) { NoteSegment(scan, gaveUp: true); GiveUp($"no enabled button \"{seg.Button}\" in the dialog"); }
             else State = Phase.Verify;   // tried again on the next tick
             return;
         }
@@ -89,6 +96,7 @@ sealed partial class DialogAutoFiller
         if (BeforeClose != null && IsClosingClick && !BeforeClose(ShotOfWpf(scan, true, scan.Buttons[at].Text, button))) { State = Phase.Verify; return; }
         if (WpfDialogs.RectOf(button) is { } rect) _pressedWpf.Add((rect, seg.Button!));
         WpfDialogs.PressLater(button, seg.Button!, StillWanted, why => _pressFailure ??= why);
+        NoteSegment(scan);
         Cur.Pressed = true;
         _pressedAt = now; _nestedUsed = 0; _lastNested = IntPtr.Zero;
         State = Phase.Pressed;
@@ -103,13 +111,25 @@ sealed partial class DialogAutoFiller
             // the button may not be there yet (enabled by the values just set): looked for again on the next tick, until the controls time out
             if (now - _segStart <= ControlsTimeout) { State = Phase.Verify; return; }
             // a Cancel with no button for it closes the window the way its close box does
+            NoteSegment(scan);   // this ends the segment, by the close box or by giving up
             if (!ok && WpfDialogs.PostClose(_dlg)) { State = Phase.Clicked; _at = now; return; }
             GiveUp($"could not find the {(ok ? "OK" : "Cancel")} button");
             return;
         }
         if (BeforeClose != null && !BeforeClose(ShotOfWpf(scan, ok, scan.Buttons[b].Text, scan.Buttons[b].Button))) return;   // tried again on the next tick
+        NoteSegment(scan);
         WpfDialogs.PressLater(scan.Buttons[b].Button, ok ? "OK" : "Cancel", StillWanted, why => _pressFailure ??= why);
         State = Phase.Clicked; _at = now;
+    }
+
+    /// <summary>The static texts just before the press or the close (read on request, with the window as it is now) and what the window has that is not followed, for the segment's result. On every way a segment ends.</summary>
+    void NoteSegment(WpfPalette.Scan scan, bool gaveUp = false)
+    {
+        // a segment that gives up keeps the texts taken just before its press or close, if there were any
+        bool keep = gaveUp && Cur.Statics != null;
+        var parts = scan.ReadParts(statics: !keep);
+        if (!keep) Cur.Statics = parts.Statics;
+        foreach (var p in parts.Unsupported) _liveParts[p.Key] = p;
     }
 
     bool _stopped;

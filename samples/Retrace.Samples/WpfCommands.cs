@@ -19,6 +19,21 @@ namespace Retrace.Samples
             Application.DocumentManager.MdiActiveDocument.Editor.WriteMessage("\n" + lines.Count + " text(s) drawn.");
         }
 
+        [CommandMethod("DRAWWPFTABS")]
+        public void DrawWpfTabs()
+        {
+            var window = new WpfTabsWindow();
+            if (Application.ShowModalWindow(window) != true) return;
+            var lines = new List<string>
+            {
+                "name " + (window.PlateName.Length == 0 ? "none" : window.PlateName) + " size " + window.Size + " mark " + (window.Mark ? "yes" : "no"),
+                "qty " + window.Qty + " part " + window.Part,
+                "note " + (window.Note.Length == 0 ? "none" : window.Note) + " depth " + window.Depth,
+            };
+            Draw(lines);
+            Application.DocumentManager.MdiActiveDocument.Editor.WriteMessage("\n" + lines.Count + " text(s) drawn.");
+        }
+
         [CommandMethod("DRAWMIX")]
         public void DrawMix()
         {

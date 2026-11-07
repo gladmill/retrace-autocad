@@ -218,7 +218,7 @@ static partial class DialogReader
 
     /// <summary>For a scan of a hidden window (an auto-hidden palette): the control and every window between it and <paramref name="top"/> have their own WS_VISIBLE. A page that is not the shown one
     /// (a WinForms TabPage, a property sheet's page, a control a plain dialog hides) has none, so its controls, and a tab control on it, are left out.</summary>
-    static bool OwnVisibleUpTo(IntPtr h, IntPtr top)
+    internal static bool OwnVisibleUpTo(IntPtr h, IntPtr top)
     {
         for (int n = 0; n < 40 && h != IntPtr.Zero && h != top; n++, h = GetParent(h))
             if (((uint)GetWindowLong(h, GWL_STYLE) & WS_VISIBLE) == 0) return false;

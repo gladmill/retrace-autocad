@@ -37,6 +37,64 @@ public static class WpfPresses
         return !templatedParentChains.Any(c => c.Any(t => t is "ScrollBar" or "Slider" or "ComboBox" or "DatePicker" or "Calendar" or "CalendarDayButton" or "Spinner"));
     }
 
+    /// <summary>A part of a WPF dialog that is not recorded or replayed: its kind ("tabs" a TabControl, "tree" a TreeView, "grid" a DataGrid, "list" any other selection control that is no field), its name (x:Name or
+    /// automation name, may be empty) and <paramref name="Page"/>, the tab page it is on (the selected pages' headers above it; empty when it is on none). An unnamed part is who it is by its kind and page: several unnamed
+    /// lists on one page are one warning.</summary>
+    public readonly record struct Unsupported(string Kind, string Name, string Page = "")
+    {
+        /// <summary>Who it is: kind and name; an unnamed part by its kind and tab page (stable where an object identity or an index path is not: a rebuilt template, a list that grew).</summary>
+        public string Key => string.IsNullOrEmpty(Name) ? Kind + "||" + Page : Kind + "|" + Name;
+    }
+
+    /// <summary>The recorder's JSON for the parts a WPF dialog had (`unsupported` of its `dialog_values`: <c>[{"kind":"tree","name":"PartsTree"}]</c>); null for none. An unnamed part has its <c>page</c> (the tab page) when it is on one; no null is written.</summary>
+    public static List<Dictionary<string, object?>>? PartsToJson(IReadOnlyCollection<Unsupported>? parts) =>
+        parts == null || parts.Count == 0 ? null : parts.Select(p =>
+        {
+            var d = new Dictionary<string, object?> { ["kind"] = p.Kind };
+            if (!string.IsNullOrEmpty(p.Name)) d["name"] = p.Name;
+            else if (!string.IsNullOrEmpty(p.Page)) d["page"] = p.Page;
+            return d;
+        }).ToList();
+
+    /// <summary>Reads an `unsupported` array; anything that is not an array of objects with a `kind` is skipped (a recording from before has none). Never throws.</summary>
+    public static List<Unsupported> PartsFromJson(System.Text.Json.JsonElement e)
+    {
+        var list = new List<Unsupported>();
+        if (e.ValueKind != System.Text.Json.JsonValueKind.Array) return list;
+        foreach (var p in e.EnumerateArray())
+        {
+            if (p.ValueKind != System.Text.Json.JsonValueKind.Object || !p.TryGetProperty("kind", out var k) || k.ValueKind != System.Text.Json.JsonValueKind.String) continue;
+            string Of(string n) => p.TryGetProperty(n, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.String ? v.GetString() ?? "" : "";
+            list.Add(new Unsupported(k.GetString() ?? "", Of("name"), Of("page")));
+        }
+        return list;
+    }
+
+    /// <summary>The parts of the recording and the live window together, each once (<see cref="Unsupported.Key"/>): the recording saw parts on pages that are not showing now, the window shows parts the recording never saw.</summary>
+    public static List<Unsupported> Union(IEnumerable<Unsupported>? recorded, IEnumerable<Unsupported> live)
+    {
+        var seen = new HashSet<string>();
+        return (recorded ?? Enumerable.Empty<Unsupported>()).Concat(live).Where(p => seen.Add(p.Key)).ToList();
+    }
+
+    /// <summary>The note a replay result carries for a WPF dialog that has parts Retrace does not follow, naming each: <c>unverified: the dialog has a tree "PartsTree" and a tab control "MainTabs", which are not recorded or
+    /// replayed (what a person chose there is not repeated)</c>; null when there is none. Tab controls, trees, grids and lists are named; any other kind is named neutrally ("a &lt;kind&gt;").</summary>
+    public static string? UnsupportedNote(IReadOnlyList<Unsupported> parts) => UnsupportedParts(parts) is { } body ? "unverified: " + body : null;
+
+    /// <summary>The note without its "unverified: " prefix (the log line): <c>the dialog has a tree "PartsTree", which is not recorded or replayed (...)</c>; null when there is none.</summary>
+    public static string? UnsupportedParts(IReadOnlyList<Unsupported> parts)
+    {
+        if (parts.Count == 0) return null;
+        static string One(Unsupported u) => (u.Kind switch { "tabs" => "a tab control", "tree" => "a tree", "grid" => "a grid", "list" => "a list", _ => "a " + u.Kind }) + (string.IsNullOrEmpty(u.Name) ? "" : " \"" + u.Name + "\"");
+        var names = parts.Select(One).Distinct().ToList();
+        var list = names.Count == 1 ? names[0] : string.Join(", ", names.Take(names.Count - 1)) + " and " + names[^1];
+        return $"the dialog has {list}, which {(names.Count == 1 ? "is" : "are")} not recorded or replayed (what a person chose or switched there is not repeated)";
+    }
+
+    /// <summary>The reason a value found no control in a WPF dialog, when that may be because it sits on a page of a tab control: the replay does not switch WPF tabs. Empty when the dialog has no tab control.</summary>
+    public static string TabHint(IReadOnlyList<Unsupported> parts) =>
+        parts.Any(p => p.Kind == "tabs") ? " (it may be on a page of the dialog's tab control that is not showing: WPF tabs are not switched)" : "";
+
     /// <summary>One button of a WPF dialog as the replay picks the one that closes it.</summary>
     public readonly record struct CloseCandidate(string Text, bool IsDefault, bool IsCancel);
 

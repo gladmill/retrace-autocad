@@ -693,7 +693,7 @@ public sealed class Recorder
 
     void EmitDialogValues(DialogWatch.Result r) =>
         Emit("dialog_values", CurDoc(), ("for", r.ForN), ("title", r.Title), ("source", r.Source), ("parent", r.ParentN), ("fields", FieldsJson(r.Changes)), ("read", r.Read),
-            ("closedWith", r.ClosedWith), ("button", r.ClosedBy), ("closeTab", r.CloseTab), ("statics", DialogStatics.ToJson(r.Statics)), ("truncated", r.Truncated));
+            ("closedWith", r.ClosedWith), ("button", r.ClosedBy), ("closeTab", r.CloseTab), ("statics", DialogStatics.ToJson(r.Statics)), ("truncated", r.Truncated), ("unsupported", WpfPresses.PartsToJson(r.Parts)));
 
     /// <summary>A dialog a button of another dialog opened (AutoCAD raised no <c>EnterModal</c> for it): its <c>modal_enter</c>, with the title it has, and its picture.
     /// Returns the event's number, which its <c>dialog_values</c> names as <c>for</c>.</summary>

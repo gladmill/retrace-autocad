@@ -101,7 +101,7 @@ sealed partial class DialogAutoFiller
     public DialogAutoFiller(AutoMode mode, Step dialog, IntPtr main, IntPtr window = default, IntPtr ignore = default)
     {
         _mode = mode; _title = dialog.DialogTitle; _source = dialog.ValuesSource; _closedWith = dialog.ClosedWith; _main = main; _dlg = window; _ignore = ignore;
-        _segments = DialogSegments.Of(dialog, closingValues: mode == AutoMode.Ok);
+        _segments = DialogSegments.Of(dialog, closingValues: mode == AutoMode.Ok); _recordedParts = dialog.Unsupported;
         _runs = _segments.Select(s => new Run(s.Values)).ToList();
     }
 
@@ -492,6 +492,7 @@ sealed partial class DialogAutoFiller
             {
                 Button = _segments[i].Button, Status = status,
                 Message = failed ? Note ?? string.Join("; ", run.Results.Where(r => r.Status != FieldFillResult.Applied).Select(r => r.Label + " " + r.Status + (r.Message != null ? " (" + r.Message + ")" : ""))) : _unverified.Contains(i) ? "unverified: the menu command changed no field, text or window the replay could see" : null,
+                Note = PartsNote(),
                 Fields = run.Results.Count > 0 && status is not (SegmentResult.NotRun or SegmentResult.Person) ? run.Results : null,
                 Statics = run.Statics is { Count: > 0 } ? run.Statics : null,
                 Nested = run.Nested.Count > 0 ? run.Nested : null,

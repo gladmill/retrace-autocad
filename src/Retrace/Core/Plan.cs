@@ -48,6 +48,8 @@ public sealed class Step
     public string? ValuesSource;
     /// <summary>dialog: the tab showing when it was closed (`closeTab` of its `dialog_values`, <see cref="TabPath"/>); null = it has no tabs, or the recording is from before tabs were read. The replay shows it before the closing press.</summary>
     public string? CloseTab;
+    /// <summary>dialog: the tab controls, trees, grids and lists of a WPF dialog the recorder saw and does not follow (`unsupported` of its `dialog_values`); empty when none or the recording is from before.</summary>
+    public List<WpfPresses.Unsupported> Unsupported = new();
     /// <summary>dialog: the push buttons (not OK / Cancel) the person clicked while it was open, in order. <see cref="Values"/> then holds only the
     /// changes made after the last click. Empty for a dialog the recorder saw no click in, and for every recording from before `dialog_click`.</summary>
     public List<DialogClick> Clicks = new();
@@ -301,6 +303,7 @@ public static class Plan
                         ds.ClosedT = t;
                         ds.ValuesSource = Str(e, "source");
                         ds.CloseTab = Str(e, "closeTab") is { Length: > 0 } closeTab ? closeTab : null;
+                        if (e.TryGetProperty("unsupported", out var unsup)) ds.Unsupported = WpfPresses.PartsFromJson(unsup);
                         ds.ValuesRead = e.TryGetProperty("read", out var rv) && rv.ValueKind == JsonValueKind.Number && rv.TryGetInt32(out var ri) ? ri : 0;
                         ds.Values = DialogNesting.FieldsOfEvent(e);
                         // a dialog that opened inside another one (`parent`) belongs to the click that opened it: not a step of its own
