@@ -15,7 +15,7 @@ namespace Retrace.AutoCad;
 sealed class PaletteWatch
 {
     public const long ThrottleMs = 300;
-    const uint WM_LBUTTONDOWN = 0x0201, WM_KEYDOWN = 0x0100;
+    const uint WM_LBUTTONDBLCLK = 0x0203, WM_LBUTTONDOWN = 0x0201, WM_KEYDOWN = 0x0100;
 
     /// <summary>Where input landed: the palette's window (its tab in the set), the palette's name and the palette set's title.</summary>
     public sealed record Spot(IntPtr Page, string Palette, string Set);
@@ -29,6 +29,7 @@ sealed class PaletteWatch
         public required Spot Where;
         public string Source = "win32";
         public FieldTracker Tracker = new();
+        public readonly TreeTickCache Ticks = new();
         public List<DialogField> Last = new();
         public long LastReadMs;
         public ShotService.Picture? Picture;   // the palette while open, kept fresh as the user works in it
@@ -36,6 +37,12 @@ sealed class PaletteWatch
     }
 
     Watched? _cur;
+
+    /// <summary>A double-click on an item of a tree of the palette (set by <see cref="OnInput"/> when the message is one): the tree field's key and label, and the item's path. The button of the result is the item's text.</summary>
+    public sealed record DoubleClick(string Tree, string TreeLabel, string Path);
+
+    /// <summary>The double-click the last <see cref="OnInput"/> saw, or null.</summary>
+    public DoubleClick? Double { get; private set; }
 
     public bool Enabled { get; set; }
     /// <summary>Keep close-up pictures of the palette (setting screenshots).</summary>
@@ -87,6 +94,7 @@ sealed class PaletteWatch
     /// of the palette's buttons with that text it was (1 = the first or only one). <paramref name="lParam"/> holds the click point.</summary>
     public (Values? Changed, Spot? ClickedIn, string? Button, int Index, ShotService.Picture? Picture) OnInput(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam, long nowMs)
     {
+        Double = null;
         if (!Enabled) return (null, null, null, 0, null);
         var spot = Locate(hwnd);
         // a combo box's drop-down list is a top-level window of its own (Win32 ComboLBox, a WPF popup): picking an item there is still work in
@@ -102,14 +110,40 @@ sealed class PaletteWatch
             button = DialogReader.PushButtonText(hwnd);
             if (button == null && WpfPalette.ButtonAt(hwnd, lParam) is { } w) { button = w; wpf = true; }
         }
+        else if (message == WM_LBUTTONDBLCLK && TreeDoubleClick(hwnd, spot, lParam) is { } dbl) { Double = dbl.Info; button = dbl.Text; }
         // Space presses a focused WinForms button (Enter only does in a form with an AcceptButton, not in a palette)
         else if (message == WM_KEYDOWN && (long)wParam == 0x20 && (((long)lParam >> 30) & 1) == 0) button = DialogReader.PushButtonText(hwnd);
         if (button == null) return (left, null, null, 0, null);
+        if (Double != null) return (left ?? Flush(nowMs, drop: false), spot, button, 1, null);   // the tree's own selection came with the first click: its values go with this step
         // read now, before the button handles the click: these are the values it acts on
         var index = wpf ? WpfPalette.ButtonIndexAt(spot.Page, hwnd, lParam) : DialogReader.ButtonIndex(spot.Page, hwnd);
         TakePicture(_cur!);   // the palette is open under the mouse right now: as it looks when the button is pressed
         var picture = _cur!.Picture;
         return (left ?? Flush(nowMs, drop: false), spot, button, index, picture);
+    }
+
+    /// <summary>A double-click on an item of a tree of the palette (not its +/- button, not its check box): the item's text and the tree and path it is. A node with children is left out (the double-click opens or closes it:
+    /// whatever else the program does with it is not seen from here, so only an item without children is a click of the test). Null when it is none of that.</summary>
+    (DoubleClick Info, string Text)? TreeDoubleClick(IntPtr tree, Spot spot, IntPtr lParam)
+    {
+        var item = TreeControl.ItemAt(tree, lParam);
+        if (item == IntPtr.Zero || TreeControl.HasChildren(tree, item)) return null;
+        var scan = DialogReader.Scan(spot.Page, readTicks: false);
+        for (int i = 0; i < scan.Fields.Count; i++)
+            if (scan.Fields[i].Kind == "tree" && scan.Handles[i].Contains(tree))
+                return (new DoubleClick(scan.Fields[i].Key, scan.Fields[i].Label, TreePath.Join(TreeControl.TextsTo(tree, item))), TreeControl.Text(tree, item).Trim());
+        return null;
+    }
+
+    /// <summary>Input reached <paramref name="hwnd"/>: a tree of the palette shows a changed tick once the message is dispatched.</summary>
+    public void NoteInput(IntPtr hwnd) => _cur?.Ticks.Invalidate(hwnd);
+
+    /// <summary>A picture of the palette <paramref name="spot"/> as it is now (taken at a right-click, before a menu covers it), or null (pictures off, the palette not on screen).</summary>
+    public ShotService.Picture? PictureNow(Spot spot)
+    {
+        if (!Pictures) return null;
+        if (_cur != null && _cur.Where.Page == spot.Page) { TakePicture(_cur); return _cur.Picture; }
+        return PaletteReveal.PictureRect(spot.Page) is { } r ? ShotService.CaptureRect(r.Left, r.Top, r.Right, r.Bottom) : null;
     }
 
     /// <summary>Timer tick: re-read the palette being worked in, at most every <see cref="ThrottleMs"/>.</summary>
@@ -154,7 +188,7 @@ sealed class PaletteWatch
         List<DialogField> fields;
         if (w.Source == "win32")
         {
-            fields = DialogReader.ReadWin32(w.Where.Page);
+            fields = DialogReader.ReadWin32(w.Where.Page, w.Ticks);
             if (fields.Count == 0 && WpfPalette.Host(w.Where.Page) != IntPtr.Zero) { w.Source = "wpf"; fields = WpfPalette.Read(w.Where.Page); }
         }
         else fields = WpfPalette.Read(w.Where.Page);

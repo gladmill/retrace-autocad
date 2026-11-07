@@ -50,14 +50,16 @@ static class WpfPalette
 
     /// <summary>Fields and buttons of the WPF content under <paramref name="page"/>. <paramref name="hiddenToo"/>: also while the palette is
     /// hidden (auto-hide), going by each element's own Visibility instead of whether it is on screen. Never throws.</summary>
-    internal static Scan ScanPage(IntPtr page, bool hiddenToo = false, bool disabledToo = false)
+    internal static Scan ScanPage(IntPtr page, bool hiddenToo = false, bool disabledToo = false) => ScanHost(Host(page), hiddenToo, disabledToo);
+
+    /// <summary>Fields and buttons of the WPF window <paramref name="host"/> itself (a dialog's HwndWrapper, or the one <see cref="Host"/> found). Never throws.</summary>
+    internal static Scan ScanHost(IntPtr host, bool hiddenToo = false, bool disabledToo = false)
     {
         var scan = new Scan();
         var raw = new List<RawControl>();
         var rawEl = new List<FrameworkElement>();
         try
         {
-            var host = Host(page);
             if (host == IntPtr.Zero || HwndSource.FromHwnd(host)?.RootVisual is not DependencyObject root) return scan;
             int seen = 0;
             Walk(root, raw, rawEl, scan.Buttons, hiddenToo, disabledToo, ref seen);
@@ -72,7 +74,7 @@ static class WpfPalette
         if (++seen > MaxElements) { if (seen == MaxElements + 1) Log.Info($"palette fields (wpf): stopped after {MaxElements} elements; later fields are not recorded"); return; }
         if (d is UIElement u && (hiddenToo ? u.Visibility != Visibility.Visible : !u.IsVisible)) return;
         if (Field(d) is { } f) { raw.Add(f); rawEl.Add((FrameworkElement)d); if (d is ComboBox or ListBox) return; }   // their own parts are part of them
-        if (d is ButtonBase b and not ToggleButton && (disabledToo || b.IsEnabled)) buttons.Add((b, ButtonText(b)));
+        if (d is ButtonBase b && IsPushButton(b) && (disabledToo || b.IsEnabled)) buttons.Add((b, ButtonText(b)));
         for (int i = 0, n = VisualTreeHelper.GetChildrenCount(d); i < n; i++) Walk(VisualTreeHelper.GetChild(d, i), raw, rawEl, buttons, hiddenToo, disabledToo, ref seen);
     }
 
@@ -123,7 +125,7 @@ static class WpfPalette
         return item.ToString() ?? "";
     }
 
-    static string? FirstText(DependencyObject d)
+    internal static string? FirstText(DependencyObject d)
     {
         if (d is TextBlock tb && tb.Text.Length > 0) return tb.Text;
         for (int i = 0, n = VisualTreeHelper.GetChildrenCount(d); i < n; i++) if (FirstText(VisualTreeHelper.GetChild(d, i)) is { } t) return t;
@@ -161,10 +163,30 @@ static class WpfPalette
         _ => content.ToString(),
     };
 
-    static string ButtonText(ButtonBase b)
+    /// <summary>The text a push button shows: its automation name, else its content, else its x:Name. Only a string Content or an AccessText has an access key, so only those lose their underscore marker
+    /// (<see cref="WpfPresses.StripAccess"/>: "_Add" is "Add"); an automation name, an x:Name and a TextBlock's text are shown as they are. A recording from before compares through <see cref="WpfPresses.SameText"/>.
+    /// One text for palettes and dialogs.</summary>
+    internal static string ButtonText(ButtonBase b)
     {
-        var text = DialogFieldsCore.CleanLabel(AutomationProperties.GetName(b) is { Length: > 0 } n ? n : Content(b.Content) ?? b.Name);
+        string text;
+        if (AutomationProperties.GetName(b) is { Length: > 0 } n) text = DialogFieldsCore.CleanLabel(n);
+        else text = b.Content switch
+        {
+            string s => Retrace.Core.WpfPresses.StripAccess(s),
+            AccessText at => Retrace.Core.WpfPresses.StripAccess(at.Text),
+            null => DialogFieldsCore.CleanLabel(b.Name),
+            var other => DialogFieldsCore.CleanLabel(Content(other)),
+        };
         return text.Length > 0 ? text : "(button)";
+    }
+
+    /// <summary>Is <paramref name="b"/> a real push button (<see cref="WpfPresses.IsPushButton"/>): not a toggle, repeat button, column header or a part of a scroll bar, slider, combo box or date picker?</summary>
+    internal static bool IsPushButton(ButtonBase b)
+    {
+        static List<string> Chain(object o) { var l = new List<string>(); for (var t = o.GetType(); t != null && t != typeof(object); t = t.BaseType) l.Add(t.Name); return l; }
+        var parents = new List<IReadOnlyList<string>>();
+        for (var p = b.TemplatedParent; p != null && parents.Count < 8; p = (p as FrameworkElement)?.TemplatedParent) parents.Add(Chain(p));
+        return Retrace.Core.WpfPresses.IsPushButton(Chain(b), parents);
     }
 
     /// <summary>The text of the push button under a click at <paramref name="lParam"/> (client coordinates of <paramref name="hwnd"/>), or null
@@ -194,11 +216,10 @@ static class WpfPalette
         {
             if (HwndSource.FromHwnd(hwnd) is not { RootVisual: UIElement root } src) return false;
             var pt = src.CompositionTarget?.TransformFromDevice.Transform(devicePx) ?? devicePx;
-            for (var d = root.InputHitTest(pt) as DependencyObject; d != null; d = VisualTreeHelper.GetParent(d) ?? LogicalTreeHelper.GetParent(d))
+            // the hit may be a Run (a content element over text), which is no visual: its parent is a logical one
+            for (var d = root.InputHitTest(pt) as DependencyObject; d != null; d = d is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(d) ?? LogicalTreeHelper.GetParent(d) : LogicalTreeHelper.GetParent(d))
             {
-                if (d is ToggleButton) return false;
-                if (d is ButtonBase b) { if (!b.IsEnabled) return false; button = b; return true; }
-                if (d is not Visual and not System.Windows.Media.Media3D.Visual3D) break;
+                if (d is ButtonBase b) { if (!IsPushButton(b) || !b.IsEnabled) return false; button = b; return true; }
             }
         }
         catch (Exception ex) { Log.Error("palette click (wpf)", ex); }

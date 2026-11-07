@@ -21,6 +21,13 @@ public sealed class Step
     public string? DialogTitle;         // dialog: its title; palette: the palette (its tab in the palette set; Panel = the set)
     public string? Button;              // palette: the button clicked, null when only values changed
     public int ButtonIndex = 1;         // palette: which of the palette's buttons with that text (1 = the first)
+    /// <summary>palette: "click" or "dblclick" (a double-click on an item of a tree: <see cref="ClickTree"/> key, <see cref="ClickPath"/> item path, <see cref="ClickTreeLabel"/>; <see cref="Button"/> is the item's text).</summary>
+    public string ClickKind = DialogClickKinds.Click;
+    public string ClickTree = "";
+    public string ClickPath = "";
+    public string ClickTreeLabel = "";
+    /// <summary>palette: the context menu choice that ends the step (a `context_menu` event); <see cref="Button"/> then holds the menu path, so a command it starts is linked to the step.</summary>
+    public MenuChoice? Menu;
     public string? Note;
     public DrawingDigest? State;        // mark: the drawing state recorded at the checkpoint (null in older sessions)
     /// <summary>mark: what the checkpoint verifies beyond <see cref="State"/> (schema 3); null = none (older sessions, or checks not recorded). Replay: <see cref="BehaviorChecks.Compare"/>.</summary>
@@ -28,16 +35,71 @@ public sealed class Step
     /// <summary>mark: the `n` of the mark event; names the snapshot file <see cref="BehaviorSnapshot.MarkPath"/>. 0 = unknown.</summary>
     public int EventN;
     public long T;
+    /// <summary>dialog: when it closed (the time of its `dialog_values`), -1 = not known. A nested dialog of the same click opens within a window after it.</summary>
+    public long ClosedT = -1;
     public bool HadDialog;
     /// <summary>dialog / palette: the fields the person changed while it was open; null = the session has no `dialog_values` event for it.</summary>
     public List<FieldChange>? Values;
     /// <summary>dialog: how many fields the recorder could read.</summary>
     public int ValuesRead;
-    /// <summary>dialog: "ok" / "cancel" as the recording closed it; null = not recorded.</summary>
+    /// <summary>dialog: "ok" / "cancel" as the recording closed it, "click" when its last click closed it (a Close button, the Yes of a message box); null = not recorded.</summary>
     public string? ClosedWith;
     /// <summary>dialog: "win32" or "uia" as the recorder read it; null = not recorded.</summary>
     public string? ValuesSource;
+    /// <summary>dialog: the tab showing when it was closed (`closeTab` of its `dialog_values`, <see cref="TabPath"/>); null = it has no tabs, or the recording is from before tabs were read. The replay shows it before the closing press.</summary>
+    public string? CloseTab;
+    /// <summary>dialog: the push buttons (not OK / Cancel) the person clicked while it was open, in order. <see cref="Values"/> then holds only the
+    /// changes made after the last click. Empty for a dialog the recorder saw no click in, and for every recording from before `dialog_click`.</summary>
+    public List<DialogClick> Clicks = new();
     public List<Answer> Answers = new();
+}
+
+/// <summary>The kinds of `dialog_click`.</summary>
+public static class DialogClickKinds
+{
+    public const string Click = "click", DoubleClick = "dblclick";
+    /// <summary>The kind a `kind` property names: only "dblclick" is another one; a missing or unknown kind is a button click (every recording from before double-clicks).</summary>
+    public static string Of(string? kind) => kind == DoubleClick ? DoubleClick : Click;
+
+    /// <summary>The words for a click in a pause message or a Tdoc sentence: "press Add", "double-click Parts › Fasteners in Tree".</summary>
+    public static string Phrase(string kind, string button, string path, string treeLabel) =>
+        kind == DoubleClick ? DoubleClickWords(path, treeLabel, p => p, t => t, capital: false) : "press " + button;
+
+    static string DoubleClickRest(string path, string treeLabel, Func<string, string> pathText, Func<string, string> tree) =>
+        " " + pathText(path) + (treeLabel.Length > 0 ? " in " + tree(treeLabel) : "");
+
+    /// <summary>"Double-click `A › B` in **Items**" with the caller's markup (steps.md, Tdoc: plain).</summary>
+    public static string DoubleClickWords(string path, string treeLabel, Func<string, string> pathText, Func<string, string> tree, bool capital = true) =>
+        (capital ? "Double-click" : "double-click") + DoubleClickRest(path, treeLabel, pathText, tree);
+}
+
+/// <summary>A push button clicked in a dialog (a `dialog_click` event): the values changed since the dialog opened or since the click before,
+/// and the dialogs the click opened (a nested dialog is attached to the click that opened it; it is not a step of its own).</summary>
+public sealed class DialogClick
+{
+    public string Button = "";
+    /// <summary>"click" (a push button) or "dblclick" (a double-click on a tree item: <see cref="Tree"/> and <see cref="Path"/> say which; <see cref="Button"/> is the item's own text).</summary>
+    public string Kind = DialogClickKinds.Click;
+    /// <summary>The button acts as the mouse goes down: the recorder wrote the click before the button came up (its sub form opened first). The replay then presses it with the mouse (`onDown` of the event).</summary>
+    public bool OnDown;
+    /// <summary>dblclick: the key of the tree field (its `tree`), and the item's path (`path`, <see cref="TreePath"/>).</summary>
+    public string Tree = "", Path = "";
+    /// <summary>dblclick: the label of the tree (`treeLabel`), for the wording.</summary>
+    public string TreeLabel = "";
+    /// <summary>The control id the recorder saw (WinForms ids change between runs); information only.</summary>
+    public int Id;
+    /// <summary>Which of the dialog's enabled buttons with that text it is (1 = the first).</summary>
+    public int Index = 1;
+    public long T;
+    /// <summary>The tab the click was made on (`tab` of its `dialog_click`, <see cref="TabPath"/>): the page its button sits on, or the one showing for a button outside the tabs; "" = none or not recorded.
+    /// The replay shows it before the button is pressed.</summary>
+    public string Tab = "";
+    public List<FieldChange> Values = new();
+    public int Read;
+    /// <summary>A context menu choice instead of a button (a `context_menu` event; <see cref="Button"/> is then the menu path): the replay right-clicks the target and picks the item.</summary>
+    public MenuChoice? Menu;
+    /// <summary>Nested dialogs this click opened, in the order they opened; each is a <see cref="Step"/> of kind "dialog" with its own values and clicks.</summary>
+    public List<Step> Nested = new();
 }
 
 /// <summary>Reads a session file and groups its events into replayable steps. No AutoCAD dependency, so it is easy to test.</summary>
@@ -109,7 +171,9 @@ public static class Plan
         Step? modalStep = null;
         Step? palette = null;   // the last palette step: a click right after its values joins it
         var nativeDialogs = new HashSet<Step>();   // dialog steps opened right after a native palette action (NativeAction.ModalMs)
-        Step? modalOwner = null; var hadDialogBefore = false;   // the command that was running at the current modal_enter and its HadDialog before it (restored if that dialog is a security prompt)
+        // per dialog: the command that was running at its modal_enter and that command's HadDialog before it (restored if the dialog is dropped: a security prompt, a window that closed by itself). Kept per
+        // dialog, not per latest modal_enter: a nested dialog's modal_enter must not overwrite what the dialog it was opened from will restore.
+        var modalInfo = new Dictionary<Step, (Step? Owner, bool HadBefore)>();
         var modalByN = new Dictionary<long, Step>();   // event n of modal_enter / modal_title -> its dialog step
         var nativeByN = new Dictionary<long, Step>();  // event n of native_select -> its step (a native_value names the entry later)
         var list = events as IReadOnlyCollection<JsonElement> ?? events.ToList();
@@ -204,7 +268,7 @@ public static class Plan
                     {
                         modalStep = new Step { Kind = "dialog", T = t, DialogTitle = Str(e, "title"), Title = "" };
                         steps.Add(modalStep);
-                        modalOwner = cur; hadDialogBefore = cur?.HadDialog ?? false;
+                        modalInfo[modalStep] = (cur, cur?.HadDialog ?? false);
                         if (cur != null) cur.HadDialog = true;
                         if (afterNative) nativeDialogs.Add(modalStep);
                     }
@@ -215,7 +279,7 @@ public static class Plan
                     {
                         steps.Remove(modalStep);
                         foreach (var k in modalByN.Where(kv => kv.Value == modalStep).Select(kv => kv.Key).ToList()) modalByN.Remove(k);
-                        if (modalOwner != null) modalOwner.HadDialog = hadDialogBefore;
+                        if (modalInfo.Remove(modalStep, out var dropped) && dropped.Owner != null) dropped.Owner.HadDialog = dropped.HadBefore;
                         modalStep = null; lastModalTitle = null;
                         break;
                     }
@@ -230,18 +294,61 @@ public static class Plan
                         if (nativeDialogs.Contains(ds) && NativeAction.ClosedByItself(e))
                         {
                             steps.Remove(ds);
-                            if (ReferenceEquals(ds, modalStep) && modalOwner != null) modalOwner.HadDialog = hadDialogBefore;
+                            if (ReferenceEquals(ds, modalStep) && modalInfo.Remove(ds, out var closed) && closed.Owner != null) closed.Owner.HadDialog = closed.HadBefore;
                             break;
                         }
                         ds.ClosedWith = Str(e, "closedWith");
+                        ds.ClosedT = t;
                         ds.ValuesSource = Str(e, "source");
+                        ds.CloseTab = Str(e, "closeTab") is { Length: > 0 } closeTab ? closeTab : null;
                         ds.ValuesRead = e.TryGetProperty("read", out var rv) && rv.ValueKind == JsonValueKind.Number && rv.TryGetInt32(out var ri) ? ri : 0;
-                        ds.Values = new List<FieldChange>();
-                        if (e.TryGetProperty("fields", out var fa) && fa.ValueKind == JsonValueKind.Array)
-                            foreach (var f in fa.EnumerateArray())
-                                ds.Values.Add(new FieldChange(Str(f, "key") ?? "", Str(f, "label") ?? "", Str(f, "kind") ?? "", Str(f, "before") ?? "", Str(f, "after") ?? ""));
+                        ds.Values = DialogNesting.FieldsOfEvent(e);
+                        // a dialog that opened inside another one (`parent`) belongs to the click that opened it: not a step of its own
+                        if (Num(e, "parent") is > 0 and var parentN && modalByN.TryGetValue(parentN, out var outer) && !ReferenceEquals(outer, ds) && outer.Clicks.Count > 0
+                            && DialogNesting.Attach(outer.Clicks[^1].Nested, outer.Clicks[^1].T, ds, x => x.T, x => x.ClosedT))
+                        {
+                            steps.Remove(ds);
+                            if (ReferenceEquals(modalStep, ds)) modalStep = outer;
+                        }
                     }
                     break;
+                case "modal_alias":
+                    // an EnterModal that came late for a dialog tracked already (found by its window): its step is that dialog's, not a second one
+                    if (DialogNesting.Alias(modalByN, Num(e, "for"), Num(e, "of")) is { } duplicate)
+                    {
+                        steps.Remove(duplicate);
+                        if (ReferenceEquals(modalStep, duplicate)) modalStep = modalByN[Num(e, "of")];
+                    }
+                    break;
+                case "dialog_click":
+                    if (modalByN.TryGetValue(Num(e, "for"), out var clicked))
+                        clicked.Clicks.Add(new DialogClick
+                        {
+                            Button = Str(e, "button") ?? "", Kind = DialogClickKinds.Of(Str(e, "kind")), OnDown = e.TryGetProperty("onDown", out var od) && od.ValueKind == JsonValueKind.True, Tree = Str(e, "tree") ?? "", Path = Str(e, "path") ?? "", TreeLabel = Str(e, "treeLabel") ?? "", Id = (int)Num(e, "id"), Index = Num(e, "index") is > 0 and var bi0 ? (int)bi0 : 1, T = t, Tab = Str(e, "tab") ?? "",
+                            Values = DialogNesting.FieldsOfEvent(e), Read = (int)Num(e, "read"),
+                        });
+                    break;
+                case "context_menu":
+                {
+                    if (MenuChoice.From(e) is not { } menu) break;
+                    var fieldsOfMenu = DialogNesting.FieldsOfEvent(e);
+                    if (Num(e, "for") > 0)
+                    {
+                        // in a dialog: a click like a button's, with the menu in place of the button
+                        if (modalByN.TryGetValue(Num(e, "for"), out var menuDialog))
+                            menuDialog.Clicks.Add(new DialogClick { Button = menu.ButtonText, Menu = menu, Id = menu.Id, T = t, Tab = Str(e, "tab") ?? "", Values = fieldsOfMenu, Read = (int)Num(e, "read") });
+                        break;
+                    }
+                    string? menuPalette = Str(e, "palette"), menuSet = Str(e, "set");
+                    bool joinMenu = palette != null && steps.Count > 0 && ReferenceEquals(steps[^1], palette) && palette.Native == null && palette.Button == null && palette.DialogTitle == menuPalette && palette.Panel == menuSet;
+                    if (!joinMenu) { palette = new Step { Kind = "palette", T = t, DialogTitle = menuPalette, Panel = menuSet }; steps.Add(palette); }
+                    palette!.Menu = menu; palette.Button = menu.ButtonText;
+                    palette.ValuesSource ??= Str(e, "source");
+                    if (fieldsOfMenu.Count > 0) { palette.Values ??= new List<FieldChange>(); palette.Values.AddRange(fieldsOfMenu); }
+                    var menuChanges = palette.Values?.Count ?? 0;
+                    palette.Title = $"Palette \"{menuPalette}\": " + (menuChanges > 0 ? $"{menuChanges} value(s), then " : "") + menu.Phrase(place: "the palette");
+                    break;
+                }
                 case "native_click":
                 case "native_select":
                 {
@@ -279,6 +386,7 @@ public static class Plan
                     if (type == "palette_click")
                     {
                         palette!.Button = Str(e, "button");
+                        palette.ClickKind = DialogClickKinds.Of(Str(e, "kind")); palette.ClickTree = Str(e, "tree") ?? ""; palette.ClickPath = Str(e, "path") ?? ""; palette.ClickTreeLabel = Str(e, "treeLabel") ?? "";
                         palette.ButtonIndex = e.TryGetProperty("index", out var bi) && bi.ValueKind == JsonValueKind.Number && bi.TryGetInt32(out var bn) ? bn : 1;
                     }
                     else
@@ -288,11 +396,11 @@ public static class Plan
                         palette.Values ??= new List<FieldChange>();
                         if (e.TryGetProperty("fields", out var pfa) && pfa.ValueKind == JsonValueKind.Array)
                             foreach (var f in pfa.EnumerateArray())
-                                palette.Values.Add(new FieldChange(Str(f, "key") ?? "", Str(f, "label") ?? "", Str(f, "kind") ?? "", Str(f, "before") ?? "", Str(f, "after") ?? ""));
+                                palette.Values.Add(new FieldChange(Str(f, "key") ?? "", Str(f, "label") ?? "", Str(f, "kind") ?? "", Str(f, "before") ?? "", Str(f, "after") ?? "", Str(f, "tab") ?? ""));
                     }
                     var changes = palette.Values?.Count ?? 0;
                     palette.Title = $"Palette \"{name}\": " + (changes > 0 ? $"{changes} value(s)" : "") + (changes > 0 && palette.Button != null ? ", then " : "")
-                                    + (palette.Button != null ? $"click {palette.Button}" : changes == 0 ? "no changes" : "");
+                                    + (palette.Button != null ? (palette.ClickKind == DialogClickKinds.DoubleClick ? DialogClickKinds.Phrase(palette.ClickKind, palette.Button, palette.ClickPath, palette.ClickTreeLabel) : $"click {palette.Button}") : changes == 0 ? "no changes" : "");
                     break;
                 }
                 case "mark":

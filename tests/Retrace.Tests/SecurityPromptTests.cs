@@ -96,6 +96,31 @@ public class SecurityPromptTests : IDisposable
     }
 
     [Fact]
+    public void A_nested_dialog_does_not_change_what_dropping_the_dialog_it_was_opened_from_restores()
+    {
+        // FOO has no dialog yet. Its dialog opens (HadDialog becomes true), a click on it opens a nested dialog (attached to the click, not a step), and the first dialog then turns out to be a
+        // security prompt (its title arrives late): dropping it gives FOO back its own HadDialog, false, not the true the nested dialog's modal_enter saw
+        var lines = new[]
+        {
+            """{"t":100,"n":1,"type":"cmd_start","command":"FOO","origin":"typed/other"}""",
+            """{"t":110,"n":2,"type":"modal_enter","title":"AutoCAD"}""",
+            """{"t":200,"n":3,"type":"modal_title","title":"Draw items"}""",
+            """{"t":1000,"n":4,"type":"dialog_click","for":3,"button":"Options...","fields":[],"read":2}""",
+            """{"t":1100,"n":5,"type":"modal_enter","title":"Item options"}""",
+            """{"t":2000,"n":6,"type":"dialog_values","for":5,"title":"Item options","source":"win32","parent":3,"fields":[],"read":2,"closedWith":"ok"}""",
+            """{"t":2500,"n":7,"type":"modal_title","title":"Security - Unsigned Executable File","windowClass":"#32770"}""",
+            """{"t":3000,"n":8,"type":"modal_leave"}""",
+            """{"t":3100,"n":9,"type":"cmd_end","command":"FOO"}""",
+        };
+        var steps = Plan.Build(lines.Select(l => JsonDocument.Parse(l).RootElement.Clone()));
+        Assert.Empty(steps.Where(s => s.Kind == "dialog"));
+        Assert.False(steps.Single(s => s.Kind == "command").HadDialog);
+        // and the same dialog kept (its title is no security prompt) leaves the command with a dialog
+        var kept = Plan.Build(lines.Select(l => JsonDocument.Parse(l.Replace("Security - Unsigned Executable File", "Draw items")).RootElement.Clone()));
+        Assert.True(kept.Single(s => s.Kind == "command").HadDialog);
+    }
+
+    [Fact]
     public void A_late_title_restores_HadDialog_on_the_command_that_opened_the_prompt()
     {
         // A had a real dialog; the next modal opens under A, but its (security) title arrives from the recorder's 300 ms timer after B started.

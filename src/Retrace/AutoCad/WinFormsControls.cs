@@ -16,7 +16,7 @@ static class WinFormsControls
         catch (Exception ex) { Log.Error("winforms lookup", ex); return null; }
     });
 
-    static object? Control(IntPtr h)
+    internal static object? Control(IntPtr h)
     {
         try { return FromHandle.Value?.Invoke(null, new object[] { h }); }
         catch (Exception) { return null; }
@@ -33,6 +33,22 @@ static class WinFormsControls
                 case "System.Windows.Forms.ButtonBase": return "button";
             }
         return null;
+    }
+
+    /// <summary>Is <paramref name="h"/> a WinForms TabControl (its window is a SysTabControl32)?</summary>
+    public static bool IsTabControl(IntPtr h) => Control(h) is { } c && IsA(c.GetType(), "System.Windows.Forms.TabControl");
+
+    /// <summary>Selects tab <paramref name="index"/> of a WinForms TabControl through WinForms (its <c>SelectedIndex</c>, which shows the page and raises its Selected events);
+    /// false if <paramref name="h"/> is not one or WinForms refused.</summary>
+    public static bool TrySelectTab(IntPtr h, int index)
+    {
+        if (Control(h) is not { } c || !IsA(c.GetType(), "System.Windows.Forms.TabControl")) return false;
+        try
+        {
+            c.GetType().GetProperty("SelectedIndex")!.SetValue(c, index);
+            return true;
+        }
+        catch (Exception ex) { Log.Error("winforms select tab", ex.InnerException ?? ex); return false; }
     }
 
     /// <summary>The Checked property of a WinForms CheckBox / RadioButton; false if there is none.</summary>
@@ -94,6 +110,18 @@ static class WinFormsControls
             return (t.GetProperty("Name")?.GetValue(c) as string ?? "", t.GetProperty("AccessibleName")?.GetValue(c) as string ?? "");
         }
         catch (Exception) { return null; }
+    }
+
+    /// <summary>The window of the AcceptButton of the WinForms form <paramref name="h"/> (the button Enter presses), or zero when <paramref name="h"/> is no form or has none.</summary>
+    public static IntPtr AcceptButtonOf(IntPtr h)
+    {
+        if (Control(h) is not { } c) return IntPtr.Zero;
+        try
+        {
+            var button = c.GetType().GetProperty("AcceptButton")?.GetValue(c);
+            return button?.GetType().GetProperty("Handle")?.GetValue(button) is IntPtr p ? p : IntPtr.Zero;
+        }
+        catch (Exception) { return IntPtr.Zero; }
     }
 
     /// <summary>Runs a WinForms button's Click as a click would (its protected OnClick): works while the button is hidden, where a posted click

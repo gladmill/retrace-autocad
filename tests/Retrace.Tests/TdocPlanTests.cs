@@ -67,6 +67,21 @@ public class TdocPlanTests
     }
 
     [Fact]
+    public void A_dialog_with_clicks_but_no_dialog_values_still_lists_its_clicks_and_nested_dialogs()
+    {
+        var nested = new Step { Kind = "dialog", DialogTitle = "Item options", ClosedWith = "ok", Values = [new FieldChange("k", "Prefix", "edit", "", "X")] };
+        var click = new DialogClick { Button = "Options...", Nested = { nested } };
+        var d = new Step { Kind = "dialog", DialogTitle = "Draw items", Clicks = { new DialogClick { Button = "Add", Values = [new FieldChange("k", "Item", "edit", "", "A")] }, click } };   // Values == null: no dialog_values event
+        Assert.Equal(new[] { "In the Draw items dialog:", "Set Item to A.", "Click Add.", "Click Options....", "In the Item options dialog:", "Set Prefix to X.", "Click OK.", "Click OK." }, TdocPlan.Instructions(d));
+        // cancelled (or thrown away by its title bar) with clicks: the clicks, then Cancel, never OK for the dialog itself
+        d.ClosedWith = "cancel";
+        Assert.Equal(new[] { "In the Draw items dialog:", "Set Item to A.", "Click Add.", "Click Options....", "In the Item options dialog:", "Set Prefix to X.", "Click OK.", "Click Cancel." }, TdocPlan.Instructions(d));
+        // closed by its last click: nothing is pressed after it
+        d.ClosedWith = "click";
+        Assert.Equal(new[] { "In the Draw items dialog:", "Set Item to A.", "Click Add.", "Click Options....", "In the Item options dialog:", "Set Prefix to X.", "Click OK." }, TdocPlan.Instructions(d));
+    }
+
+    [Fact]
     public void A_dialog_closed_with_cancel_or_with_no_recorded_values_is_told_plainly()
     {
         var cancel = new Step { Kind = "dialog", DialogTitle = "Units", ClosedWith = "cancel", Values = [new FieldChange("k", "Rows", "edit", "1", "2")] };

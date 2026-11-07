@@ -7,7 +7,8 @@ namespace Retrace.AutoCad;
 /// <summary>
 /// AutoCAD's native palettes (no .NET content; AutoCAD Electrical's Project Manager is the one this was built on): the standard Windows
 /// controls in them, read while recording and driven on replay. Recording: a click on a tree item (<c>SysTreeView32</c>: its path of item
-/// texts, click / double-click / right-click), a click on a push button (<c>Button</c>: id, position, tool tip), and the entry picked in a
+/// texts, click / double-click / right-click), a click on a push button (<c>Button</c>: id, position, tool tip), a click on another tab of a
+/// tab control (<c>SysTabControl32</c>: the tab's text), and the entry picked in a
 /// drop-down list (<c>ComboBox</c>: watched after the person clicks it, written once the list is closed and the text changed). Replay
 /// finds the control again by kind, position and id and acts on it in process: tree items are selected and given the mouse messages
 /// sent (not posted) to the tree at the item, which is what made the Project Manager open a drawing (seen 2026-10-28, R25.1, outside any
@@ -23,12 +24,10 @@ static class NativePalette
     public sealed record Input(Spot Where, string Control, string Action, string[]? Path, int Index, int Id, string? Label, string? Value, int Entry = 0);
 
     const uint WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202, WM_LBUTTONDBLCLK = 0x0203, WM_RBUTTONDOWN = 0x0204, WM_COMMAND = 0x0111;
-    const uint TV_FIRST = 0x1100, TVM_EXPAND = TV_FIRST + 2, TVM_GETITEMRECT = TV_FIRST + 4, TVM_GETNEXTITEM = TV_FIRST + 10, TVM_SELECTITEM = TV_FIRST + 11,
-        TVM_HITTEST = TV_FIRST + 17, TVM_ENSUREVISIBLE = TV_FIRST + 20, TVM_GETITEMW = TV_FIRST + 62;
-    const int TVGN_ROOT = 0, TVGN_NEXT = 1, TVGN_PARENT = 3, TVGN_CHILD = 4, TVGN_CARET = 9, TVE_EXPAND = 2;
+    const uint TVM_HITTEST = TreeControl.TV_FIRST + 17;   // the other TVM messages and the tree walk are TreeControl's
     const uint TVHT_ONITEM = 0x46;   // icon, label or state icon (not the +/- button, not the indent)
     const int WS_CHILD = 0x40000000;
-    const uint LB_ITEMFROMPOINT = 0x01A9, TVIF_STATE = 8, TVIS_BOLD = 0x10, CBS_HASSTRINGS = 0x0200;
+    const uint LB_ITEMFROMPOINT = 0x01A9, CBS_HASSTRINGS = 0x0200;
     [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int i);
     const uint BM_CLICK = 0x00F5, CB_GETCURSEL = 0x0147, CB_GETLBTEXT = 0x0148, CB_GETLBTEXTLEN = 0x0149, CB_SETCURSEL = 0x014E,
         CB_GETDROPPEDSTATE = 0x0157, CB_FINDSTRINGEXACT = 0x0158;
@@ -38,7 +37,6 @@ static class NativePalette
     [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }
     [StructLayout(LayoutKind.Sequential)] struct RECT { public int L, T, R, B; }
     [StructLayout(LayoutKind.Sequential)] struct TVHITTESTINFO { public POINT pt; public uint flags; public IntPtr hItem; }
-    [StructLayout(LayoutKind.Sequential)] struct TVITEMW { public uint mask; public IntPtr hItem; public uint state, stateMask; public IntPtr pszText; public int cchTextMax, iImage, iSelectedImage, cChildren; public IntPtr lParam; }
     [StructLayout(LayoutKind.Sequential)] struct TOOLINFOW { public uint cbSize, uFlags; public IntPtr hwnd, uId; public RECT rect; public IntPtr hinst, lpszText, lParam, lpReserved; }
 
     delegate bool EnumProc(IntPtr h, IntPtr l);
@@ -54,7 +52,6 @@ static class NativePalette
     [DllImport("user32.dll", EntryPoint = "SendMessageW")] static extern IntPtr Send(IntPtr h, uint m, IntPtr w, IntPtr l);
     [DllImport("user32.dll", EntryPoint = "SendMessageW", CharSet = CharSet.Unicode)] static extern IntPtr SendText(IntPtr h, uint m, IntPtr w, string l);
     [DllImport("user32.dll", EntryPoint = "SendMessageW")] static extern IntPtr SendHit(IntPtr h, uint m, IntPtr w, ref TVHITTESTINFO l);
-    [DllImport("user32.dll", EntryPoint = "SendMessageW")] static extern IntPtr SendItem(IntPtr h, uint m, IntPtr w, ref TVITEMW l);
     [DllImport("user32.dll", EntryPoint = "SendMessageW")] static extern IntPtr SendTool(IntPtr h, uint m, IntPtr w, ref TOOLINFOW l);
 
     // ---- where input landed -------------------------------------------------------------------------------------------------
@@ -128,9 +125,17 @@ static class NativePalette
             w.Sel = entry;
             return new Input(w.Where, "combo", "select", null, w.Index, w.Id, null, EntryText(w.Combo, entry), entry + 1);
         }
-        if (cls is not ("SysTreeView32" or "Button" or "ComboBox" or "Edit")) return null;
+        if (cls is not ("SysTreeView32" or "Button" or "ComboBox" or "Edit" or "SysTabControl32")) return null;
         var spot = Locate(hwnd);
         if (spot == null) return null;
+        if (cls == "SysTabControl32")
+        {
+            // the click is seen before the control handles it: the tab under it is the one about to open. A click on empty space or on the tab that shows changes nothing
+            if (message != WM_LBUTTONDOWN || !Native.OwnedByThisThread(hwnd)) return null;
+            var hitTab = TabControl32.HitTest(hwnd, (short)((long)lParam & 0xFFFF), (short)(((long)lParam >> 16) & 0xFFFF));
+            if (hitTab < 0 || hitTab == TabControl32.Selected(hwnd) || TabControl32.Text(hwnd, hitTab) is not { Length: > 0 } tabText) return null;
+            return new Input(spot, "tab", "click", null, Controls(spot.Page, "SysTabControl32").IndexOf(hwnd) + 1, GetDlgCtrlID(hwnd), tabText, null);
+        }
         if (cls is "ComboBox" or "Edit")
         {
             var combo = cls == "Edit" ? GetParent(hwnd) : hwnd;   // the edit box of a drop-down combo
@@ -152,8 +157,7 @@ static class NativePalette
         var hit = new TVHITTESTINFO { pt = new POINT { X = (short)((long)lParam & 0xFFFF), Y = (short)(((long)lParam >> 16) & 0xFFFF) } };
         var item = SendHit(hwnd, TVM_HITTEST, IntPtr.Zero, ref hit);
         if (item == IntPtr.Zero || (hit.flags & TVHT_ONITEM) == 0) return null;   // the +/- button or empty space: expanding is not a step
-        var path = new List<string>();
-        for (var it = item; it != IntPtr.Zero && path.Count < 50; it = Send(hwnd, TVM_GETNEXTITEM, (IntPtr)TVGN_PARENT, it)) path.Insert(0, ItemText(hwnd, it));
+        var path = TreeControl.TextsTo(hwnd, item);
         var trees = Controls(spot.Page, "SysTreeView32");
         return new Input(spot, "tree", action, path.ToArray(), trees.IndexOf(hwnd) + 1, GetDlgCtrlID(hwnd), null, null);
     }
@@ -213,25 +217,9 @@ static class NativePalette
     {
         var tree = Controls(page, "SysTreeView32").FirstOrDefault();
         if (tree == IntPtr.Zero) return null;
-        for (var it = Send(tree, TVM_GETNEXTITEM, (IntPtr)TVGN_ROOT, IntPtr.Zero); it != IntPtr.Zero; it = Send(tree, TVM_GETNEXTITEM, (IntPtr)TVGN_NEXT, it))
-        {
-            var item = new TVITEMW { mask = TVIF_STATE, hItem = it, stateMask = TVIS_BOLD };
-            SendItem(tree, TVM_GETITEMW, IntPtr.Zero, ref item);
-            if ((item.state & TVIS_BOLD) != 0) return ItemText(tree, it);
-        }
+        foreach (var it in TreeControl.Children(tree, IntPtr.Zero))
+            if (TreeControl.State(tree, it, TreeControl.TVIS_BOLD) != 0) return TreeControl.Text(tree, it);
         return null;
-    }
-
-    static string ItemText(IntPtr tree, IntPtr item)
-    {
-        var buf = Marshal.AllocHGlobal(1026);
-        try
-        {
-            var it = new TVITEMW { mask = 1 /* TVIF_TEXT */, hItem = item, pszText = buf, cchTextMax = 512 };
-            SendItem(tree, TVM_GETITEMW, IntPtr.Zero, ref it);
-            return Marshal.PtrToStringUni(it.pszText == IntPtr.Zero ? buf : it.pszText) ?? "";
-        }
-        finally { Marshal.FreeHGlobal(buf); }
     }
 
     /// <summary>The tool tip of a button with no text (the Project Manager's icon buttons), from the tool tip controls of this thread: the tool
@@ -290,7 +278,7 @@ static class NativePalette
         var a = s.Native!;
         var page = PaletteFill.FindPage(s);
         if (page == IntPtr.Zero) return $"the {s.DialogTitle} palette is not open";
-        var cls = a.Control switch { "tree" => "SysTreeView32", "button" => "Button", _ => "ComboBox" };
+        var cls = a.Control switch { "tree" => "SysTreeView32", "button" => "Button", "tab" => "SysTabControl32", _ => "ComboBox" };
         var all = Controls(page, cls);
         // by id where the recording has one and it is unique, else by position
         var byId = a.Id != 0 ? all.Where(c => GetDlgCtrlID(c) == a.Id).ToList() : new List<IntPtr>();
@@ -300,22 +288,49 @@ static class NativePalette
         {
             case "button":
                 if (!IsWindowEnabled(ctl)) return $"the {a.Target} button is disabled";
-                Later("button", () => Send(ctl, BM_CLICK, IntPtr.Zero, IntPtr.Zero));
+                DialogFill.Later("button", () => Send(ctl, BM_CLICK, IntPtr.Zero, IntPtr.Zero));
                 return null;
             case "combo":
                 return Combo(page, ctl, a);
+            case "tab":
+                return Tab(ctl, a, s);
             default:
                 return Tree(ctl, a, cursor);
         }
     }
 
-    /// <summary>Runs <paramref name="act"/> from the dispatcher after the current tick: a native control handles the message inside the call
-    /// and may run a modal loop there.</summary>
-    static void Later(string what, Action act) =>
-        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Normal,
-            () => { try { act(); } catch (Exception ex) { Log.Error("native palette " + what, ex); } });
-
     static IntPtr _pickedIn; static int _pickedEntry = -1; static DateTime _pickedAt;   // the last pick sent, so a retry does not pick again at once
+    static object? _tabbedStep; static IntPtr _tabbedIn; static string? _tabbedTo; static DateTime _tabbedAt;      // the last tab opened, for the same reason
+
+    /// <summary>Opens the tab with the recorded text, as a person does: the mouse messages sent to the tab control at the tab's rectangle (the tab control tells its owner, as after a click). If the
+    /// selection did not move, the fallback: TCM_SETCURSEL and the TCN_SELCHANGING / TCN_SELCHANGE the owner expects (<see cref="TabControl32.Select"/>). A retry while the palette is still
+    /// reacting does not click again; after 5 s it does.</summary>
+    static string? Tab(IntPtr tab, NativeAction a, object step)
+    {
+        var want = a.Label ?? "";
+        int i = TabControl32.Find(tab, want);
+        if (i < 0) return $"no tab {want} in the palette";
+        if (TabControl32.Selected(tab) == i) return null;
+        if (ReferenceEquals(_tabbedStep, step) && _tabbedIn == tab && _tabbedTo == want && DateTime.Now - _tabbedAt <= TimeSpan.FromSeconds(5)) return $"the {want} tab did not open yet";
+        _tabbedStep = step; _tabbedIn = tab; _tabbedTo = want; _tabbedAt = DateTime.Now;
+        DialogFill.Later("tab", () =>
+        {
+            var how = "mouse";
+            if (TabControl32.ItemRect(tab, i) is { } r)
+            {
+                var lp = (IntPtr)((((r.T + r.B) / 2) << 16) | (((r.L + r.R) / 2) & 0xFFFF));
+                Send(tab, WM_LBUTTONDOWN, (IntPtr)1, lp);
+                Send(tab, WM_LBUTTONUP, IntPtr.Zero, lp);
+            }
+            if (TabControl32.Selected(tab) != i)
+            {
+                how = "TCM_SETCURSEL";
+                if (TabControl32.Select(tab, i) is { } why) Log.Info($"native tab {want}: {why}");
+            }
+            Log.Info($"native tab ({how}): {want} -> now {TabControl32.Text(tab, TabControl32.Selected(tab))}");
+        });
+        return $"opening the {want} tab";   // checked on the next try
+    }
 
     /// <summary>Picks the entry: by its text when the list holds text, else by its position. An entry named by the palette's active item
     /// (AutoCAD Electrical's project list) is done when that item is bold, whatever the list shows; else when the list shows the entry. A
@@ -330,7 +345,7 @@ static class NativePalette
         if (_pickedIn != combo || _pickedEntry != i || DateTime.Now - _pickedAt > TimeSpan.FromSeconds(5))
         {
             _pickedIn = combo; _pickedEntry = i; _pickedAt = DateTime.Now;
-            Later("drop-down", () =>
+            DialogFill.Later("drop-down", () =>
             {
                 var before = Selected(combo);
                 // as a person does it: open the list and click the entry in it. AutoCAD Electrical's project list ignores CB_SETCURSEL with the
@@ -380,29 +395,19 @@ static class NativePalette
 
     static string? Tree(IntPtr tree, NativeAction a, Action<int, int>? cursor)
     {
-        var item = IntPtr.Zero;
-        var level = Send(tree, TVM_GETNEXTITEM, (IntPtr)TVGN_ROOT, IntPtr.Zero);
-        for (int d = 0; d < a.Path.Count; d++)
-        {
-            if (d > 0)
-            {
-                Send(tree, TVM_EXPAND, (IntPtr)TVE_EXPAND, item);
-                level = Send(tree, TVM_GETNEXTITEM, (IntPtr)TVGN_CHILD, item);
-            }
-            item = IntPtr.Zero;
-            for (var it = level; it != IntPtr.Zero; it = Send(tree, TVM_GETNEXTITEM, (IntPtr)TVGN_NEXT, it))
-                if (string.Equals(ItemText(tree, it), a.Path[d], StringComparison.OrdinalIgnoreCase)) { item = it; break; }
-            if (item == IntPtr.Zero) return $"no item {a.Path[d]}" + (d > 0 ? $" under {string.Join(" › ", a.Path.Take(d))}" : "") + " in the tree";
-        }
-        Send(tree, TVM_SELECTITEM, (IntPtr)TVGN_CARET, item);
+        // the walk is TreeControl's (each level by its text, trimmed and case-insensitive; each parent opened on the way)
+        var found = TreeControl.Find(tree, a.Path);
+        if (found.Problem != null) return found.Problem;
+        var item = found.Items[^1];
+        Send(tree, TreeControl.TVM_SELECTITEM, (IntPtr)TreeControl.TVGN_CARET, item);
         if (a.Action == "rclick") return null;   // the context menu itself is not replayed; the command picked from it follows as typed
-        Send(tree, TVM_ENSUREVISIBLE, IntPtr.Zero, item);
-        var r = ItemRect(tree, item);
+        Send(tree, TreeControl.TVM_ENSUREVISIBLE, IntPtr.Zero, item);
+        var r = TreeControl.TextRect(tree, item) ?? default;
         var pt = new POINT { X = Math.Min(r.L + 8, (r.L + r.R) / 2), Y = (r.T + r.B) / 2 };
         var screen = pt; ClientToScreen(tree, ref screen);
         cursor?.Invoke(screen.X, screen.Y);   // Electrical reads where the mouse is when it handles the click
         var lp = (IntPtr)((pt.Y << 16) | (pt.X & 0xFFFF));
-        Later("tree", () =>
+        DialogFill.Later("tree", () =>
         {
             Send(tree, WM_LBUTTONDOWN, (IntPtr)1, lp);
             Send(tree, WM_LBUTTONUP, IntPtr.Zero, lp);
@@ -413,18 +418,5 @@ static class NativePalette
             }
         });
         return null;
-    }
-
-    /// <summary>The label rectangle of a tree item (TVM_GETITEMRECT takes the item handle in the rectangle it fills).</summary>
-    static RECT ItemRect(IntPtr tree, IntPtr item)
-    {
-        var buf = Marshal.AllocHGlobal(Marshal.SizeOf<RECT>());
-        try
-        {
-            Marshal.WriteIntPtr(buf, item);
-            Send(tree, TVM_GETITEMRECT, (IntPtr)1, buf);
-            return Marshal.PtrToStructure<RECT>(buf);
-        }
-        finally { Marshal.FreeHGlobal(buf); }
     }
 }

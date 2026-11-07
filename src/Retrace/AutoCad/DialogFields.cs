@@ -8,11 +8,11 @@ namespace Retrace.AutoCad;
 
 /// <summary>
 /// Reads the field values of a dialog from outside (no source code needed, no AutoCAD API). Win32 first: walks the child windows and
-/// reads edit boxes, check boxes, radios, combo and list boxes and sliders with SendMessage. A dialog without child windows (WPF) is read
+/// reads edit boxes, check boxes, radios, combo and list boxes, sliders and the selected item of a tree with SendMessage. A dialog without child windows (WPF) is read
 /// through UI Automation, which must only be called from a pool thread (<see cref="ReadUia"/>). The pure parts (labels, groups, keys)
 /// are in <see cref="DialogFieldsCore"/>.
 /// </summary>
-static class DialogReader
+static partial class DialogReader
 {
     const uint WM_GETTEXT = 0x000D, WM_GETTEXTLENGTH = 0x000E, BM_GETCHECK = 0x00F0;
     const uint CB_GETCURSEL = 0x0147, CB_GETLBTEXT = 0x0148, CB_GETLBTEXTLEN = 0x0149;
@@ -46,22 +46,39 @@ static class DialogReader
         public Box Rect;
     }
 
-    /// <summary>What one Win32 pass found: the fields, the control(s) behind each (all radios of a group), and the push buttons.</summary>
+    /// <summary>What one Win32 pass found: the fields, the control(s) behind each (all radios of a group), and the push buttons. With tab controls in the window: <see cref="Tabs"/> (parallel to
+    /// <see cref="TabHandles"/>), <see cref="Showing"/>, the tab path the dialog as a whole shows, and <see cref="ButtonTabs"/> (parallel to <see cref="Buttons"/>): the tab each button sits on, else
+    /// the one showing. A window with no tab control has none of it (and its fields' tab is "").</summary>
     internal sealed class Win32Scan
     {
         public List<DialogField> Fields = new();
         public List<List<IntPtr>> Handles = new();
         public List<(IntPtr H, int Id, string Text)> Buttons = new();
+        public List<TabInfo> Tabs = new();
+        public List<IntPtr> TabHandles = new();
+        public string Showing = "";
+        public List<string> ButtonTabs = new();
+        /// <summary>The labels of the trees whose check boxes were cut at <see cref="TreeChecks.MaxItems"/> items.</summary>
+        public List<string> Truncated = new();
+
+        /// <summary>The tab of <paramref name="button"/> (one of <see cref="Buttons"/>): "" when the window has no tabs or the button is not in the scan.</summary>
+        public string TabOf(IntPtr button)
+        {
+            var at = Buttons.FindIndex(b => b.H == button);
+            return at >= 0 && at < ButtonTabs.Count ? ButtonTabs[at] : "";
+        }
     }
 
     /// <summary>Win32 pass. Cheap (SendMessage to this process's own windows); safe on the UI thread. Never throws.</summary>
-    public static List<DialogField> ReadWin32(IntPtr dialog) => Scan(dialog).Fields;
+    public static List<DialogField> ReadWin32(IntPtr dialog, TreeTickCache? ticks = null) => Scan(dialog, ticks: ticks).Fields;
 
     /// <summary>The one enumeration that reading and filling share. Never throws (an empty scan on failure).</summary>
     /// <param name="hiddenToo">also while <paramref name="dialog"/> itself is hidden (an auto-hidden palette): a control counts when its own
     /// WS_VISIBLE is set, not only when it is on screen</param>
     /// <param name="disabledToo">also list disabled push buttons (for describing what is near the cursor; never for pressing)</param>
-    internal static Win32Scan Scan(IntPtr dialog, bool hiddenToo = false, bool disabledToo = false)
+    /// <param name="ticks">where the tick states of trees with check boxes are kept between reads (the recorder's); null reads them each time</param>
+    /// <param name="readTicks">false for a replay, which finds a tree's items itself and never needs the whole list</param>
+    internal static Win32Scan Scan(IntPtr dialog, bool hiddenToo = false, bool disabledToo = false, TreeTickCache? ticks = null, bool readTicks = true)
     {
         var scan = new Win32Scan();
         try
@@ -72,7 +89,7 @@ static class DialogReader
             var ctls = new List<Ctl>();
             foreach (var h in handles)
             {
-                if (hiddenToo ? ((uint)GetWindowLong(h, GWL_STYLE) & WS_VISIBLE) == 0 : !IsWindowVisible(h)) continue;
+                if (hiddenToo ? !OwnVisibleUpTo(h, dialog) : !IsWindowVisible(h)) continue;
                 GetWindowRect(h, out var r);
                 var p = GetParent(h);
                 ctls.Add(new Ctl
@@ -86,11 +103,19 @@ static class DialogReader
             foreach (var c in ctls)
                 if (c.Seg == "static") { var t = Text(c.H); if (t.Length > 0) statics.Add((c.Rect, t)); }
 
+            // the tab controls of the window, and which page each control sits in (a field on a page that is not showing is not visible, so not read)
+            var tabScan = TabScan.Read(ctls);
+            if (tabScan != null)
+            {
+                scan.Tabs = tabScan.Infos; scan.TabHandles = tabScan.Handles; scan.Showing = TabPlan.Showing(tabScan.Infos);
+            }
+
             var raw = new List<RawControl>();
             var rects = new List<Box>();
             var rawHandles = new List<IntPtr>();
             void Add(Ctl c, RawControl r)
             {
+                if (tabScan != null) r = r with { Tab = tabScan.PathOf(c.H) };
                 // a WinForms control has a name that stays the same between runs, and maybe an accessible name: the label it was given
                 if (WinFormsControls.NamesOf(c.H) is var (name, accessible) && name.Length > 0)
                     r = r with { Name = name, Label = accessible.Length > 0 ? DialogFieldsCore.CleanLabel(accessible) : r.Label };
@@ -149,6 +174,13 @@ static class DialogReader
                 {
                     kind = "slider"; value = Num(c.H, TBM_GETPOS).ToString(CultureInfo.InvariantCulture);
                 }
+                else if (seg == "systreeview32")
+                {
+                    // the selected item and its parents (also a WinForms TreeView). Only a tree of this thread: the TVITEM messages pass pointers
+                    // to buffers of this call, and a tree of another thread (or process) answers later, after a timeout has freed them
+                    if (!Native.OwnedByThisThread(c.H)) continue;
+                    kind = "tree"; value = TreeControl.SelectedPath(c.H);
+                }
                 if (kind != null) Add(c, new RawControl(c.Id, DialogFieldsCore.FindLabel(c.Rect, statics) ?? $"#{c.Id}", kind, value ?? ""));
             }
             // group boxes name the section a field sits in: "Length › Precision" when two fields are both labelled "Precision"
@@ -159,13 +191,38 @@ static class DialogReader
             {
                 scan.Fields.Add(f);
                 scan.Handles.Add(idx.Select(i => rawHandles[i]).ToList());
+                // a tree with check boxes: one field per item (TreeChecks), after the tree itself, keyed by the tree's key so that it is the same field in every read
+                if (f.Kind == "tree" && idx.Count == 1)
+                    if (readTicks)
+                    {
+                        bool cut;
+                        var list = ticks != null ? ticks.Get(rawHandles[idx[0]], Environment.TickCount64, out cut) : TreeControl.ReadChecks(rawHandles[idx[0]], out cut);
+                        if (cut) scan.Truncated.Add(f.Label);
+                        foreach (var (path, value) in list)
+                        {
+                            scan.Fields.Add(new DialogField(TreeChecks.KeyOf(f.Key, path), TreeChecks.LabelOf(f.Label, path), TreeChecks.Kind, value, f.Tab));
+                            scan.Handles.Add(new List<IntPtr> { rawHandles[idx[0]] });
+                        }
+                    }
             }
             foreach (var c in ctls)
                 if (c.Seg == "button" && ((c.Style & 0xF) is 0 or 1 or 0xB) && (disabledToo || (c.Style & WS_DISABLED) == 0) && WinFormsControls.KindOf(c.H) is null or "button")
+                {
                     scan.Buttons.Add((c.H, c.Id, Text(c.H)));
+                    if (tabScan != null) scan.ButtonTabs.Add(tabScan.PathOf(c.H) is { Length: > 0 } onTab ? onTab : scan.Showing);   // a button outside the tabs (Apply) is pressed with the tab showing
+                }
             return scan;
         }
         catch (Exception ex) { Log.Error("dialog fields (win32)", ex); return new(); }
+    }
+
+    /// <summary>For a scan of a hidden window (an auto-hidden palette): the control and every window between it and <paramref name="top"/> have their own WS_VISIBLE. A page that is not the shown one
+    /// (a WinForms TabPage, a property sheet's page, a control a plain dialog hides) has none, so its controls, and a tab control on it, are left out.</summary>
+    static bool OwnVisibleUpTo(IntPtr h, IntPtr top)
+    {
+        for (int n = 0; n < 40 && h != IntPtr.Zero && h != top; n++, h = GetParent(h))
+            if (((uint)GetWindowLong(h, GWL_STYLE) & WS_VISIBLE) == 0) return false;
+        return true;
     }
 
     /// <summary>Lower-case class name; for WinForms ("WindowsForms10.EDIT.app.0.141b42a_r9_ad1") the part after "WindowsForms10.".</summary>
@@ -179,9 +236,12 @@ static class DialogReader
 
     /// <summary>Which of the push buttons of <paramref name="page"/> with the same text <paramref name="button"/> is, counted in window order (1 = the
     /// first); 1 for a WPF button or one not found.</summary>
-    internal static int ButtonIndex(IntPtr page, IntPtr button)
+    internal static int ButtonIndex(IntPtr page, IntPtr button) => ButtonIndex(Scan(page, readTicks: false), button);
+
+    /// <summary>Like <see cref="ButtonIndex(IntPtr, IntPtr)"/>, for a scan already made.</summary>
+    internal static int ButtonIndex(Win32Scan scan, IntPtr button)
     {
-        var all = Scan(page).Buttons;
+        var all = scan.Buttons;
         var at = all.FindIndex(b => b.H == button);
         if (at < 0) return 1;
         var text = PaletteFill.ButtonLabel(all[at].Text);

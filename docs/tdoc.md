@@ -58,6 +58,7 @@ While a Tdoc run is active, Retrace writes `Tdoc i/n` and the current test and s
 ## Limits
 
 - Leave the mouse and keyboard alone during a run. A click or a tool tip ends up in a picture, and windows are brought to the front.
+- A dialog with buttons clicked inside it (`dialog_click`) is pictured once, as it is just before OK / Cancel (or before the last click, when that click closes it), with a box "Click <button>" on each button pressed on the way and a box on each field set after the last click; each click's own state is not pictured, and neither is a nested dialog. The step text lists the changes and the clicks in order.
 - A dialog is pictured only when Retrace fills it in itself. When it cannot (a value does not go in, `autoFillDialogs` is off) a person finishes it as in Run test, there is no picture of it, and the step text still lists the recorded values.
 - The command line box needs AutoCAD's command line window: found as the WPF window that holds AutoCAD's command line control, or by the title "Command Line"; if neither, the picture has no box for it.
 - A ribbon button in a panel slide-out or on a tab that cannot be shown has no box (a collapsed panel gets the box, see above).

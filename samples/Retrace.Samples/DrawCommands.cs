@@ -206,6 +206,27 @@ namespace Retrace.Samples
             ed.WriteMessage("\nGrid drawn: " + rows + " x " + columns + " points on layer " + layerName + ".");
         }
 
+        [CommandMethod("DRAWPART")]
+        public void DrawPart()
+        {
+            var doc = Application.DocumentManager.MdiActiveDocument;
+            var ed = doc.Editor;
+
+            using var dialog = new TreeDialog();
+            var answer = Application.ShowModalDialog(dialog);
+            if (answer != System.Windows.Forms.DialogResult.OK) return;
+            string name = dialog.PartName;
+
+            using (doc.LockDocument())
+            using (var tr = doc.Database.TransactionManager.StartTransaction())
+            {
+                var label = new DBText { TextString = name, Position = Point3d.Origin, Height = 2.5 };
+                AddToModelSpace(doc.Database, tr, label);
+                tr.Commit();
+            }
+            ed.WriteMessage("\nPart label added: " + name);
+        }
+
         private static void AddToModelSpace(Database db, Transaction tr, Entity entity)
         {
             var blockTable = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);

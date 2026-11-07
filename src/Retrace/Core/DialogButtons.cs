@@ -9,6 +9,11 @@ public static class DialogButtons
     /// spaces and punctuation are ignored; a leading "btn" / "button" and a trailing "button" in an id are ignored too ("btnOk", "OkButton").</summary>
     public static string? Role(string? name, string? automationId = null) => FromName(name) ?? FromName(automationId);
 
+    /// <summary>The Help button of a dialog (text "Help", mnemonic and dots ignored): it opens a window of its own, so a recording leaves it out.</summary>
+    public static bool IsHelp(string? name) => FromLetters(name) == "help";
+
+    static string? FromLetters(string? s) => string.IsNullOrWhiteSpace(s) ? null : new string(s.Where(char.IsLetter).ToArray()).ToLowerInvariant();
+
     static string? FromName(string? s)
     {
         if (string.IsNullOrWhiteSpace(s)) return null;

@@ -220,6 +220,33 @@ public class DialogValuesTests : IDisposable
     }
 
     [Fact]
+    public void A_dialog_its_last_click_closed_has_no_after_picture_as_no_OK_was_pressed()
+    {
+        Directory.CreateDirectory(Path.Combine(_dir, "s", "screenshots"));
+        File.WriteAllBytes(Path.Combine(_dir, "s", "screenshots", "003-dialog.png"), new byte[] { 1 });
+        File.WriteAllBytes(Path.Combine(_dir, "s", "screenshots", "003-dialog-after.png"), new byte[] { 1 });
+        string[] Session(string closedWith) => new[]
+        {
+            """{"t":100,"n":1,"type":"cmd_start","command":"STYLE","origin":"typed/other"}""",
+            """{"t":110,"n":2,"type":"modal_enter","title":"AutoCAD"}""",
+            """{"t":200,"n":3,"type":"modal_title","title":"Text Style"}""",
+            """{"t":400,"n":4,"type":"shot","for":3,"file":"screenshots/003-dialog.png","what":"dialog"}""",
+            """{"t":1500,"n":5,"type":"dialog_click","for":3,"button":"Close","fields":[],"read":12}""",
+            """{"t":1700,"n":6,"type":"shot","for":3,"file":"screenshots/003-dialog-after.png","what":"dialog-after"}""",
+            """{"t":1900,"n":7,"type":"dialog_values","for":3,"title":"Text Style","source":"win32","fields":[],"read":12,""" + closedWith + "}",
+            """{"t":1910,"n":8,"type":"modal_leave"}""",
+            """{"t":1920,"n":9,"type":"cmd_end","command":"STYLE"}""",
+        };
+        var md = Script(Session("\"closedWith\":\"click\",\"button\":\"Close\""));
+        Assert.Contains("(the last click closes the dialog)", md);
+        Assert.DoesNotContain("After (what it should look like before you press OK)", md);
+        Assert.DoesNotContain("003-dialog-after", md);
+        // closed with OK after the same click: OK was pressed, so the picture of the filled dialog is there
+        md = Script(Session("\"closedWith\":\"ok\""));
+        Assert.Contains("After (what it should look like before you press OK):", md);
+    }
+
+    [Fact]
     public void A_dialog_closed_with_Cancel_says_so_and_lists_no_changes()
     {
         var md = Script(
@@ -290,6 +317,16 @@ public class DialogValuesTests : IDisposable
             """{"t":1810,"n":3,"type":"dialog_values","for":1,"title":"Options","source":"win32","fields":[{"key":"id:5","label":"Rows","kind":"edit","before":"3","after":"5"}],"read":2}""");
         Assert.Contains("1. A dialog opens: **Options**. Make these changes, then confirm:\n   - Set **Rows** to `5` (was `3`)\n", md);
         Assert.Equal(1, Retrace.Core.ScriptRef.DialogStepNumber(md, 1));
+    }
+
+    [Fact]
+    public void A_tree_in_a_dialog_reads_as_a_selection_in_steps_md()
+    {
+        var md = Script(
+            """{"t":100,"n":1,"type":"modal_enter","title":"Choose part"}""",
+            """{"t":1800,"n":2,"type":"modal_leave"}""",
+            """{"t":1810,"n":3,"type":"dialog_values","for":1,"title":"Choose part","source":"win32","fields":[{"key":"name:PartsTree","label":"Catalog","kind":"tree","before":"","after":"Parts › Fasteners › Bolts"}],"read":2}""");
+        Assert.Contains("1. A dialog opens: **Choose part**. Make these changes, then confirm:\n   - Select `Parts › Fasteners › Bolts` in **Catalog**\n", md);
     }
 
     [Fact]

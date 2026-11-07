@@ -43,12 +43,15 @@ sealed class Replayer
     readonly ReplayResult _result = new();
     readonly List<string> _warnings = new();
     string? _eventError;            // set by Document events (a plain field write; no AutoCAD calls in handlers)
+    readonly UnknownCommandGrace _unknown = new();   // UnknownCommand for a command the replay sent: waits for its start before it is an error (fed by the handlers and NoteSent, read in Tick)
+    bool _unknownWaiting;           // the last poll of _unknown said Waiting: no next step yet
     DateTime _modalSince = DateTime.MinValue;
     int _checks;
     int _i;
     bool _running, _userNext;
     // the current palette step: retried since _paletteSince; waiting for a person (Next); its button's command still to start
     bool _paletteForPerson;
+    PaletteFill.FillRun _paletteFill = new();   // what the current palette step has set so far (tabs)
     DateTime _paletteSince = DateTime.MinValue, _paletteRetryAt = DateTime.MinValue, _paletteClickedAt;
     Step? _paletteCommand;
     // showing the palette being driven (setting showDrivenUi): the mouse is rested on it as a person would, and put back after
@@ -169,6 +172,7 @@ sealed class Replayer
 
     void Begin(DrawingDigest? initial)
     {
+        PaletteFill.Reset();   // no menu state of an earlier replay
         _result.Session = TestFolders.NameOf(_sessionPath);
         _testName = TestList.NameOf(_result.Session);
         _result.StartedUtc = DateTime.UtcNow.ToString("o");
@@ -353,6 +357,8 @@ sealed class Replayer
     /// says needs-person while that dialog is open</param>
     void Finish(bool completed, bool errored, string message, bool needsPerson = false)
     {
+        PaletteFill.Abandon();   // never leave a context menu open when the replay ends
+        _fill?.Abandon();
         if (!_running) return;
         _running = false;
         _stoppedForPerson = needsPerson;
@@ -414,10 +420,32 @@ sealed class Replayer
     void OnCmdEnded(object? s, CommandEventArgs e) { if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) _dialog.CommandEnded(false, DateTime.Now); }
     void OnCmdCancelled(object? s, CommandEventArgs e) { if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) _dialog.CommandEnded(true, DateTime.Now); }
     void OnCmdFailed(object? s, CommandEventArgs e) { if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) _eventError ??= $"command {e.GlobalCommandName} failed"; }
-    void OnUnknown(object? s, UnknownCommandEventArgs e) { _eventError ??= $"unknown command {e.GlobalCommandName}"; }
+    void OnUnknown(object? s, UnknownCommandEventArgs e) => _unknown.Unknown(e.GlobalCommandName, DateTime.Now);
+
+    /// <summary>The replay sends <paramref name="command"/> (typed, clicked, or started by a palette click; never something a person typed): AutoCAD may report it
+    /// as unknown a moment before it runs it (<see cref="UnknownCommandGrace"/>). Null for a step with no command (a LISP call). Answers typed into a running
+    /// command (the deferred ones after a dialog, a palette command's) start no command and are not noted.</summary>
+    void NoteSent(string? command) => _unknown.Sent(command, DateTime.Now);
+
+    /// <summary>AutoCAD reports some commands as unknown a moment before it runs them (UNITS on a fresh start): a command the replay sent gets
+    /// <see cref="UnknownCommandGrace.Window"/> to start before that is an ERROR. Any other unknown command is an ERROR at once.</summary>
+    void CheckUnknown()
+    {
+        var p = _unknown.Poll(DateTime.Now);
+        _unknownWaiting = p.Verdict == UnknownCommandVerdict.Waiting;
+        switch (p.Verdict)
+        {
+            case UnknownCommandVerdict.Failed: _eventError ??= p.Message; break;
+            case UnknownCommandVerdict.Recovered:
+                Log.Info($"replay: AutoCAD reported {p.Command} as unknown, then started it {(int)p.Waited.TotalMilliseconds} ms later: carrying on");
+                break;
+        }
+    }
+
     void OnCmdStart(object? s, CommandEventArgs e)
     {
         if (OwnCommands.IsOwnCommand(e.GlobalCommandName)) return;
+        _unknown.Started(e.GlobalCommandName, DateTime.Now);
         _pendingStart = false; _clicked = null;
         _lastStarted = e.GlobalCommandName; _lastStartedAt = DateTime.Now;
         // a command without prompts can start and end between two ticks: remember that the palette button's command started
@@ -459,6 +487,7 @@ sealed class Replayer
             _doc = active; Hook(_doc);
             Log.Info($"replay continues in {active.Name}: the drawing it ran in was closed");
         }
+        CheckUnknown();
         if (_eventError != null) { Finish(false, true, _eventError); return; }
         // AutoCAD's security prompt (an untrusted dll or LISP file is being loaded) is a decision for a person, never a test step:
         // stop at once with what to do, in both modes, and leave the prompt open for the person to answer.
@@ -470,7 +499,7 @@ sealed class Replayer
             _clock?.Begin(_i + 1, DateTime.Now);
             _dialog.Begin(DateTime.Now, _modalDepth > 0, _steps[_i].ClosedWith == "cancel");
             _announced = false; _cancelSent = false;
-            _fill = null; _fillTried = false; _fillAnnounced = false;
+            _fill?.Cancel(); _fill = null; _fillTried = false; _fillAnnounced = false;
             // the dialog came and went between two ticks: count it as handled
             if (_modalDepth == 0 && _modalsSeen > _modalsAtStepStart) { _dialog.ModalEntered(); _dialog.ModalLeft(0); }
         }
@@ -506,6 +535,7 @@ sealed class Replayer
         }
         _modalSince = DateTime.MinValue;
         if (_awaitOpen != null) { TickAwaitOpen(); return; }
+        if (_unknownWaiting) return;   // AutoCAD called a command the replay sent unknown; it may still start (CheckUnknown decides)
         if (!Settled()) return;
         RestoreView();   // the step is done: the person's view comes back
         if (_i >= _steps.Count) { Finish(true, false, "finished"); return; }
@@ -633,7 +663,11 @@ sealed class Replayer
                     var recorded = string.IsNullOrWhiteSpace(step.DialogTitle) ? "" : step.DialogTitle.Trim();
                     var title = actual.Length == 0 ? (recorded.Length == 0 ? "(untitled)" : recorded)
                         : recorded.Length > 0 && !string.Equals(actual, recorded, StringComparison.OrdinalIgnoreCase) ? $"{actual} (recorded: {recorded})" : actual;
-                    _result.Steps.Add(new StepResult { Index = _i + 1, Kind = "dialog", Title = step.Title, Status = "needs-person", Message = $"the dialog needs a person: {title}" });
+                    _result.Steps.Add(new StepResult
+                    {
+                        Index = _i + 1, Kind = "dialog", Title = step.Title, Status = "needs-person", Message = $"the dialog needs a person: {title}",
+                        Segments = _fill is { UsedUia: false } ? _fill.SegmentResults() : null,   // how far the replay got: the values set, the buttons pressed, the dialog that stopped it
+                    });
                     Finish(false, false, $"needs a person: dialog {title}", needsPerson: true);
                     return;
                 }
@@ -674,7 +708,7 @@ sealed class Replayer
             && Native.ForegroundOfThisProcess() is var open && open != IntPtr.Zero && FillMatcher.TitleMatches(_steps[_i + 1].DialogTitle, Native.TitleOf(open));
         if (!chained && (_modalDepth > 0 || !Settled())) return;   // Done: wait until the command that owned the dialog has finished (a cancel arrives as an event first)
         var failed = d.Phase == DialogWaitPhase.Failed;
-        var auto = !failed && _fill?.State == DialogAutoFiller.Phase.Clicked;   // the replay filled it and closed it: nobody waited
+        var auto = !failed && _fill?.Completed == true;   // the replay filled it and closed it: nobody waited
         var first = true;
         while (_i < _steps.Count && _steps[_i].Kind == "dialog" && (first || !chained))
         {
@@ -683,13 +717,14 @@ sealed class Replayer
                 Index = _i + 1, Kind = "dialog", Title = _steps[_i].Title, Status = failed ? "failed" : "ok", WaitedForPerson = d.PersonWaited && !auto, Message = failed ? d.FailReason : null,
                 AutoFilled = first && auto,
                 Fields = first && _fill is { Mode: AutoMode.Ok } && _fill.Results.Count > 0 ? _fill.Results : null,
+                Segments = first && _fill is { UsedUia: false } && (_fill.Completed || _fill.State == DialogAutoFiller.Phase.GaveUp) ? _fill.SegmentResults(personFinished: !failed && !auto) : null,   // a person finished what the replay gave up on: those segments are "person"
             });
             first = false;
             _i++;
         }
         if (failed) Say($"\nDialog step failed: {d.FailReason}. Continuing with the next steps.\n");
         d.Reset(); _doneAt = DateTime.MinValue;
-        _fill = null; _fillTried = false; _fillAnnounced = false;
+        _fill?.Cancel(); _fill = null; _fillTried = false; _fillAnnounced = false;
         _announced = false; _cancelSent = false; _shown = false;
         _notBefore = DateTime.Now.AddMilliseconds(chained ? 0 : 400);
     }
@@ -698,7 +733,8 @@ sealed class Replayer
     string DialogMessage(Step step)
     {
         ScriptPosition(out var file, out var n);
-        if (_fill != null) return FillMatcher.FallbackMessage(step.DialogTitle, file, n, step.Values, _fill.Results, step.ClosedWith, _fill.Note);
+        if (_fill != null) return DialogSegments.FallbackMessage(step.DialogTitle, file, n, _fill.Segments, _fill.Progress, step.ClosedWith, _fill.Note);
+        if (step.Clicks.Count > 0) return DialogSegments.ManualMessage(step.DialogTitle, file, n, step);
         return ScriptRef.Message(step.DialogTitle, file, n, step.Values, step.ValuesRead, step.ClosedWith);
     }
 
@@ -706,13 +742,13 @@ sealed class Replayer
     DialogAutoFiller? MakeFiller(Step step)
     {
         if (!_autoFillOn) return null;
-        var mode = FillMatcher.Decide(step.Values != null, step.Values?.Count ?? 0, step.ValuesRead, step.ClosedWith);
+        var mode = DialogSegments.ModeOf(step);   // the clicks count as work
         if (mode == AutoMode.None) return null;
         var main = IntPtr.Zero;
         try { main = Autodesk.AutoCAD.ApplicationServices.Application.MainWindow.Handle; } catch (Exception ex) { Log.Error("autofill main window", ex); }
         var tdoc = _tdoc;
         var at = _i;
-        return new DialogAutoFiller(mode, step.Values, step.DialogTitle, step.ValuesSource, main)
+        return new DialogAutoFiller(mode, step, main, ignore: _win.Handle)
         {
             BeforeClose = tdoc == null ? null : shot => tdoc.DialogReady(at, shot, DateTime.Now),   // Tdoc: the picture of the filled dialog comes before OK
         };
@@ -753,9 +789,10 @@ sealed class Replayer
         if (_showUi && !_revealDone && !Reveal(s, now)) return;
         if (_paletteSince == DateTime.MinValue) _paletteSince = now;
         if (now < _paletteRetryAt) return;
+        NoteSent(s.Command);   // the click may start the palette button's command at once (and a retry refreshes the time)
         var problem = s.Native != null
             ? NativePalette.Run(s, (x, y) => { if (_cursorHome == null && PaletteReveal.GetCursorPos(out var home)) _cursorHome = home; MoveCursor(new PaletteReveal.POINT { X = x, Y = y }); })
-            : PaletteFill.Run(s);
+            : PaletteFill.Run(s, _paletteFill);
         if (problem == null)
         {
             Say($"\n  Palette \"{s.DialogTitle}\": done.\n");
@@ -764,7 +801,7 @@ sealed class Replayer
             if (s.Native is { Action: "rclick" } && s.Command != null)
             {
                 var typed = Plan.InputText(new Step { Kind = "command", Command = s.Command, Answers = s.Answers }, handleExists: HandleExists);
-                if (!string.IsNullOrEmpty(typed)) { _doc.SendStringToExecute(typed, true, false, true); _pendingStart = true; _sentAt = now; }
+                if (!string.IsNullOrEmpty(typed)) { NoteSent(s.Command); _doc.SendStringToExecute(typed, true, false, true); _pendingStart = true; _sentAt = now; }
                 NextPaletteStep();
                 return;
             }
@@ -776,7 +813,9 @@ sealed class Replayer
             NextPaletteStep();
             return;
         }
-        if (now - _paletteSince < PaletteWait) { _paletteRetryAt = now.AddMilliseconds(500); return; }
+        bool menuFinal = PaletteFill.TakeMenuFinal();   // always asked: a final failure must not leak into the next step
+        if (now - _paletteSince < PaletteWait && !menuFinal) { _paletteRetryAt = now.AddMilliseconds(500); return; }
+        PaletteFill.Abandon();   // a context menu the step opened is closed before a person gets it
         if (_mode == ReplayMode.Auto && Unattended)
         {
             _result.Steps.Add(new StepResult { Index = _i + 1, Kind = "palette", Title = s.Title, Status = "needs-person", Message = problem });
@@ -863,7 +902,7 @@ sealed class Replayer
         _i++;
         _shown = false;
         _paletteForPerson = false;
-        _paletteSince = DateTime.MinValue; _paletteRetryAt = DateTime.MinValue;
+        _paletteSince = DateTime.MinValue; _paletteRetryAt = DateTime.MinValue; _paletteFill = new();
         _notBefore = DateTime.Now.AddMilliseconds(800);   // a clicked button runs from the palette's own loop, after this tick
     }
 
@@ -1036,6 +1075,7 @@ sealed class Replayer
             return false;
         }
         _clicked = null;
+        NoteSent(s.Command);   // before the click: the command it starts may be reported as unknown at once
         if (s.Kind == "ribbon" && s.Answers.Count == 0 && !s.HadDialog)
         {
             // armed before the handler runs: a command it starts at once clears this in OnCmdStart and is neither waited for nor typed again
@@ -1058,6 +1098,7 @@ sealed class Replayer
     void Type(Step s, string text)
     {
         if (s.Kind == "ribbon") ActivateTab(s.Tab);
+        NoteSent(s.Command);
         _doc.SendStringToExecute(text, true, false, true);
         _pendingStart = true; _sentAt = DateTime.Now;
     }

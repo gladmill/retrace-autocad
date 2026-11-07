@@ -53,7 +53,7 @@ static class CursorContext
     static Checkpoints.CheckpointContext? InPalette(PaletteWatch.Spot spot, IntPtr h, POINT p)
     {
         var near = new List<Near>();
-        var scan = DialogReader.Scan(spot.Page, disabledToo: true);   // a disabled button is part of what the person looked at
+        var scan = DialogReader.Scan(spot.Page, disabledToo: true, readTicks: false);   // a disabled button is part of what the person looked at
         if (scan.Fields.Count > 0 || scan.Buttons.Count > 0)
         {
             for (int i = 0; i < scan.Fields.Count; i++)
