@@ -35,8 +35,46 @@ static class Native
     /// <summary>h is the window <paramref name="parent"/> or one of its children.</summary>
     public static bool IsInside(IntPtr parent, IntPtr h) => parent != IntPtr.Zero && h != IntPtr.Zero && (parent == h || IsChild(parent, h));
     public static bool ShiftOrCtrlDown() => GetKeyState(0x10) < 0 || GetKeyState(0x11) < 0;
+    /// <summary>Is a Ctrl key down? (Ctrl+letter is a shortcut, not a mnemonic.)</summary>
+    public static bool CtrlDown() => GetKeyState(0x11) < 0;
+    /// <summary>Is a Windows key down? (Win+letter is a shortcut of Windows.)</summary>
+    public static bool WinDown() => GetKeyState(0x5B) < 0 || GetKeyState(0x5C) < 0;
+
+    /// <summary>Does the window belong to the calling thread? The only trees and tab controls that are read or driven (messages that carry pointers).</summary>
+    public static bool OwnedByThisThread(IntPtr h) => h != IntPtr.Zero && GetWindowThreadProcessId(h, out _) == GetCurrentThreadId();
+    [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW")]
+    internal static extern IntPtr SendNum(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
+    [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
+
+    /// <summary>The window <paramref name="x"/> itself or its ancestor that is a direct child of <paramref name="parent"/>; zero when <paramref name="x"/> is not under it.</summary>
+    public static IntPtr AncestorUnder(IntPtr x, IntPtr parent)
+    {
+        for (int n = 0; n < 40 && x != IntPtr.Zero; n++, x = GetParent(x)) if (GetParent(x) == parent) return x;
+        return IntPtr.Zero;
+    }
 
     public static bool Exists(IntPtr h) => h != IntPtr.Zero && IsWindow(h);
+
+    /// <summary>Is the window visible (itself and its parents)?</summary>
+    public static bool IsVisible(IntPtr h) => IsWindowVisible(h);
+    /// <summary>Does the window have a title bar? (Tooltips, drop-down lists and other pop-ups have none.)</summary>
+    public static bool HasCaption(IntPtr h) => (Win32.GetWindowLongPtr(h, Win32.GWL_STYLE).ToInt64() & WS_CAPTION) == WS_CAPTION;
+    const long WS_CAPTION = 0x00C00000;
+
+    /// <summary>A message as a thread message hook (WH_GETMESSAGE) sees it.</summary>
+    [StructLayout(LayoutKind.Sequential)] public struct Msg { public IntPtr hwnd; public uint message; public IntPtr wParam, lParam; public uint time; public int x, y; }
+
+    /// <summary>Is the window enabled? A window under a modal one is not.</summary>
+    public static bool IsEnabled(IntPtr h) => IsWindowEnabled(h);
+
+    [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h, out RECT r);
+    /// <summary>The size of the window's client area; false when there is none.</summary>
+    public static bool ClientSize(IntPtr h, out int width, out int height)
+    {
+        var ok = GetClientRect(h, out var r);
+        width = r.Right - r.Left; height = r.Bottom - r.Top;
+        return ok;
+    }
 
     public static string TitleOf(IntPtr h) { var t = new StringBuilder(256); GetWindowText(h, t, t.Capacity); return t.ToString(); }
 

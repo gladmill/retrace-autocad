@@ -39,6 +39,32 @@ public sealed class CheckpointResult
     }
 }
 
+/// <summary>One segment of a dialog the replay did (see <see cref="DialogSegments"/>): the values it set and the button it pressed. In a results file as `segments[]`.</summary>
+public sealed class SegmentResult
+{
+    public const string Ok = "ok", Failed = "failed", NotRun = "notRun", Person = "person";
+
+    /// <summary>The button pressed after the values; left out for the closing segment (OK or Cancel).</summary>
+    [JsonPropertyName("button")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Button { get; set; }
+    /// <summary>"ok" (its values went in and the button was pressed), "failed", "notRun" (an earlier segment stopped the replay), or "person" (the replay gave up here and a person did this
+    /// segment and the rest by hand; `message` on the first one says why).</summary>
+    [JsonPropertyName("status")] public string Status { get; set; } = NotRun;
+    [JsonPropertyName("message")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Message { get; set; }
+    /// <summary>What happened to each recorded value of this segment; left out when it had none.</summary>
+    [JsonPropertyName("fields")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public List<FieldFillResult>? Fields { get; set; }
+    /// <summary>The static texts the dialog showed just before the button was pressed (the closing segment: just before the close); left out when it read none.</summary>
+    [JsonPropertyName("statics")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public List<DialogStatic>? Statics { get; set; }
+    /// <summary>The dialogs the button opened and the replay did; left out when none.</summary>
+    [JsonPropertyName("nested")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public List<NestedDialogResult>? Nested { get; set; }
+}
+
+/// <summary>A dialog a button opened, as the replay did it.</summary>
+public sealed class NestedDialogResult
+{
+    [JsonPropertyName("title")] public string Title { get; set; } = "";
+    [JsonPropertyName("segments")] public List<SegmentResult> Segments { get; set; } = new();
+}
+
 /// <summary>One replayed step. `status`: "ok", "failed" (a dialog step that did not happen as recorded), "needs-person" (unattended run stopped here), "blocked" (a security prompt) or "timed-out" (a suite run's step timeout).</summary>
 public sealed class StepResult
 {
@@ -53,6 +79,9 @@ public sealed class StepResult
     [JsonPropertyName("autoFilled")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public bool AutoFilled { get; set; }
     /// <summary>What happened to each recorded value the replay tried to fill in; left out when it did not try.</summary>
     [JsonPropertyName("fields")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public List<FieldFillResult>? Fields { get; set; }
+    /// <summary>A Win32 dialog the replay did itself, one entry per recorded click and a last one for the close, with the static texts it showed before each button
+    /// and before the close. Left out for a dialog filled through UI Automation and when the replay did not try.</summary>
+    [JsonPropertyName("segments")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public List<SegmentResult>? Segments { get; set; }
 }
 
 /// <summary>The result of a replay, written at its end: `results/&lt;stamp&gt;_&lt;VERDICT&gt;.json` + `results/latest.json` in the test folder. See docs/recording-format.md.</summary>

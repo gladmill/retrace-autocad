@@ -16,7 +16,7 @@ public static class DrawingOpen
     /// <summary>Event types that are the person acting: they end a drawing's start-up, and also end skipping a start-up LISP whose end
     /// was never recorded (the drawing closed while it ran), so one lost event cannot hide the rest of a recording.</summary>
     static bool IsPersonActing(string? type) =>
-        type is "ribbon" or "tab" or "palette_values" or "palette_click" or "native_click" or "native_select" or "modal_enter" or "mark" or "doc_created";
+        type is "ribbon" or "tab" or "palette_values" or "palette_click" or "context_menu" or "native_click" or "native_select" or "modal_enter" or "mark" or "doc_created";
 
     /// <summary>Follows a recording event by event and says which events belong to a drawing's start-up LISP. One rule for the recorder
     /// (checkpoint names) and the readers (steps, replay).</summary>

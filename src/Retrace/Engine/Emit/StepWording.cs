@@ -99,37 +99,91 @@ public static class StepWording
                     + (string.IsNullOrWhiteSpace(st.Panel) || st.Panel == st.DialogTitle ? "" : $" ({Md.Cell(st.Panel)})");
         if (st.Native != null)   // a native palette: one action, no values
             return $"{where}, {st.Native.Describe(Md.Cell, x => $"**{x}**")}" + (st.OpensDrawing != null ? $". It opens {Md.Code(st.OpensDrawing)}" : "");
-        var click = string.IsNullOrWhiteSpace(st.Text) ? null : $"click **{Md.Cell(st.Text)}**";
+        var click = st.Menu != null ? st.Menu.Phrase(true, Md.Cell, "the palette") : string.IsNullOrWhiteSpace(st.Text) ? null
+            : st.ClickKind == Retrace.Core.DialogClickKinds.DoubleClick ? Retrace.Core.DialogClickKinds.DoubleClickWords(st.ClickPath, st.ClickTreeLabel, Md.Code, t => $"**{Md.Cell(t)}**", capital: false)
+            : $"click **{Md.Cell(st.Text)}**";
         if (ChangeLines(st).Count == 0) return click == null ? where + ", leave the values as they are" : $"{where}, {click}";
         return click == null ? where + ", make these changes:" : $"{where}, make these changes, then {click}:";
     }
 
-    static string DialogLine(RecordingStep st) =>
-        $"A dialog opens: **{Md.Cell(DialogTitle(st))}**. " + (st.ClosedWith == "cancel" ? "Close it with Cancel."
-            : st.Values.Count > 0 && ChangeLines(st).Count > 0 ? "Make these changes, then confirm:" : "Fill it in and confirm.");
-
-    /// <summary>The sub-items under a dialog line: what the person changed, or "Leave the values as they are." when the recorder read
-    /// fields and none changed. Nothing for sessions without a `dialog_values` event.</summary>
-    static void DialogValueLines(StringBuilder sb, RecordingStep dlg, string indent)
+    /// <summary>"A dialog opens: **Title**. Make these changes, then confirm:"; <paramref name="nested"/>: "A nested dialog opens: ..." (a dialog a button of another one
+    /// opened; the wording differs so the replay's count of "A dialog opens:" lines in a script, <see cref="Retrace.Core.ScriptRef"/>, stays the count of dialog steps).</summary>
+    static string DialogLine(RecordingStep st, bool nested = false)
     {
-        if (dlg.ClosedWith == "cancel") return;   // whatever was typed was thrown away
+        var head = $"A {(nested ? "nested " : "")}dialog opens: **{Md.Cell(DialogTitle(st))}**. ";
+        var cancel = st.ClosedWith == "cancel";
+        if (st.Clicks.Count > 0)
+        {
+            // the last click may have closed the dialog (a Close button, the Yes of a message box): no OK was pressed
+            if (DialogSegments.LastClickCloses(st.ClosedWith, st.Clicks.Count)) return head + "Make these changes (the last click closes the dialog):";
+            return head + (cancel ? "Make these changes, then close it with Cancel:" : "Make these changes, then confirm:");
+        }
+        return head + (cancel ? "Close it with Cancel." : st.Values.Count > 0 && ChangeLines(st).Count > 0 ? "Make these changes, then confirm:" : "Fill it in and confirm.");
+    }
+
+    /// <summary>The sub-items under a dialog line: the clicks (the changes made before each, then the click, and the dialog it opened as a sub-item), then the
+    /// changes made after the last click, or "Leave the values as they are." when the recorder read fields and none changed. Nothing for sessions without
+    /// a `dialog_values` event.</summary>
+    static void DialogValueLines(StringBuilder sb, RecordingStep dlg, string indent, WordingContext ctx)
+    {
+        if (dlg.Clicks.Count > 0) ClickLines(sb, dlg, indent, ctx);   // a click was done in the dialog, whatever closed it
+        if (dlg.ClosedWith == "cancel") return;   // whatever was typed after the last click was thrown away
         var lines = ChangeLines(dlg);
-        if (lines.Count == 0 && dlg.ValuesRead is > 0) lines.Add("Leave the values as they are.");
+        if (lines.Count == 0 && dlg.ValuesRead is > 0 && dlg.Clicks.Count == 0) lines.Add("Leave the values as they are.");
         if (lines.Count == 0) return;
         if (sb.Length > 0 && sb[^1] != '\n') sb.Append('\n');
         foreach (var l in lines) sb.Append(indent).Append("- ").Append(l).Append('\n');
     }
 
-    static List<string> ChangeLines(RecordingStep dlg)
+    /// <summary>One sub-item per click: "Set **Name** to `A`, click **Add**" (changes made since the click before, then the click); a dialog the click opened
+    /// follows as a sub-item of it. In a dialog with tabs the changes and the click are grouped by tab, one sub-item per run: "On the **Text** tab: set **Name** to `A`, click **Add**".</summary>
+    static void ClickLines(StringBuilder sb, RecordingStep dlg, string indent, WordingContext ctx)
+    {
+        if (sb.Length > 0 && sb[^1] != '\n') sb.Append('\n');
+        foreach (var c in dlg.Clicks)
+        {
+            var items = new List<(string Tab, string Text)>();
+            foreach (var v in c.Values)
+                if (ChangeText(v, Md.Cell, Md.Code, bold: true) is { } t) items.Add((v.Tab, t));
+            items.Add((c.Tab, c.Menu != null ? c.Menu.Wording(true, Md.Cell) : c.Kind == Retrace.Core.DialogClickKinds.DoubleClick
+                ? Retrace.Core.DialogClickKinds.DoubleClickWords(c.Path, c.TreeLabel, Md.Code, t => $"**{Md.Cell(t)}**")
+                : $"Click **{Md.Cell(c.Button)}**"));
+            foreach (var line in TabbedLines(items, join: true)) sb.Append(indent).Append("- ").Append(line).Append('\n');
+            foreach (var nested in c.Nested)
+            {
+                sb.Append(indent).Append("  - ").Append(DialogLine(nested, nested: true)).Append('\n');
+                DialogBody(sb, nested, ctx, indent + "    ");
+            }
+        }
+    }
+
+    /// <summary>The sentences of <paramref name="items"/> as lines. Items on no tab: one line each (<paramref name="join"/> false, the closing changes of a dialog) or all the consecutive ones in one line
+    /// ("Set **Name** to `A`, click **Add**", the changes before a click). Consecutive items on a tab together in one line, after "On the **Text** tab:": a tab path is bold as a whole
+    /// ("On the **Fit › Text placement** tab"). The sentences after the first of a line start with a lower-case letter.</summary>
+    static List<string> TabbedLines(IReadOnlyList<(string Tab, string Text)> items, bool join)
     {
         var lines = new List<string>();
-        foreach (var v in dlg.Values)
-            if (ChangeText(v, Md.Cell, Md.Code, bold: true) is { } t) lines.Add(t);
+        foreach (var run in TabWording.Runs(items, x => x.Tab))
+        {
+            string Low(string t) => char.ToLowerInvariant(t[0]) + t[1..];
+            var texts = run.Items.Select(x => x.Text).ToList();
+            if (run.Tab.Length == 0 && !join) { lines.AddRange(texts); continue; }
+            var joined = string.Join(", ", texts.Select((t, i) => run.Tab.Length == 0 && i == 0 ? t : Low(t)));
+            lines.Add(run.Tab.Length == 0 ? joined : $"On the **{Md.Cell(run.Tab)}** tab: {joined}");
+        }
         return lines;
     }
 
+    static List<string> ChangeLines(RecordingStep dlg)
+    {
+        var items = new List<(string Tab, string Text)>();
+        foreach (var v in dlg.Values)
+            if (ChangeText(v, Md.Cell, Md.Code, bold: true) is { } t) items.Add((v.Tab, t));
+        return TabbedLines(items, join: false);
+    }
+
     /// <summary>One change in words: "Set **Rows** to `5` (was `3`)", "Clear **Name** (was `x`)", "Tick **Snap**", "Untick **Snap**",
-    /// "Choose **Metric**", "Choose `beauty` in **Category**"; null when it says nothing (a radio that became "off").</summary>
+    /// "Choose **Metric**", "Choose `beauty` in **Category**", "Select `A › B` in **Parts** (was `A`)"; null when it says nothing (a radio that became "off").</summary>
     public static string? ChangeText(RecordingDialogValue v, Func<string?, string> text, Func<string?, string> code, bool bold)
     {
         string B(string s) => bold ? $"**{text(s)}**" : text(s);
@@ -142,6 +196,15 @@ public static class StepWording
             case "radio":
                 var chosen = v.After is "on" ? v.Label : v.After is "off" or "" ? null : v.After;   // "on"/"off": one radio on its own; else the text of the checked radio in a group
                 return chosen == null ? null : $"Choose {B(chosen)}";
+            case "treecheck":
+            {
+                var (tree, path) = Retrace.Core.TreeChecks.SplitLabel(v.Label);
+                return Retrace.Core.TreeChecks.Sentence(v.After, tree, path, B, code);
+            }
+            case "tree":
+                return v.After.Length == 0
+                    ? $"Clear the selection in {B(v.Label)}" + (v.Before.Length > 0 ? $" (was {code(v.Before)})" : "")
+                    : $"Select {code(v.After)} in {B(v.Label)}" + (v.Before.Length > 0 ? $" (was {code(v.Before)})" : "");
             case "list" or "combo" when v.After.Length > 0:
                 return $"Choose {code(v.After)} in {B(v.Label)}" + (v.Before.Length > 0 ? $" (was {code(v.Before)})" : "");
             default:
@@ -165,7 +228,8 @@ public static class StepWording
         var title = DialogTitle(dlg);
         var before = dlg.Shots.Where(s => s.What != "dialog-after").ToList();
         var after = dlg.Shots.Where(s => s.What == "dialog-after").Take(1).ToList();
-        var changed = dlg.ClosedWith != "cancel" && ChangeLines(dlg).Count > 0;
+        // the picture "as it looked when OK was pressed": not for a dialog thrown away with Cancel, nor one its last click closed (no OK was pressed)
+        var changed = dlg.ClosedWith != "cancel" && !DialogSegments.LastClickCloses(dlg.ClosedWith, dlg.Clicks.Count) && (ChangeLines(dlg).Count > 0 || dlg.Clicks.Count > 0);
         ctx.ShotRole = "dialog-before";
         var showAfter = changed && after.Any(s => ctx.ShotHref(s) != null);
         var pair = showAfter && before.Any(s => ctx.ShotHref(s) != null);
@@ -173,7 +237,7 @@ public static class StepWording
         Shots(sb, before, pair ? Alt($"{title} as it opens") : Alt(DialogLine(dlg)), ctx, indent, "dialog-before");
         if (before.Count == 0 && ctx.DialogPicture(dlg) is { } pic)
             sb.Append($"\n{indent}![{Md.Cell(pic.Alt)}]({pic.Href})\n\n");
-        DialogValueLines(sb, dlg, indent);
+        DialogValueLines(sb, dlg, indent, ctx);
         if (!showAfter) return;   // the after picture is shown even when the before picture is missing
         sb.Append($"\n{indent}After (what it should look like before you press OK):\n");
         Shots(sb, after, Alt($"{title} with the changes"), ctx, indent, "dialog-after");

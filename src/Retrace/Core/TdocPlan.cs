@@ -109,17 +109,36 @@ public static class TdocPlan
     static IEnumerable<string> DialogLines(Step s)
     {
         var t = string.IsNullOrWhiteSpace(s.DialogTitle) ? "the dialog" : $"the {DialogName(s)} dialog";
-        if (s.ClosedWith == "cancel") { yield return $"In {t}, click Cancel."; yield break; }
-        if (s.Values == null) { yield return $"In {t}, fill in the fields, then click OK."; yield break; }
-        var changes = s.Values.Select(DialogFieldsCore.Describe).Where(x => x != null).Select(x => x!.TrimEnd('.') + ".").ToList();
-        if (changes.Count == 0)
+        var cancel = s.ClosedWith == "cancel";
+        if (cancel && s.Clicks.Count == 0) { yield return $"In {t}, click Cancel."; yield break; }
+        // no dialog_values for it: what was set is not known, but the clicks the recorder saw are (a dialog with no click of its own is "fill in the fields")
+        if (s.Values == null && s.Clicks.Count == 0) { yield return $"In {t}, fill in the fields, then click OK."; yield break; }
+        var changes = cancel || s.Values == null ? new List<(string Tab, string Line)>()
+            : s.Values.Select(v => (Tab: FillMatcher.TabOfChange(v), Line: DialogFieldsCore.Describe(v))).Where(x => x.Line != null).Select(x => (x.Tab, x.Line!.TrimEnd('.') + ".")).ToList();
+        if (changes.Count == 0 && s.Clicks.Count == 0)
         {
             yield return s.ValuesRead > 0 ? $"In {t}, leave the values as they are and click OK." : $"In {t}, click OK.";
             yield break;
         }
         yield return $"In {t}:";
-        foreach (var c in changes) yield return c;
-        yield return "Click OK.";
+        // a dialog with buttons clicked in it: the changes made before each click, the click, and the dialog it opened (Tdoc's picture shows the final fill).
+        // In a dialog with tabs the sentences are grouped by the tab they were made on ("On the Text tab:")
+        var tabs = new TabLines();
+        foreach (var click in s.Clicks)
+        {
+            foreach (var v in click.Values)
+                if (DialogFieldsCore.Describe(v) is { } d)
+                    foreach (var line in tabs.Add(FillMatcher.TabOfChange(v), d.TrimEnd('.') + ".")) yield return line;
+            foreach (var line in tabs.Add(click.Tab, click.Menu != null ? click.Menu.Wording(false) + "." : click.Kind == DialogClickKinds.DoubleClick ? DialogClickKinds.DoubleClickWords(click.Path, click.TreeLabel, x => x, x => x) + "." : $"Click {click.Button}.")) yield return line;
+            foreach (var nested in click.Nested)
+                foreach (var line in DialogLines(nested)) yield return line;
+            if (click.Nested.Count > 0) tabs.Reset();
+        }
+        foreach (var (tab, text) in changes)
+            foreach (var line in tabs.Add(tab, text)) yield return line;
+        // the dialog is closed from the page it was closed from (a recording from before tabs has none: the tab of the last sentence stays)
+        if (!DialogSegments.LastClickCloses(s))
+            foreach (var line in tabs.Add(cancel ? tabs.Current : s.CloseTab ?? tabs.Current, cancel ? "Click Cancel." : "Click OK.")) yield return line;
     }
 
     static IEnumerable<string> PaletteLines(Step s)
@@ -131,13 +150,16 @@ public static class TdocPlan
             if (s.Drawing != null) yield return $"{FileName(s.Drawing)} opens.";
             yield break;
         }
-        var changes = (s.Values ?? []).Select(DialogFieldsCore.Describe).Where(x => x != null).Select(x => x!.TrimEnd('.') + ".").ToList();
+        var changes = (s.Values ?? []).Select(v => (Tab: FillMatcher.TabOfChange(v), Line: DialogFieldsCore.Describe(v))).Where(x => x.Line != null).Select(x => (x.Tab, x.Line!.TrimEnd('.') + ".")).ToList();
         var button = string.IsNullOrWhiteSpace(s.Button) ? null : s.Button.Trim();
+        var press = s.Menu != null ? s.Menu.Wording(false, null, "the palette") + "." : $"Click {button}.";
         if (changes.Count == 0 && button == null) { yield return $"Look at the {name}."; yield break; }
-        if (changes.Count == 0) { yield return $"In the {name}, click {button}."; yield break; }
+        if (changes.Count == 0) { yield return s.Menu != null ? $"In the {name}: {press}" : $"In the {name}, " + (s.ClickKind == DialogClickKinds.DoubleClick ? DialogClickKinds.DoubleClickWords(s.ClickPath, s.ClickTreeLabel, x => x, x => x, capital: false) : $"click {button}") + "."; yield break; }
         yield return $"In the {name}:";
-        foreach (var c in changes) yield return c;
-        if (button != null) yield return $"Click {button}.";
+        var tabs = new TabLines();
+        foreach (var (tab, text) in changes)
+            foreach (var line in tabs.Add(tab, text)) yield return line;
+        if (button != null) yield return s.Menu != null ? press : s.ClickKind == DialogClickKinds.DoubleClick ? DialogClickKinds.DoubleClickWords(s.ClickPath, s.ClickTreeLabel, x => x, x => x) + "." : $"Click {button}.";
     }
 
     // ---- answers at the command line ---------------------------------------------------------------------------------------
@@ -243,6 +265,9 @@ public static class TdocPlan
                 break;
             case "check":
                 text = $"{label}: {c.After}";
+                break;
+            case "treecheck":
+                text = $"{TreeChecks.PathOf(c)}: {c.After}";
                 break;
             default:
                 text = c.After.Length == 0 ? $"{label}: (empty)" : $"{label}: {c.After}";

@@ -9,6 +9,7 @@ using Autodesk.AutoCAD.Geometry;
 using Autodesk.Windows;
 using AcApp = Autodesk.AutoCAD.ApplicationServices.Core.Application;
 
+using Retrace.Core;
 using Retrace.Engine.Recordings;
 
 namespace Retrace.AutoCad;
@@ -51,8 +52,10 @@ public sealed class Recorder
     readonly ShotService _shots = new();
     System.Windows.Threading.DispatcherTimer? _shotTimer;
     readonly DialogWatch _dlg = new();   // field values of the open modal dialogs
+    readonly MenuWatch _menu = new();     // context menus (a right-click and the item chosen) in dialogs and palettes
     readonly PaletteWatch _pal = new();  // field values and button clicks in palette sets
     int _modalOpen;   // EnterModal minus LeaveModal: a dialog picture is only taken while one is open
+    readonly ModalPairs _modals = new();   // which EnterModal a nested dialog found by its window had taken over (its LeaveModal closes that entry)
 
     // checkpoint names: where the last thing was done (a dialog, a ribbon button, a typed command) and how many checkpoints so far
     Checkpoints.CheckpointContext? _lastCtx;
@@ -212,7 +215,7 @@ public sealed class Recorder
         // them out of the steps (DrawingOpen.StartupEvents, same tracker), so they name no checkpoint either
         var startupFlag = f.FirstOrDefault(x => x.Item1 == "startup").Item2 as bool?;
         if (_startup.Feed(type, _w?.ElapsedMs ?? 0, startupFlag)) return;
-        _tally.Note(type, F("origin"), _ctxCmdDepth, _ctxLispDepth, F("path"), F("id"), F("palette"), F("set"));   // before the depth moves; data only: the status board reads it on its timer
+        _tally.Note(type == "context_menu" && F("palette") != null ? "palette_click" : type, F("origin"), _ctxCmdDepth, _ctxLispDepth, F("path"), F("id"), F("palette"), F("set"));   // before the depth moves; data only: the status board reads it on its timer
         switch (type)
         {
             case "cmd_start": _ctxCmdDepth++; break;
@@ -221,7 +224,7 @@ public sealed class Recorder
             case "lisp_end" or "lisp_cancel": if (_ctxLispDepth > 0) _ctxLispDepth--; break;
         }
         // the person did something else: a window that closes by itself from now on is not the native action's
-        if (type is "ribbon" or "lisp_start" or "palette_values" or "palette_click" or "doc_created" || (type == "cmd_start" && F("origin") != "palette")) _nativeCtx = null;
+        if (type is "ribbon" or "lisp_start" or "palette_values" or "palette_click" or "context_menu" or "doc_created" || (type == "cmd_start" && F("origin") != "palette")) _nativeCtx = null;
         switch (type)
         {
             // opened while no command or LISP ran: an "Open drawing" step (the readers' rule); inside OPEN it is that command's
@@ -240,6 +243,7 @@ public sealed class Recorder
             case "dialog_values": _lastCtx = new Checkpoints.CheckpointContext("dialog", F("title") ?? _lastCtx?.Container, F("closedWith")); break;
             case "palette_values": _lastCtx = new Checkpoints.CheckpointContext("palette", F("palette"), null); break;
             case "palette_click": _lastCtx = new Checkpoints.CheckpointContext("palette", F("palette"), F("button")); break;
+            case "context_menu" when F("palette") != null: _lastCtx = new Checkpoints.CheckpointContext("palette", F("palette"), f.FirstOrDefault(x => x.Item1 == "path").Item2 is List<string> menuPath ? string.Join(TreePath.Separator, menuPath) : null); break;
             case "native_click" or "native_select":
             {
                 // the readers' rule (Checkpoints.ContextOf): where and what; an open that follows names the checkpoint after the drawing
@@ -271,13 +275,23 @@ public sealed class Recorder
         CheckpointKey.Reload();
         var settings = RetraceSettings.Load();
         var enabled = settings.Screenshots;
-        _dlg.Clear();
+        _dlg.Clear(); _modals.Clear();
         _dlg.Enabled = settings.DialogValues;
         _pal.Clear(); NativePalette.Clear();
         _pal.Enabled = settings.DialogValues;
         _pal.Pictures = settings.Screenshots;
         _dlg.Clock = () => _w?.ElapsedMs ?? 0;
         _dlg.Confirmed = (n, h) => _shots.DialogAfter(n, h);
+        _dlg.Clicked = c => Log.Safe("dialog click", () => EmitDialogClick(c));
+        _dlg.Main = MainWindowHandle();
+        _menu.Enabled = settings.DialogValues;
+        _menu.Clock = () => _w?.ElapsedMs ?? 0;
+        _menu.DialogTop = () => _dlg.Top;
+        _menu.PaletteSnap = spot => { try { return _pal.PictureNow(spot); } catch (Exception ex) { Log.Error("menu picture", ex); return null; } };
+        _menu.Chosen = (choice, armed) => Log.Safe("context menu", () => EmitContextMenu(choice, armed));
+        _menu.Start();
+        _dlg.NestedOpened = e => { var n = 0; Log.Safe("nested dialog", () => n = EmitNestedOpened(e)); return n; };
+        _dlg.NestedClosed = r => Log.Safe("nested dialog closed", () => { EmitDialogValues(r); Emit("modal_leave", CurDoc()); });
         _shots.Begin(w.Path, enabled, MainWindowHandle(), () => _modalOpen > 0, (n, file, what) =>
         {
             var ww = _w;   // pool thread: only the writer is touched
@@ -322,7 +336,7 @@ public sealed class Recorder
     {
         if (_shotTimer != null) return;
         var t = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(120) };
-        t.Tick += (_, _) => Log.Safe("shot timer", () => { var w = _w; if (w != null) { _shots.Pump(w.ElapsedMs); _dlg.Tick(w.ElapsedMs); _pal.Tick(w.ElapsedMs); NativeTick(false); var vk = _pendingViews.Count > 0 || _kinds.Count > 0 ? ViewControl.ViewKey() : null; CheckPendingViews(vk); RefreshView(vk); } });
+        t.Tick += (_, _) => Log.Safe("shot timer", () => { var w = _w; if (w != null) { _shots.Pump(w.ElapsedMs); _dlg.Tick(w.ElapsedMs); _menu.Tick(w.ElapsedMs); _pal.Tick(w.ElapsedMs); NativeTick(false); var vk = _pendingViews.Count > 0 || _kinds.Count > 0 ? ViewControl.ViewKey() : null; CheckPendingViews(vk); RefreshView(vk); } });
         _shotTimer = t;
         t.Start();
     }
@@ -373,7 +387,8 @@ public sealed class Recorder
             _modalTimer = null;
             _shotTimer?.Stop();
             _shotTimer = null;
-            _dlg.Clear();   // also removes the dialog message hook
+            _dlg.Clear(); _modals.Clear();   // also removes the dialog message hook
+            _menu.Stop();
             _pal.Clear(); NativePalette.Clear();
         });
     }
@@ -616,6 +631,7 @@ public sealed class Recorder
     {
         _modalOpen++;
         if (_inOwnCmd || _ownModal > 0) { _ownModal++; return; }
+        var token = _modals.Enter();
         var fg = Native.Foreground();
         var nEnter = Emit("modal_enter", CurDoc(), ("title", fg?.Title), ("windowClass", fg?.Class));
         var watch = nEnter > 0 ? _dlg.Push(nEnter) : null;
@@ -629,6 +645,15 @@ public sealed class Recorder
             timer.Stop();
             Log.Safe("ModalTitle", () =>
             {
+                // announced late: the dialog is one a button of another dialog opened, found by its window before AutoCAD said so. It is that dialog, not a second one: an alias tells the readers,
+                // and there is no title or picture for the announcement. (Only when the announced window IS that dialog: another dialog that opens over it is a dialog of its own.)
+                var announced = Native.ForegroundOfThisProcess();
+                if (watch != null && announced != IntPtr.Zero && announced != MainWindowHandle() && _dlg.MergeInto(watch, announced) is { } into)
+                {
+                    _modals.Adopt(token);
+                    Emit("modal_alias", CurDoc(), ("for", nEnter), ("of", into));
+                    return;
+                }
                 var f2 = Native.Foreground();
                 var shotFor = nEnter;   // the dialog picture belongs to modal_title when a title arrives, else to modal_enter
                 var title = fg?.Title;
@@ -652,15 +677,62 @@ public sealed class Recorder
     {
         if (_modalOpen > 0) _modalOpen--;
         if (_ownModal > 0) { _ownModal--; return; }
+        if (_modals.Leave())
+        {
+            if (_w != null && _dlg.LeaveAdopted(_w.ElapsedMs) is { } adopted) { EmitDialogValues(adopted); Emit("modal_leave", CurDoc()); }
+            return;
+        }
         Log.Safe("dialog values", () =>
         {
             var r = _w == null ? null : _dlg.Close(_w.ElapsedMs);
             if (r == null) return;
-            var fields = r.Changes.Select(c => new Dictionary<string, object?> { ["key"] = c.Key, ["label"] = c.Label, ["kind"] = c.Kind, ["before"] = c.Before, ["after"] = c.After }).ToList();
-            Emit("dialog_values", CurDoc(), ("for", r.ForN), ("title", r.Title), ("source", r.Source), ("fields", fields), ("read", r.Read), ("closedWith", r.ClosedWith));
+            EmitDialogValues(r);
         });
         Emit("modal_leave", CurDoc());
     });
+
+    void EmitDialogValues(DialogWatch.Result r) =>
+        Emit("dialog_values", CurDoc(), ("for", r.ForN), ("title", r.Title), ("source", r.Source), ("parent", r.ParentN), ("fields", FieldsJson(r.Changes)), ("read", r.Read),
+            ("closedWith", r.ClosedWith), ("button", r.ClosedBy), ("closeTab", r.CloseTab), ("statics", DialogStatics.ToJson(r.Statics)), ("truncated", r.Truncated));
+
+    /// <summary>A dialog a button of another dialog opened (AutoCAD raised no <c>EnterModal</c> for it): its <c>modal_enter</c>, with the title it has, and its picture.
+    /// Returns the event's number, which its <c>dialog_values</c> names as <c>for</c>.</summary>
+    int EmitNestedOpened(DialogWatch.Entry e)
+    {
+        var w = _w;
+        if (w == null || _inOwnCmd || _ownModal > 0) return 0;
+        var n = Emit("modal_enter", CurDoc(), ("title", e.Title), ("windowClass", Native.ClassOf(e.Hwnd)));
+        if (n > 0) _shots.Request(ShotRules.Dialog(n, w.ElapsedMs));
+        return n;
+    }
+
+    /// <summary>The <c>fields</c> of a dialog or palette event; <c>tab</c> only for a field on a tab (a dialog without tabs is written as before).</summary>
+    static List<Dictionary<string, object?>> FieldsJson(IEnumerable<FieldChange> changes) =>
+        changes.Select(c =>
+        {
+            var d = new Dictionary<string, object?> { ["key"] = c.Key, ["label"] = c.Label, ["kind"] = c.Kind, ["before"] = c.Before, ["after"] = c.After };
+            if (c.Tab.Length > 0) d["tab"] = c.Tab;
+            return d;
+        }).ToList();
+
+    /// <summary>A push button (not OK / Cancel) pressed in a dialog: the fields changed so far, as they were just before its handler ran.</summary>
+    void EmitDialogClick(DialogWatch.Click c)
+    {
+        if (c.Menu != null)
+        {
+            // a context menu choice in the dialog: a click with the menu in place of the button (`context_menu`, see docs/recording-format.md)
+            Emit("context_menu", CurDoc(), new (string, object?)[] { ("for", c.ForN) }.Concat(c.Menu.ToFields()).Concat(new (string, object?)[]
+                { ("fields", FieldsJson(c.Changes)), ("read", c.Read), ("tab", c.Tab.Length > 0 ? c.Tab : null), ("statics", DialogStatics.ToJson(c.Statics)) }).ToArray());
+            return;
+        }
+        EmitDialogButton(c);
+    }
+
+    void EmitDialogButton(DialogWatch.Click c) =>
+        Emit("dialog_click", CurDoc(), ("for", c.ForN), ("button", c.Button), ("id", c.Id), ("index", c.Index), ("fields", FieldsJson(c.Changes)), ("read", c.Read),
+            ("tab", c.Tab.Length > 0 ? c.Tab : null), ("statics", DialogStatics.ToJson(c.Statics)),
+            ("kind", c.Kind == DialogClickKinds.DoubleClick ? c.Kind : null), ("onDown", c.OnDown ? true : null), ("tree", c.Tree.Length > 0 ? c.Tree : null), ("path", c.Path.Length > 0 ? c.Path : null),
+            ("treeLabel", c.TreeLabel.Length > 0 ? c.TreeLabel : null));
 
     // ---- prompts -----------------------------------------------------------------------------
 
@@ -718,7 +790,7 @@ public sealed class Recorder
     {
         var m = e.Message.message;
         if (CheckpointKey.TryHandle(m, e.Message.wParam, e.Message.lParam)) { e.Handled = true; return; }   // the shortcut is not user input
-        if (m is 0x0100 or 0x0201 && _pal.Enabled) PaletteInput(e.Message.hwnd, (uint)m, e.Message.wParam, e.Message.lParam);
+        if (m is 0x0100 or 0x0201 or 0x0202 or 0x0203 && _pal.Enabled) PaletteInput(e.Message.hwnd, (uint)m, e.Message.wParam, e.Message.lParam);
         if (m == 0x0100 && _w != null && !_inOwnCmd) { if (Native.TypedChar((uint)(long)e.Message.wParam) is { } typedChar) _sel.Key(typedChar); }   // WM_KEYDOWN (no WM_CHAR reaches this handler)
         if (m is 0x0201 or 0x0202 && _w != null && !_inOwnCmd && Native.IsInside(DrawingWindow(), e.Message.hwnd))
         {
@@ -743,15 +815,37 @@ public sealed class Recorder
         if (w == null) return;
         try
         {
+            if (message == 0x0202) { _pal.NoteInput(hwnd); return; }   // a button-up: no click of its own
             var (changed, at, button, index, picture) = _pal.OnInput(hwnd, message, wParam, lParam, w.ElapsedMs);
+            _pal.NoteInput(hwnd);
             EmitPalette(changed, withPicture: button == null);   // values and the click are one step: the click carries the picture
             if (at == null || button == null) return;
+            if (_pal.Double is { } dbl)
+            {
+                Emit("palette_click", CurDoc(), ("palette", at.Palette), ("set", at.Set), ("button", button), ("kind", "dblclick"), ("tree", dbl.Tree), ("treeLabel", dbl.TreeLabel), ("path", dbl.Path));
+                _lastPaletteT = w.ElapsedMs; _lastPaletteTick = _inputTick; _lastPaletteButton = button; _lastPaletteConsumed = false;
+                return;
+            }
             int n = index > 1 ? Emit("palette_click", CurDoc(), ("palette", at.Palette), ("set", at.Set), ("button", button), ("index", index))
                               : Emit("palette_click", CurDoc(), ("palette", at.Palette), ("set", at.Set), ("button", button));
             if (picture != null) _shots.Write(n, "palette-closeup", picture, "palette");
             _lastPaletteT = w.ElapsedMs; _lastPaletteTick = _inputTick; _lastPaletteButton = button; _lastPaletteConsumed = false;
         }
         catch (Exception ex) { Log.Error("palette input", ex); }
+    }
+
+    /// <summary>A context menu item was chosen (<see cref="MenuWatch"/>): in a tracked dialog it is written as a click of that dialog; in a palette the values changed so far go first, then the
+    /// choice, which belongs to the palette step like a button click (a command it starts is linked to it).</summary>
+    void EmitContextMenu(MenuChoice choice, MenuWatch.Armed armed)
+    {
+        var w = _w;
+        if (w == null) return;
+        if (armed.Spot == null) { _dlg.CommitMenu(choice, w.ElapsedMs); return; }
+        EmitPalette(_pal.Flush(w.ElapsedMs, drop: false), withPicture: false);
+        var n = Emit("context_menu", CurDoc(), new (string, object?)[] { ("palette", armed.Spot.Palette), ("set", armed.Spot.Set) }.Concat(choice.ToFields()).ToArray());
+        _shots.Request(ShotRules.Palette(n, w.ElapsedMs));   // the window, as for a palette click, and the palette's close-up taken at the right-click
+        if (armed.Picture != null) _shots.Write(n, "palette-closeup", armed.Picture, "palette");
+        _lastPaletteT = w.ElapsedMs; _lastPaletteTick = _inputTick; _lastPaletteButton = choice.ButtonText; _lastPaletteConsumed = false;
     }
 
     /// <summary>A click in a native palette (AutoCAD Electrical's Project Manager): a tree item or a push button (<see cref="NativePalette"/>).</summary>
@@ -767,10 +861,18 @@ public sealed class Recorder
         var w = _w;
         if (a == null || w == null) return;
         var n = Emit(a.Control == "combo" ? "native_select" : "native_click", CurDoc(), ("palette", a.Where.Palette), ("set", a.Where.Set), ("control", a.Control),
-            ("action", a.Action), ("path", a.Path), ("index", a.Index), ("id", a.Id), ("label", a.Label), ("value", a.Value), ("entry", a.Entry > 0 ? a.Entry : null));
+            ("action", a.Action), ("path", a.Path), ("index", a.Index), ("id", a.Id), ("label", a.Label), ("value", a.Value), ("entry", a.Entry > 0 ? a.Entry : null),
+            ("statics", DialogStatics.ToJson(NativeStatics(a.Where.Page))));
         NativePalette.Written(a, n, w.ElapsedMs);
         // a command the click starts (a toolbar button, the entry picked from a right-click menu) belongs to this step, as with .NET palettes
         _lastPaletteT = w.ElapsedMs; _lastPaletteTick = _inputTick; _lastPaletteButton = a.Path?.LastOrDefault() ?? a.Label ?? a.Value; _lastPaletteConsumed = false;
+    }
+
+    /// <summary>The static texts the native palette page shows now (the click that is being written has not been handled yet); none when it cannot be read.</summary>
+    static List<DialogStatic> NativeStatics(IntPtr page)
+    {
+        try { return Native.Exists(page) ? DialogReader.ReadStatics(page) : new List<DialogStatic>(); }
+        catch (Exception ex) { Log.Error("native palette statics", ex); return new List<DialogStatic>(); }
     }
 
     /// <summary>Timer tick, checkpoint and Stop: a drop-down entry picked with the keyboard, and the name of an entry picked from a list that holds no text.</summary>
@@ -786,7 +888,7 @@ public sealed class Recorder
     void EmitPalette(PaletteWatch.Values? v, bool withPicture = true)
     {
         if (v == null) return;
-        var fields = v.Changes.Select(c => new Dictionary<string, object?> { ["key"] = c.Key, ["label"] = c.Label, ["kind"] = c.Kind, ["before"] = c.Before, ["after"] = c.After }).ToList();
+        var fields = FieldsJson(v.Changes);
         var n = Emit("palette_values", CurDoc(), ("palette", v.Where.Palette), ("set", v.Where.Set), ("source", v.Source), ("fields", fields), ("read", v.Read));
         if (withPicture && v.Picture != null) _shots.Write(n, "palette-closeup", v.Picture, "palette");
     }

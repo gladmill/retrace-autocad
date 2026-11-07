@@ -51,6 +51,9 @@ public static class ShotRules
         _ => null,
     };
 
+    /// <summary>The window picture of a palette step that ends in a context menu choice (`context_menu` in a palette), like a palette click's.</summary>
+    public static ShotRequest Palette(int n, long nowMs) => new(n, "palette", ShotTarget.Window, nowMs + SettleMs);
+
     /// <summary>The dialog picture: for `modal_title` when one arrived, else for `modal_enter`.</summary>
     public static ShotRequest Dialog(int n, long nowMs) => new(n, "dialog", ShotTarget.Dialog, nowMs + DialogSettleMs);
 }

@@ -61,12 +61,42 @@ static class DialogFill
     // ---- Win32 -----------------------------------------------------------------------------------------------------------
 
     /// <summary>Puts the recorded `after` value into the live field. Null = done, else why not. UI thread.</summary>
-    internal static string? ApplyWin32(DialogField live, IReadOnlyList<IntPtr> hs, FieldChange c)
+    /// <summary>The live value to compare a recorded value with: the field's, or for a tick of a tree item the item's check state read from the tree now (the item may be one the scan did not list).
+    /// The one place for a dialog (<see cref="DialogAutoFiller"/>) and a palette (<see cref="PaletteFill"/>).</summary>
+    internal static string? LiveValue(Win32Scan scan, int index, FieldChange recorded) =>
+        TreeChecks.Is(recorded.Kind) ? (scan.Handles[index].Count > 0 ? TreeControl.ReadCheck(scan.Handles[index][0], TreeChecks.PathOf(recorded)) : null) : scan.Fields[index].Value;
+
+    /// <summary>The ticks of one set of recorded values (a segment of a dialog, a palette step), applied tree by tree so that a tree that ticks by itself ends as the recording left it
+    /// (<see cref="TreeCheckApplier"/>: a recorded item is set again when a later tick changed it, an unrecorded one that changed is put back).</summary>
+    internal sealed class TickSession
+    {
+        readonly IReadOnlyList<FieldChange> _values;
+        readonly Dictionary<IntPtr, TreeCheckApplier> _appliers = new();
+        public TickSession(IReadOnlyList<FieldChange> values) { _values = values; }
+
+        public string? Apply(IntPtr tree, FieldChange c)
+        {
+            if (!_appliers.TryGetValue(tree, out var applier))
+            {
+                var key = TreeChecks.TreeOf(c).Key;
+                var recorded = _values.Where(v => TreeChecks.Is(v.Kind) && TreeChecks.TreeOf(v).Key == key).Select(v => (TreeChecks.PathOf(v), v.After == "on")).ToList();
+                _appliers[tree] = applier = new TreeCheckApplier(recorded, () => TreeControl.ReadChecks(tree, out _), (p, on) => TreeControl.SetChecked(tree, p, on));
+            }
+            var err = applier.Apply(TreeChecks.PathOf(c), c.After == "on");
+            if (applier.Corrections.Count > 0) { Log.Info($"tree tick {TreeChecks.PathOf(c)}: the tree changed {string.Join(", ", applier.Corrections)} as well; put back as recorded"); applier.Corrections.Clear(); }
+            return err;
+        }
+    }
+
+    internal static string? ApplyWin32(DialogField live, IReadOnlyList<IntPtr> hs, FieldChange c, TickSession? ticks = null)
     {
         try
         {
             if (hs.Count == 0) return "no control";
             var h = hs[0];
+            // a tick of a tree item: `live` is the tree it is in (the item may not exist yet); the owner is told as after a tick by a person
+            if (TreeChecks.Is(c.Kind))
+                return c.After is "on" or "off" ? (ticks ?? new TickSession(new[] { c })).Apply(h, c) : $"cannot set a tree check box to \"{c.After}\"";
             switch (live.Kind)
             {
                 case "edit":
@@ -138,11 +168,60 @@ static class DialogFill
                     }
                     return null;
                 }
+                case "tree":
+                    // opens the parents on the way (a lazily filled tree fills), then TVM_SELECTITEM. Inside this call, like the CBN_SELCHANGE of a
+                    // combo (Notify): a handler that fills other fields runs now, in the order the values are set.
+                    return TreeControl.Select(h, c.After);
                 default:
                     return $"cannot set a {live.Kind}";
             }
         }
         catch (Exception ex) { Log.Error("dialog fill (win32)", ex); return ex.Message; }
+    }
+
+    /// <summary>Runs <paramref name="act"/> from the dispatcher after the current tick: a native control handles a message inside the call and may run a modal loop there.</summary>
+    internal static void Later(string what, Action act) =>
+        System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Normal,
+            () => { try { act(); } catch (Exception ex) { Log.Error("dialog fill " + what, ex); } });
+
+    const uint WM_MOUSEMOVE = 0x0200, WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202;
+    [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(POINT p);
+    [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr h, ref POINT p);
+    [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }
+
+    [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr h);
+
+    /// <summary>Is <paramref name="h"/> a WinForms control (its class is <c>WindowsForms10.*</c>)?</summary>
+    internal static bool IsWinForms(IntPtr h) => ClassOf(h).StartsWith("WindowsForms10.", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Presses a push button of a dialog, posted. By default with BM_CLICK (<see cref="PostClick"/>: the button's own Click, as PerformClick). A button the recording says acts as the mouse
+    /// goes down (<paramref name="mouse"/>: <c>onDown</c> of its <c>dialog_click</c>) gets the mouse messages instead (<see cref="PostMouseClick"/>), which BM_CLICK does not send, so a <c>MouseDown</c>
+    /// handler runs; it never falls back to BM_CLICK, which would not do what the recording did: <paramref name="why"/> says what stopped it.</summary>
+    internal static bool PostPress(IntPtr button, bool mouse, out string? why)
+    {
+        why = null;
+        return mouse ? PostMouseClick(button, out why) : PostClick(button);
+    }
+
+    /// <summary>The mouse messages of a click at the middle of a button (move, button down, button up), posted. When another window covers that point the dialog is brought to the front first; when
+    /// it is still covered nothing is posted (a click the person could not make) and <paramref name="why"/> says so.</summary>
+    internal static bool PostMouseClick(IntPtr button, out string? why)
+    {
+        why = null;
+        if (!Native.ClientSize(button, out var w, out var h)) { why = "the button has no size"; return false; }
+        var mid = new POINT { X = w / 2, Y = h / 2 };
+        var screen = mid; ClientToScreen(button, ref screen);
+        if (WindowFromPoint(screen) != button)
+        {
+            var root = GetAncestor(button, 2 /* GA_ROOT */);
+            if (root != IntPtr.Zero) { BringWindowToTop(root); SetForegroundWindow(root); }
+            screen = mid; ClientToScreen(button, ref screen);
+            if (WindowFromPoint(screen) != button) { why = "the button is covered by another window"; return false; }
+        }
+        var lp = (IntPtr)((mid.Y << 16) | (mid.X & 0xFFFF));
+        return Post(button, WM_MOUSEMOVE, IntPtr.Zero, lp) & Post(button, WM_LBUTTONDOWN, (IntPtr)1, lp) & Post(button, WM_LBUTTONUP, IntPtr.Zero, lp);
     }
 
     /// <summary>Presses a push button the way a click does, but posted: the dialog runs its own validation and closes from its own loop.</summary>
@@ -178,7 +257,7 @@ static class DialogFill
         {
             var sw = Stopwatch.StartNew();
             var scan = ScanUia(dialog);
-            var map = FillMatcher.Match(values, scan.Fields.Select(f => new LiveField(f.Key, f.Label, f.Kind)).ToList());
+            var map = FillMatcher.Match(values, scan.Fields.Select(LiveField.Of).ToList());
             for (int i = 0; i < values.Count; i++)
             {
                 if (map[i] < 0) continue;
@@ -190,7 +269,7 @@ static class DialogFill
             if (values.Count > 0)
             {
                 var after = ScanUia(dialog);
-                var map2 = FillMatcher.Match(values, after.Fields.Select(f => new LiveField(f.Key, f.Label, f.Kind)).ToList());
+                var map2 = FillMatcher.Match(values, after.Fields.Select(LiveField.Of).ToList());
                 for (int i = 0; i < values.Count; i++)
                     if (results[i].Status == FieldFillResult.Applied && !FillMatcher.IsNoOp(values[i]))
                         results[i] = Verify(values[i], map2[i] < 0 ? null : after.Fields[map2[i]].Value, results[i]);

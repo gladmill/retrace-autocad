@@ -152,8 +152,27 @@ public sealed class RecordingState
     }
 }
 
-/// <summary>A dialog field that changed while the dialog was open. Kind: edit | check | radio | combo | list | slider.</summary>
-public sealed record RecordingDialogValue(string Label, string Kind, string Before, string After);
+/// <summary>A dialog field that changed while the dialog was open. Kind: edit | check | radio | combo | list | slider | tree. Tab: the tab it is on ("Lines", "Fit › Text placement"), "" for none.</summary>
+public sealed record RecordingDialogValue(string Label, string Kind, string Before, string After, string Tab = "");
+
+/// <summary>A push button (not OK / Cancel) clicked in a dialog (a `dialog_click` event): the fields changed since the dialog opened or since the click before,
+/// and the dialogs the click opened. A nested dialog is part of the click that opened it, not a step of its own.</summary>
+public sealed class RecordingDialogClick
+{
+    public string Button { get; init; } = "";
+    /// <summary>"click" or "dblclick" (a double-click on a tree item: <see cref="Path"/> in the tree <see cref="TreeLabel"/>).</summary>
+    public string Kind { get; init; } = Retrace.Core.DialogClickKinds.Click;
+    public string Path { get; init; } = "";
+    public string TreeLabel { get; init; } = "";
+    public long T { get; init; }
+    /// <summary>The tab the click was made on, "" for none or not recorded.</summary>
+    public string Tab { get; init; } = "";
+    /// <summary>A context menu choice instead of a button (`context_menu` with `for`): <see cref="Button"/> is then the menu path.</summary>
+    public Retrace.Core.MenuChoice? Menu { get; init; }
+    public List<RecordingDialogValue> Values { get; } = new();
+    /// <summary>The dialogs this click opened, in order (steps of kind "dialog" that are not in <see cref="RecordingSession.Steps"/>).</summary>
+    public List<RecordingStep> Nested { get; } = new();
+}
 
 /// <summary>One thing the tester did: a ribbon click, a typed command, a dialog, a checkpoint note...</summary>
 public sealed class RecordingStep
@@ -165,6 +184,10 @@ public sealed class RecordingStep
     // ribbon
     public string? ItemId { get; set; }
     public string? Text { get; set; }
+    /// <summary>palette: "click" or "dblclick" (a double-click on a tree item: <see cref="ClickPath"/> in <see cref="ClickTreeLabel"/>; <see cref="Text"/> is the item's text).</summary>
+    public string ClickKind { get; set; } = Retrace.Core.DialogClickKinds.Click;
+    public string ClickPath { get; set; } = "";
+    public string ClickTreeLabel { get; set; } = "";
     public string? Tab { get; set; }
     /// <summary>The recorder's tab id ("ACAD.ID_TabHome"): tells apart tabs with the same title.</summary>
     public string? TabId { get; set; }
@@ -188,12 +211,19 @@ public sealed class RecordingStep
     public List<RecordingDialogValue> Values { get; } = new();
     /// <summary>dialog: how many fields the recorder could read, null if the session has no `dialog_values` event for this dialog.</summary>
     public int? ValuesRead { get; set; }
-    /// <summary>dialog: "ok" / "cancel" as the person closed it (the `dialog_values` event's `closedWith`); null = not recorded.</summary>
+    /// <summary>dialog: "ok" / "cancel" as the person closed it, "click" when its last click closed it (the `dialog_values` event's `closedWith`); null = not recorded.</summary>
     public string? ClosedWith { get; set; }
+    /// <summary>dialog: when it closed (the time of its `dialog_values`), -1 = not known. A nested dialog of the same click opens within a window after it.</summary>
+    public long ClosedT { get; set; } = -1;
+    /// <summary>dialog: the push buttons clicked in it, in order; <see cref="Values"/> then holds the changes made after the last click. Empty when the
+    /// recording has no `dialog_click` event for this dialog.</summary>
+    public List<RecordingDialogClick> Clicks { get; } = new();
     /// <summary>command / ribbon / lisp: dialogs opened while it ran (see <see cref="OpenedIn"/>).</summary>
     public List<RecordingStep> InnerDialogs { get; } = new();
     /// <summary>palette: what was done in a native palette (AutoCAD's own, such as the Project Manager); null for .NET palettes.</summary>
     public NativeAction? Native { get; set; }
+    /// <summary>palette: the context menu choice that ended the step (`context_menu`); <see cref="Text"/> is then the menu path.</summary>
+    public Retrace.Core.MenuChoice? Menu { get; set; }
     /// <summary>palette (native): the drawing its double-click opened (full path), or null.</summary>
     public string? OpensDrawing { get; set; }
     // mark / doc
@@ -321,6 +351,10 @@ public static class RecordingReader
         return true;
     }
 
+    /// <summary>The changed fields of a `fields` array (`dialog_values`, `dialog_click`) added to <paramref name="into"/>; anything but an array of objects adds none.</summary>
+    static void AddValues(List<RecordingDialogValue> into, JsonElement fields) =>
+        into.AddRange(Retrace.Core.DialogNesting.FieldsOf(fields).Select(f => new RecordingDialogValue(f.Label, f.Kind, f.Before, f.After, Retrace.Core.FillMatcher.TabOfChange(f))));
+
     public static void BuildSteps(RecordingSession s)
     {
         RecordingStep? cur = null;
@@ -356,9 +390,9 @@ public static class RecordingReader
                 {
                     var cmd = e.Str("command") ?? "?";
                     if (depth++ > 0) { cur?.Commands.Add(cmd); break; } // nested / transparent command: belongs to the running step
-                    // AutoCAD Electrical reports some commands (UNITS) as unknown a moment before it runs them: drop that step
+                    // AutoCAD reports some commands (UNITS) as unknown a moment before it runs them: drop that step (same command: CommandName.Same, the replay's rule)
                     if (s.Steps.Count > 0 && s.Steps[^1] is { Kind: "command", Outcome: "unknown" } unk && e.T - unk.T <= 1000
-                        && string.Equals(unk.Command, cmd, StringComparison.OrdinalIgnoreCase)) s.Steps.RemoveAt(s.Steps.Count - 1);
+                        && CommandName.Same(unk.Command, cmd)) s.Steps.RemoveAt(s.Steps.Count - 1);
                     // origin: trust the recorder if it wrote one, else derive it (ribbon click <= 2 s before and macro mentions the command)
                     var origin = e.Str("origin") ?? (!ribbonConsumed && lastRibbon != null && e.T - lastRibbon.T <= RibbonAttributionMs && MacroMentions(lastRibbon.Macro, cmd) ? "ribbon" : "typed/other");
                     // built-in buttons carry no macro and older recorders then wrote "typed/other": a command within 1 s is the click's
@@ -445,16 +479,60 @@ public static class RecordingReader
                             break;
                         }
                         vd.ClosedWith = e.Str("closedWith");
+                        vd.ClosedT = e.T;
                         vd.ValuesRead = e.Raw.TryGetProperty("read", out var rd) && rd.ValueKind == JsonValueKind.Number && rd.TryGetInt32(out var rn) ? rn : 0;
                         vd.Values.Clear();
-                        if (e.Raw.TryGetProperty("fields", out var fs) && fs.ValueKind == JsonValueKind.Array)
-                            foreach (var f in fs.EnumerateArray())
-                            {
-                                string S(string k) => f.ValueKind == JsonValueKind.Object && f.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
-                                vd.Values.Add(new RecordingDialogValue(S("label"), S("kind"), S("before"), S("after")));
-                            }
+                        if (e.Raw.TryGetProperty("fields", out var fs)) AddValues(vd.Values, fs);
+                        // a dialog that opened inside another one (`parent`) belongs to the click that opened it: not a step of its own
+                        if (e.Raw.TryGetProperty("parent", out var parV) && parV.ValueKind == JsonValueKind.Number && parV.TryGetInt64(out var parN) && modalByN.TryGetValue(parN, out var outer)
+                            && !ReferenceEquals(outer, vd) && outer.Clicks.Count > 0
+                            && Retrace.Core.DialogNesting.Attach(outer.Clicks[^1].Nested, outer.Clicks[^1].T, vd, x => x.T, x => x.ClosedT))
+                        {
+                            s.Steps.Remove(vd);
+                            vd.OpenedIn?.InnerDialogs.Remove(vd);
+                            if (ReferenceEquals(modal, vd)) modal = outer;
+                        }
                     }
                     break;
+                case "modal_alias":
+                    // an EnterModal that came late for a dialog tracked already (found by its window): its step is that dialog's, not a second one
+                    if (e.Raw.TryGetProperty("for", out var aliasFor) && aliasFor.ValueKind == JsonValueKind.Number && aliasFor.TryGetInt64(out var dupN)
+                        && e.Raw.TryGetProperty("of", out var aliasOf) && aliasOf.ValueKind == JsonValueKind.Number && aliasOf.TryGetInt64(out var ofN)
+                        && Retrace.Core.DialogNesting.Alias(modalByN, dupN, ofN) is { } duplicate)
+                    {
+                        s.Steps.Remove(duplicate);
+                        duplicate.OpenedIn?.InnerDialogs.Remove(duplicate);
+                        if (ReferenceEquals(modal, duplicate)) modal = modalByN[ofN];
+                    }
+                    break;
+                case "dialog_click":
+                    if (e.Raw.TryGetProperty("for", out var clickFor) && clickFor.ValueKind == JsonValueKind.Number && clickFor.TryGetInt64(out var clickN) && modalByN.TryGetValue(clickN, out var clicked))
+                    {
+                        var click = new RecordingDialogClick { Button = e.Str("button") ?? "", Kind = Retrace.Core.DialogClickKinds.Of(e.Str("kind")), Path = e.Str("path") ?? "", TreeLabel = e.Str("treeLabel") ?? "", T = e.T, Tab = e.Str("tab") ?? "" };
+                        if (e.Raw.TryGetProperty("fields", out var cfs)) AddValues(click.Values, cfs);
+                        clicked.Clicks.Add(click);
+                    }
+                    break;
+                case "context_menu":
+                {
+                    if (Retrace.Core.MenuChoice.From(e.Raw) is not { } menu) break;
+                    if (e.Raw.TryGetProperty("for", out var menuFor) && menuFor.ValueKind == JsonValueKind.Number && menuFor.TryGetInt64(out var menuN))
+                    {
+                        if (modalByN.TryGetValue(menuN, out var menuDialog))
+                        {
+                            var menuClick = new RecordingDialogClick { Button = menu.ButtonText, Menu = menu, T = e.T, Tab = e.Str("tab") ?? "" };
+                            if (e.Raw.TryGetProperty("fields", out var mfs)) AddValues(menuClick.Values, mfs);
+                            menuDialog.Clicks.Add(menuClick);
+                        }
+                        break;
+                    }
+                    var menuPalette = e.Str("palette"); var menuSet = e.Str("set");
+                    bool joinMenu = palette != null && s.Steps.Count > 0 && ReferenceEquals(s.Steps[^1], palette) && palette.Native == null && palette.Text == null && palette.DialogTitle == menuPalette && palette.Panel == menuSet;
+                    if (!joinMenu) { palette = new RecordingStep { Kind = "palette", T = e.T, N = e.N, DialogTitle = menuPalette, Panel = menuSet }; s.Steps.Add(palette); }
+                    palette!.Menu = menu; palette.Text = menu.ButtonText;
+                    if (e.Raw.TryGetProperty("fields", out var pmf)) AddValues(palette.Values, pmf);
+                    break;
+                }
                 case "native_click":
                 case "native_select":
                 {
@@ -487,13 +565,13 @@ public static class RecordingReader
                     bool join = e.Type == "palette_click" && palette != null && s.Steps.Count > 0 && ReferenceEquals(s.Steps[^1], palette)
                                 && palette.Text == null && palette.DialogTitle == name && palette.Panel == set;
                     if (!join) { palette = new RecordingStep { Kind = "palette", T = e.T, N = e.N, DialogTitle = name, Panel = set }; s.Steps.Add(palette); }
-                    if (e.Type == "palette_click") { palette!.Text = e.Str("button"); break; }
+                    if (e.Type == "palette_click") { palette!.Text = e.Str("button"); palette.ClickKind = Retrace.Core.DialogClickKinds.Of(e.Str("kind")); palette.ClickPath = e.Str("path") ?? ""; palette.ClickTreeLabel = e.Str("treeLabel") ?? ""; break; }
                     palette!.ValuesRead = e.Raw.TryGetProperty("read", out var prd) && prd.ValueKind == JsonValueKind.Number && prd.TryGetInt32(out var prn) ? prn : 0;
                     if (e.Raw.TryGetProperty("fields", out var pfs) && pfs.ValueKind == JsonValueKind.Array)
                         foreach (var f in pfs.EnumerateArray())
                         {
                             string S(string k) => f.ValueKind == JsonValueKind.Object && f.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
-                            palette.Values.Add(new RecordingDialogValue(S("label"), S("kind"), S("before"), S("after")));
+                            palette.Values.Add(new RecordingDialogValue(S("label"), S("kind"), S("before"), S("after"), S("tab")));
                         }
                     break;
                 }
@@ -531,7 +609,7 @@ public static class RecordingReader
                 "cmd_end" or "cmd_cancel" or "cmd_fail" or "lisp_end" or "lisp_cancel" => cur?.EndShots,
                 "prompt" => added?.Shots,
                 "modal_enter" or "modal_title" => modal?.Shots,
-                "palette_values" or "palette_click" => palette?.Shots,
+                "palette_values" or "palette_click" or "context_menu" => palette?.Shots,
                 "mark" => s.Steps.Count > 0 ? s.Steps[^1].Shots : null,
                 _ => null,
             };
@@ -561,10 +639,8 @@ public static class RecordingReader
     public static bool MacroMentions(string? macro, string command)
     {
         if (string.IsNullOrEmpty(macro) || string.IsNullOrEmpty(command)) return false;
-        return MacroCommands(macro).Contains(Norm(command), StringComparer.OrdinalIgnoreCase);
+        return MacroCommands(macro).Contains(CommandName.Strip(command), StringComparer.OrdinalIgnoreCase);
     }
-
-    static string Norm(string c) => c.TrimStart('_', '.', '-', '*', '\'');
 
     /// <summary>Command names in a macro: tokens split on ^C, ;, space, pause, parens.</summary>
     public static List<string> MacroCommands(string? macro)
@@ -574,7 +650,7 @@ public static class RecordingReader
         var m = macro.Replace("^C", " ", StringComparison.OrdinalIgnoreCase).Replace(";", " ");
         foreach (var tok in m.Split(new[] { ' ', '\t', '\r', '\n', '(', ')', '"', '\\' }, StringSplitOptions.RemoveEmptyEntries))
         {
-            var t = Norm(tok);
+            var t = CommandName.Strip(tok);
             if (t.Length > 0) list.Add(t);
         }
         return list;
