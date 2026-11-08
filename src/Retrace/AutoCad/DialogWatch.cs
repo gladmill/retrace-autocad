@@ -50,6 +50,8 @@ sealed partial class DialogWatch
         public readonly FieldTracker Tracker = new();
         public long LastReadMs = -100000;
         public Task? Uia;
+        /// <summary>The child window classes of this window were written to retrace.log (once, at the first button click that changed no field).</summary>
+        public bool ClassesLogged;
         /// <summary>"ok" | "cancel" from the last OK/Cancel press, Enter, Esc or title-bar close seen in the dialog; null = not seen.</summary>
         public string? ClosedWith;
         /// <summary>Win32 reads that found no fields, and whether one ever did: a dialog's controls may not exist yet at the first read.</summary>
@@ -340,6 +342,7 @@ sealed partial class DialogWatch
         var hwnd = m.hwnd;
         e.Press = null;
         if (m.message == WM_LBUTTONDBLCLK && TreeDoubleClick(e, m, now)) return;
+        if (ToolbarControl.Is(hwnd) && ToolbarDown(e, m, now)) return;
         var text = DialogReader.PushButtonText(hwnd);
         var role = ButtonRole(hwnd);
         e.ClosedWith = role;
@@ -373,7 +376,9 @@ sealed partial class DialogWatch
             return;
         }
         bool landed = false;
-        if (Native.ClientSize(m.hwnd, out var w, out var h))
+        if (p.Kind == DialogClickKinds.Toolbar)
+            landed = m.hwnd == p.Button && ToolbarControl.HitTest(m.hwnd, (short)((long)m.lParam & 0xFFFF), (short)(((long)m.lParam >> 16) & 0xFFFF)) == (int)p.Item;   // released on the button it went down on
+        else if (Native.ClientSize(m.hwnd, out var w, out var h))
         {
             int x = (short)((long)m.lParam & 0xFFFF), y = (short)(((long)m.lParam >> 16) & 0xFFFF);
             landed = DialogClickRules.MouseUpCompletes((long)p.Button, (long)m.hwnd, x, y, w, h);
@@ -489,7 +494,13 @@ sealed partial class DialogWatch
         var basis = snap.Basis;
         var dbl = p.Kind == DialogClickKinds.DoubleClick;
         var click = new Click(e.ForN, p.Text, p.Id, dbl || basis == null || p.Menu != null ? 1 : DialogReader.ButtonIndex(basis, p.Button), snap.Changes, snap.Read, snap.Statics,
-            p.Menu != null ? (basis != null && basis.Tabs.Count > 0 ? basis.Showing : "") : dbl ? p.Tab : basis?.TabOf(p.Button) ?? "", p.Kind, p.TreeKey, p.Path, p.TreeLabel, onDown && !dbl, p.Menu);
+            p.Menu != null || p.Kind == DialogClickKinds.Toolbar ? (basis != null && basis.Tabs.Count > 0 ? basis.Showing : "") : dbl ? p.Tab : basis?.TabOf(p.Button) ?? "", p.Kind, p.TreeKey, p.Path, p.TreeLabel, onDown && !dbl, p.Menu);
+        // a diagnostic for a custom control Retrace does not know: a button click that changed no field logs what the window holds, once
+        if (snap.Changes.Count == 0 && !e.ClassesLogged && p.Menu == null && !dbl && Native.Exists(e.Hwnd))
+        {
+            e.ClassesLogged = true;
+            Log.Info($"button \"{p.Text}\" clicked in \"{e.Title}\" ({Native.ClassOf(e.Hwnd)}) with no field changed; child windows: {DialogReader.ChildClassSummary(e.Hwnd)}");
+        }
         e.Tracker.Rebase();
         e.Settle.Clicked(now);
         e.Trail.Clicked(p.Text, now);
@@ -534,6 +545,7 @@ sealed partial class DialogWatch
         {
             e.LastReadMs = now; e.LastScan = scan;
             foreach (var l in scan.Truncated) e.Truncated.Add(l);
+            NoteParts(e, scan.Unsupported, "win32");
             if (scan.Tabs.Count > 0) e.Showing = scan.Showing;
             if (scan.Fields.Count > 0) { e.FieldSeen = true; e.Tracker.Observe(scan.Fields); }
             SettleIfPending(e, scan);
@@ -541,6 +553,23 @@ sealed partial class DialogWatch
             if (statics.Count > 0) e.Statics = statics;
         }
         return new Snap(scan ?? e.LastScan, statics, e.Tracker.Changes(), e.Tracker.ReadCount);
+    }
+
+    /// <summary>The mouse went down on a button of a toolbar (an MFC CToolBar): a pending press named by the button's text or tooltip, whose id is the command id. It is a click when the mouse comes up on the same button
+    /// (<see cref="Up"/>). False when the point is no enabled button (a separator, the gap).</summary>
+    bool ToolbarDown(Entry e, Native.Msg m, long now)
+    {
+        if (!Native.OwnedByThisThread(m.hwnd)) return false;
+        int idx = ToolbarControl.HitTest(m.hwnd, (short)((long)m.lParam & 0xFFFF), (short)(((long)m.lParam >> 16) & 0xFFFF));
+        if (idx < 0) return false;
+        var buttons = ToolbarControl.Buttons(m.hwnd);
+        var at = buttons.FindIndex(b => b.Index == idx);
+        if (at < 0 || !buttons[at].Enabled) return false;
+        var b = buttons[at];
+        e.Trail.Input();
+        e.ClosedWith = null;
+        e.Press = new Pending(m.hwnd, ToolbarControl.Label(m.hwnd, b.Id), b.Id, false) { Kind = DialogClickKinds.Toolbar, Item = (IntPtr)idx, Down = PeekSnap(e, now), FieldFocusedAtDown = FieldFocused(e, m.hwnd) };
+        return true;
     }
 
     /// <summary>A double-click on an item of a tree of the dialog (the second press of a double-click lands as WM_LBUTTONDBLCLK): a pending press, written when it did something
@@ -605,6 +634,7 @@ sealed partial class DialogWatch
         {
             var scan = DialogReader.Scan(e.Hwnd, ticks: e.Ticks);
             foreach (var l in scan.Truncated) e.Truncated.Add(l);
+            NoteParts(e, scan.Unsupported, "win32");
             e.LastScan = scan;
             if (scan.Tabs.Count > 0) e.Showing = scan.Showing;
             var fields = scan.Fields;

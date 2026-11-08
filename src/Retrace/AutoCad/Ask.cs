@@ -44,12 +44,22 @@ static class Ask
         catch (Exception ex) { Log.Error("Ask setting", ex); return false; }
     }
 
+    /// <summary>CMDACTIVE (bit 4: a script is active, bit 32: AutoLISP / ActiveX is active), null when it cannot be read. Never logs: the Recorder and the Replayer call it often.</summary>
+    internal static int? ActiveBits()
+    {
+        try { return Convert.ToInt32(AcApp.GetSystemVariable("CMDACTIVE")); }
+        catch { return null; }
+    }
+
+    /// <summary>The script (4) and AutoLISP (32) bits of CMDACTIVE; 0 when none is set or it cannot be read. For baselines: <see cref="ReplayRules.NewScriptBits"/>.</summary>
+    internal static int ScriptOrLispBits() => (ActiveBits() ?? 0) & ReplayRules.ScriptOrLispBits;
+
     /// <summary>A script (CMDACTIVE 4) or LISP / ActiveX (32) runs the command: nobody is there to use a window. An error counts as a script,
     /// the safe side: the command line.</summary>
     public static bool ScriptRuns()
     {
-        try { return (Convert.ToInt32(AcApp.GetSystemVariable("CMDACTIVE")) & (4 | 32)) != 0; }
-        catch (Exception ex) { Log.Error("Ask.ScriptRuns", ex); return true; }
+        if (ActiveBits() is not { } active) { Log.Info("Ask.ScriptRuns: CMDACTIVE could not be read"); return true; }
+        return (active & (4 | 32)) != 0;
     }
 
     /// <summary>A script or LISP is known to run the command (CMDACTIVE 4 / 32). Unlike <see cref="ScriptRuns"/>, a failed read counts as NO script:
@@ -57,13 +67,9 @@ static class Ask
     /// system variable could not be read. (<see cref="ScriptRuns"/> keeps the safe default for prompt style: the command line.)</summary>
     public static bool ScriptKnown()
     {
-        try
-        {
-            var active = Convert.ToInt32(AcApp.GetSystemVariable("CMDACTIVE"));
-            Log.Info($"CMDACTIVE={active} (script bits 4/32 {((active & (4 | 32)) != 0 ? "set" : "not set")})");   // the log shows whether COM / SCRIPT / LISP are detected
-            return (active & (4 | 32)) != 0;
-        }
-        catch (Exception ex) { Log.Error("Ask.ScriptKnown", ex); return false; }
+        if (ActiveBits() is not { } active) { Log.Info("Ask.ScriptKnown: CMDACTIVE could not be read"); return false; }
+        Log.Info($"CMDACTIVE={active} (script bits 4/32 {((active & (4 | 32)) != 0 ? "set" : "not set")})");   // the log shows whether COM / SCRIPT / LISP are detected
+        return (active & (4 | 32)) != 0;
     }
 
     /// <summary>Whether to ask in the window: the setting says "ui", FILEDIA is on, no script or LISP runs the command (CMDACTIVE 4 / 32),

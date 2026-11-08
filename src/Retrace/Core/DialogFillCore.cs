@@ -48,6 +48,10 @@ public static class FillMatcher
         return read > 0 ? AutoMode.Ok : AutoMode.MessageOk;
     }
 
+    /// <summary>Is a live field of kind <paramref name="live"/> the field a recording of kind <paramref name="recorded"/> means? The same kind, or the control the recording saw a part of: a recording made before
+    /// <c>ComboBoxEx32</c> was read as one field has a <c>combo</c> change on its inner combo box (same control id, so the same key), which is now the <c>comboex</c> field.</summary>
+    public static bool KindsMatch(string recorded, string live) => recorded == live || (recorded == "combo" && live == "comboex");
+
     static bool SameLabel(string a, string b) => string.Equals(DialogFieldsCore.CleanLabel(a), DialogFieldsCore.CleanLabel(b), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>"Length › Precision" and "Precision": one side carries the group box the other lacks (recorded through UI Automation, or by a
@@ -101,15 +105,15 @@ public static class FillMatcher
             if (rKey.StartsWith("name:", StringComparison.Ordinal))
             {
                 int byName = -1;
-                for (int j = 0; j < live.Count; j++) if (!used.Contains(j) && TabPath.Unqualified(live[j].Key) == rKey && live[j].Kind == r.Kind && TabOk(rTab, live[j].Tab)) { byName = j; break; }
+                for (int j = 0; j < live.Count; j++) if (!used.Contains(j) && TabPath.Unqualified(live[j].Key) == rKey && KindsMatch(r.Kind, live[j].Kind) && TabOk(rTab, live[j].Tab)) { byName = j; break; }
                 if (byName >= 0) { used.Add(byName); result[i] = byName; continue; }
             }
             // live fields with the label, in dialog order. A tree is numbered among trees, any other field among the others (DialogFieldsCore.BuildMapped),
             // so the occurrence of a `label:L#n` key counts only fields of its own sort: an older recording still finds its list when a tree has the label too
-            bool recTree = r.Kind == "tree";
+            int recSort = DialogFieldsCore.SortOf(r.Kind);
             var same = new List<int>();
-            for (int j = 0; j < live.Count; j++) if ((live[j].Kind == "tree") == recTree && TabOk(rTab, live[j].Tab) && SameLabel(live[j].Label, r.Label)) same.Add(j);
-            if (same.Count == 0) for (int j = 0; j < live.Count; j++) if ((live[j].Kind == "tree") == recTree && TabOk(rTab, live[j].Tab) && SameLeaf(live[j].Label, r.Label)) same.Add(j);
+            for (int j = 0; j < live.Count; j++) if (DialogFieldsCore.SortOf(live[j].Kind) == recSort && TabOk(rTab, live[j].Tab) && SameLabel(live[j].Label, r.Label)) same.Add(j);
+            if (same.Count == 0) for (int j = 0; j < live.Count; j++) if (DialogFieldsCore.SortOf(live[j].Kind) == recSort && TabOk(rTab, live[j].Tab) && SameLeaf(live[j].Label, r.Label)) same.Add(j);
             // a recorded field outside the tabs ("" tab) is the live field outside them when there is one (a "Scale" outside and a "Scale" on a page); an older recording of a tabbed
             // dialog has no tab for any field and still finds the one on its page
             if (rTab.Length == 0 && same.Any(j => live[j].Tab.Length == 0)) same.RemoveAll(j => live[j].Tab.Length != 0);
@@ -119,16 +123,16 @@ public static class FillMatcher
                 if (OccurrenceOf(rKey) is { } n) { if (n <= same.Count) pick = same[n - 1]; }
                 else
                 {
-                    var open = same.Where(j => !used.Contains(j) && live[j].Kind == r.Kind).ToList();
+                    var open = same.Where(j => !used.Contains(j) && KindsMatch(r.Kind, live[j].Kind)).ToList();
                     pick = open.FirstOrDefault(j => TabPath.Unqualified(live[j].Key) == rKey, -1);
                     if (pick < 0 && open.Count > 0) pick = open[0];
                 }
-                if (pick >= 0 && (used.Contains(pick) || live[pick].Kind != r.Kind)) pick = -1;
+                if (pick >= 0 && (used.Contains(pick) || !KindsMatch(r.Kind, live[pick].Kind))) pick = -1;
             }
             else if (IdOf(rKey) is { } id && id > 0 && id < StableIdLimit)
             {
                 for (int j = 0; j < live.Count; j++)
-                    if (!used.Contains(j) && TabPath.Unqualified(live[j].Key) == rKey && live[j].Kind == r.Kind && TabOk(rTab, live[j].Tab)) { pick = j; break; }
+                    if (!used.Contains(j) && TabPath.Unqualified(live[j].Key) == rKey && KindsMatch(r.Kind, live[j].Kind) && TabOk(rTab, live[j].Tab)) { pick = j; break; }
             }
             if (pick >= 0) { used.Add(pick); result[i] = pick; }
         }
@@ -142,6 +146,7 @@ public static class FillMatcher
     /// <summary>Does the live value show the recorded change? A radio button read on its own (WinForms, UI Automation) reads "on"/"off", not the
     /// text of the chosen button.</summary>
     public static bool Satisfied(FieldChange c, string? current) =>
+        current != null && c.Kind == ListSelection.Kind ? current == ListSelection.Key(ListSelection.ItemsOf(c)) :   // current is ListSelection.Key of the live items (DialogFill.LiveValue)
         current != null && (c.Kind == "radio" && c.After == "on" && current is "on" or "off" ? current == "on" : ValueMatches(c.Kind, Expected(c), current));
 
     public static bool IsNoOp(FieldChange c) => c.Kind == "radio" && c.After is "" or "off";
@@ -157,7 +162,7 @@ public static class FillMatcher
         var b = (actual ?? "").Trim();
         if (kind == "radio") { a = DialogFieldsCore.CleanLabel(LastPart(a)); b = DialogFieldsCore.CleanLabel(LastPart(b)); }
         if (string.Equals(a, b, StringComparison.OrdinalIgnoreCase)) return true;
-        if (kind is "edit" or "combo" or "list" or "slider" &&
+        if (kind is "edit" or "combo" or "comboex" or "list" or "slider" &&
             double.TryParse(a, NumberStyles.Float, CultureInfo.InvariantCulture, out var x) &&
             double.TryParse(b, NumberStyles.Float, CultureInfo.InvariantCulture, out var y))
             return Math.Abs(x - y) <= 1e-9 * Math.Max(1, Math.Max(Math.Abs(x), Math.Abs(y)));

@@ -277,8 +277,10 @@ sealed class MenuWatch
         for (var h = a.Hwnd; at < 0 && h != IntPtr.Zero && h != a.Container; h = DialogReader.GetParent(h))
             at = scan.Handles.FindIndex(l => l.Contains(h));
         string key = at >= 0 ? scan.Fields[at].Key : "", label = at >= 0 ? scan.Fields[at].Label : "", kind = at >= 0 ? scan.Fields[at].Kind : "";
-        // a list view is no field (its value is not recorded), but the menu belongs to it: keep the control and the item as a target of its own
-        if (at < 0 && MenuListView.Is(a.Hwnd) && Native.OwnedByThisThread(a.Hwnd)) { (key, label) = MenuListView.KeyOf(a.Hwnd, a.Container); kind = MenuListView.Kind; }
+        // a list view is a field now (its selection), but its menu target keeps the key replay finds a list view by (`name:` / `ord:` / `id:`, no tab part; MenuListView.Find), as in #312's recordings
+        var listHandle = at >= 0 && kind == MenuListView.Kind ? scan.Handles[at].FirstOrDefault() : IntPtr.Zero;
+        if (listHandle == IntPtr.Zero && at < 0 && MenuListView.Is(a.Hwnd)) listHandle = a.Hwnd;
+        if (listHandle != IntPtr.Zero && Native.OwnedByThisThread(listHandle)) { (key, label) = MenuListView.KeyOf(listHandle, a.Container); kind = MenuListView.Kind; }
         var lv = kind == MenuListView.Kind ? a.ListView : null;
         if (kind == MenuListView.Kind && !a.OnHeader && lv is not { Known: true }) { Log.Info("menu on a list view: the list could not be read, no item is recorded"); lv = null; }
         Chosen?.Invoke(choice with

@@ -76,8 +76,8 @@ public class CommandNamesTests
         Assert.Equal("SAMPLES_TAB", samples.Id);
         Assert.Equal("Retrace Samples", samples.Title);
         Assert.Equal(new[] { "Draw", "Dialogs" }, samples.Panels.Select(p => p.Title));
-        Assert.Equal(new[] { "DRAWLINE", "DRAWCIRCLE", "DRAWRECT", "DRAWLABEL", "DRAWGRID" }, Buttons(samples).Select(b => b.Command));
-        Assert.Equal(new[] { "Line", "Circle", "Rectangle", "Label", "Grid..." }, Buttons(samples).Select(b => b.Text));
+        Assert.Equal(new[] { "DRAWLINE", "DRAWCIRCLE", "DRAWRECT", "DRAWLABEL", "DRAWGRID", "CHAINADD", "SCRIPT" }, Buttons(samples).Select(b => b.Command));
+        Assert.Equal(new[] { "Line", "Circle", "Rectangle", "Label", "Grid...", "Chain...", "Script..." }, Buttons(samples).Select(b => b.Text));
     }
 
     [Theory]

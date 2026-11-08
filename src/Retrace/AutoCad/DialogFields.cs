@@ -40,7 +40,10 @@ static partial class DialogReader
     sealed class Ctl
     {
         public IntPtr H, Parent;
-        public string Seg = "", ParentSeg = "";
+        public string Cls = "", Seg = "", ParentSeg = "";
+        /// <summary>The control that holds this window as a part of itself (the edit boxes of an IP address control, the combo box of a ComboBoxEx), or null; and whether that control is read as one field: only then is this window not a field of its own.</summary>
+        public Ctl? CompositeParent;
+        public bool CompositeRead;
         public long Style;
         public int Id;
         public Box Rect;
@@ -60,6 +63,10 @@ static partial class DialogReader
         public List<string> ButtonTabs = new();
         /// <summary>The labels of the trees whose check boxes were cut at <see cref="TreeChecks.MaxItems"/> items.</summary>
         public List<string> Truncated = new();
+        /// <summary>The toolbars (<c>ToolbarWindow32</c>) of this thread in the window: their buttons are clickable (<see cref="ToolbarControl"/>), not fields.</summary>
+        public List<IntPtr> Toolbars = new();
+        /// <summary>Parts the scan saw that no Win32 message reads (an MFC Feature Pack tab control, property grid or toolbar, by window class: <see cref="NativeParts.Classify"/>): named in the dialog's `unsupported`.</summary>
+        public List<WpfPresses.Unsupported> Unsupported = new();
 
         /// <summary>The tab of <paramref name="button"/> (one of <see cref="Buttons"/>): "" when the window has no tabs or the button is not in the scan.</summary>
         public string TabOf(IntPtr button)
@@ -87,16 +94,25 @@ static partial class DialogReader
             EnumChildWindows(dialog, (h, _) => { handles.Add(h); return true; }, IntPtr.Zero);
 
             var ctls = new List<Ctl>();
+            var byHandle = new Dictionary<IntPtr, Ctl>();
             foreach (var h in handles)
             {
                 if (hiddenToo ? !OwnVisibleUpTo(h, dialog) : !IsWindowVisible(h)) continue;
                 GetWindowRect(h, out var r);
-                var p = GetParent(h);
-                ctls.Add(new Ctl
+                var cls = ClassOf(h);   // once per window: the segment, the parent's segment and the composite parent below come from the controls gathered here
+                var c = new Ctl
                 {
-                    H = h, Parent = p, Seg = Segment(ClassOf(h)), ParentSeg = p == IntPtr.Zero || p == dialog ? "" : Segment(ClassOf(p)),
+                    H = h, Parent = GetParent(h), Cls = cls, Seg = Segment(cls),
                     Style = (uint)GetWindowLong(h, GWL_STYLE), Id = GetDlgCtrlID(h), Rect = new Box(r.Left, r.Top, r.Right, r.Bottom),
-                });
+                };
+                ctls.Add(c); byHandle[h] = c;
+            }
+            // EnumChildWindows lists a parent before its children: a child's parent is a control gathered already (or the dialog, or a window that is not visible and so not in the list)
+            foreach (var c in ctls)
+            {
+                if (c.Parent == IntPtr.Zero || c.Parent == dialog) continue;
+                c.ParentSeg = byHandle.TryGetValue(c.Parent, out var pc) ? pc.Seg : Segment(ClassOf(c.Parent));
+                if (CompositeAncestor(c, byHandle) is { } holder) { c.CompositeParent = holder; c.CompositeRead = ReadsComposite(holder); }
             }
 
             var statics = new List<(Box Rect, string Text)>();
@@ -125,6 +141,9 @@ static partial class DialogReader
             {
                 string? kind = null, value = null;
                 var seg = c.Seg;
+                if (c.CompositeRead) continue;   // the edit boxes of an IP address control, the combo box inside a ComboBoxEx: read through the control that holds them (when it is read; else they are read as they always were)
+                if (NativeParts.Classify(c.Cls) is { } part && !scan.Unsupported.Contains(part)) scan.Unsupported.Add(part);   // by the class name alone: no window is sent a message to find out what it is
+                if (NativeParts.IsToolbarClass(c.Cls)) { if (Native.OwnedByThisThread(c.H)) scan.Toolbars.Add(c.H); continue; }
                 if (seg == "edit" || seg.Contains("richedit"))
                 {
                     if ((c.Style & (ES_PASSWORD | ES_READONLY)) != 0 || c.ParentSeg.StartsWith("combobox")) continue;   // a combo's own edit is read through the combo
@@ -174,12 +193,45 @@ static partial class DialogReader
                 {
                     kind = "slider"; value = Num(c.H, TBM_GETPOS).ToString(CultureInfo.InvariantCulture);
                 }
+                else if (seg == "sysdatetimepick32")
+                {
+                    if (!Native.OwnedByThisThread(c.H) || CommonControls.ReadDate(c.H, c.Style) is not { } d) continue;
+                    kind = DateText.Kind; value = d;
+                }
+                else if (seg == "sysmonthcal32")
+                {
+                    if (!Native.OwnedByThisThread(c.H) || CommonControls.ReadCalendar(c.H, c.Style) is not { } d) continue;
+                    kind = CalendarText.Kind; value = d;
+                }
+                else if (seg == "sysipaddress32")
+                {
+                    kind = IpText.Kind; value = CommonControls.ReadIp(c.H);
+                }
+                else if (seg == "msctls_hotkey32")
+                {
+                    kind = HotkeyText.Kind; value = CommonControls.ReadHotkey(c.H);
+                }
+                else if (seg == "comboboxex32")
+                {
+                    if (!Native.OwnedByThisThread(c.H)) continue;
+                    kind = "comboex"; value = CommonControls.ReadComboEx(c.H, c.Style);
+                }
                 else if (seg == "systreeview32")
                 {
                     // the selected item and its parents (also a WinForms TreeView). Only a tree of this thread: the TVITEM messages pass pointers
                     // to buffers of this call, and a tree of another thread (or process) answers later, after a timeout has freed them
                     if (!Native.OwnedByThisThread(c.H)) continue;
                     kind = "tree"; value = TreeControl.SelectedPath(c.H);
+                }
+                else if (seg == "syslistview32")
+                {
+                    // the selected item(s), whatever the view mode (also a WinForms ListView). A list of another thread is skipped: the LVITEM messages pass pointers to our buffers.
+                    if (!Native.OwnedByThisThread(c.H)) continue;
+                    var label = DialogFieldsCore.FindLabel(c.Rect, statics) ?? $"#{c.Id}";
+                    // a selection that cannot be read is a value of its own, never the last one read: the tracker must not keep an earlier selection as the final one
+                    if (MenuListView.ReadSelection(c.H) is not { } items) { Add(c, new RawControl(c.Id, label, ListSelection.Kind, ListSelection.NotRecorded)); continue; }
+                    Add(c, new RawControl(c.Id, label, ListSelection.Kind, ListSelection.Format(items), Items: items));
+                    continue;
                 }
                 if (kind != null) Add(c, new RawControl(c.Id, DialogFieldsCore.FindLabel(c.Rect, statics) ?? $"#{c.Id}", kind, value ?? ""));
             }
@@ -216,6 +268,32 @@ static partial class DialogReader
         catch (Exception ex) { Log.Error("dialog fields (win32)", ex); return new(); }
     }
 
+    static readonly HashSet<string> Composites = new() { "sysipaddress32", "comboboxex32", "sysdatetimepick32", "sysmonthcal32" };
+
+    /// <summary>Is the control read as a field? An IP address control is read from the text of its boxes and a hot key from a plain value (both are safe messages to a window of another thread); a date picker, a month calendar and a
+    /// ComboBoxEx are read with messages that carry pointers to our buffers, so only when they belong to this thread. When one is not read, the windows inside it are read as they were before this control was (the inner combo box of a
+    /// ComboBoxEx is a list field again), and the control is named once in the log: it never just disappears.</summary>
+    static bool ReadsComposite(Ctl holder)
+    {
+        if (NativeParts.Classify(holder.Cls) is { } part) return NativeParts.HoldsOnlyItsOwnParts(part);   // a property grid's in-place editor, a toolbar's buttons: no fields
+        if (holder.Seg == "sysipaddress32") return true;
+        if (Native.OwnedByThisThread(holder.H)) return true;
+        if (LoggedForeign.Count > 500) LoggedForeign.Clear();
+        if (LoggedForeign.Add(holder.H)) Log.Info($"{holder.Cls} (control {holder.Id}) belongs to another thread: not read as one field");
+        return false;
+    }
+
+    static readonly HashSet<IntPtr> LoggedForeign = new();
+
+    /// <summary>The class segment of the control that holds <paramref name="c"/> as a part of itself (the edit boxes of an IP address control, the combo box of a ComboBoxEx), "" when it is a control of its own. Looks only at the
+    /// controls gathered (<paramref name="gathered"/>): no window is asked its class or parent again.</summary>
+    static Ctl? CompositeAncestor(Ctl c, Dictionary<IntPtr, Ctl> gathered)
+    {
+        for (int n = 0; n < 4 && gathered.TryGetValue(c.Parent, out var p); n++, c = p)
+            if (Composites.Contains(p.Seg) || NativeParts.Classify(p.Cls) is not null) return p;
+        return null;
+    }
+
     /// <summary>For a scan of a hidden window (an auto-hidden palette): the control and every window between it and <paramref name="top"/> have their own WS_VISIBLE. A page that is not the shown one
     /// (a WinForms TabPage, a property sheet's page, a control a plain dialog hides) has none, so its controls, and a tab control on it, are left out.</summary>
     internal static bool OwnVisibleUpTo(IntPtr h, IntPtr top)
@@ -223,6 +301,19 @@ static partial class DialogReader
         for (int n = 0; n < 40 && h != IntPtr.Zero && h != top; n++, h = GetParent(h))
             if (((uint)GetWindowLong(h, GWL_STYLE) & WS_VISIBLE) == 0) return false;
         return true;
+    }
+
+    /// <summary>The distinct window classes of all child windows of <paramref name="dialog"/> with their counts ("Button x4, SysListView32 x1, Edit x2"), at most 40 classes: a diagnostic for a control
+    /// Retrace does not read (a click that changed no field).</summary>
+    internal static string ChildClassSummary(IntPtr dialog)
+    {
+        try
+        {
+            var classes = new List<string>();
+            EnumChildWindows(dialog, (h, _) => { classes.Add(ClassOf(h)); return true; }, IntPtr.Zero);
+            return ClassSummary.Format(classes);
+        }
+        catch (Exception) { return "(unreadable)"; }
     }
 
     /// <summary>Lower-case class name; for WinForms ("WindowsForms10.EDIT.app.0.141b42a_r9_ad1") the part after "WindowsForms10.".</summary>

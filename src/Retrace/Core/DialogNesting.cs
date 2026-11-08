@@ -35,7 +35,7 @@ public static class DialogNesting
         if (fields.ValueKind != JsonValueKind.Array) return list;
         string S(JsonElement f, string k) => f.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
         foreach (var f in fields.EnumerateArray())
-            if (f.ValueKind == JsonValueKind.Object) list.Add(new FieldChange(S(f, "key"), S(f, "label"), S(f, "kind"), S(f, "before"), S(f, "after"), S(f, "tab")));
+            if (f.ValueKind == JsonValueKind.Object) list.Add(new FieldChange(S(f, "key"), S(f, "label"), S(f, "kind"), S(f, "before"), S(f, "after"), S(f, "tab"), ListSelection.ItemsFromJson(f)));
         return list;
     }
 

@@ -102,9 +102,10 @@ public sealed class RetraceApp : IExtensionApplication
             var docs = AcApp.DocumentManager.Cast<Document>().ToList();
             if (docs.Count == 0) { Commands.Print("No drawings are open."); return; }
             var names = string.Join("\n", docs.Take(12).Select(d => "  " + System.IO.Path.GetFileName(d.Name))) + (docs.Count > 12 ? $"\n  ... and {docs.Count - 12} more" : "");
-            var answer = System.Windows.MessageBox.Show($"Close all {docs.Count} open drawing{(docs.Count == 1 ? "" : "s")} WITHOUT saving?\n\n{names}\n\nUnsaved changes are lost.",
-                "Retrace: close all drawings", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning, System.Windows.MessageBoxResult.No);
-            if (answer != System.Windows.MessageBoxResult.Yes) { Commands.Print("Close all drawings: cancelled."); return; }
+            // OK closes, Cancel or the title-bar X cancels (a Yes/No box was easy to answer the wrong way); Enter is Cancel
+            var answer = System.Windows.MessageBox.Show($"Close all {docs.Count} open drawing{(docs.Count == 1 ? "" : "s")} WITHOUT saving?\n\n{names}\n\nUnsaved changes are lost.\n\nOK closes them all. Cancel or the X keeps them open.",
+                "Retrace: close all drawings", System.Windows.MessageBoxButton.OKCancel, System.Windows.MessageBoxImage.Warning, System.Windows.MessageBoxResult.Cancel);
+            if (answer != System.Windows.MessageBoxResult.OK) { Commands.Print("Close all drawings: cancelled."); return; }
             var busy = new List<Document>();
             foreach (var d in docs)
             {

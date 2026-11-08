@@ -205,6 +205,8 @@ public static class StepWording
                 return v.After.Length == 0
                     ? $"Clear the selection in {B(v.Label)}" + (v.Before.Length > 0 ? $" (was {code(v.Before)})" : "")
                     : $"Select {code(v.After)} in {B(v.Label)}" + (v.Before.Length > 0 ? $" (was {code(v.Before)})" : "");
+            case "listview":
+                return Retrace.Core.ListSelection.Sentence(v.After, v.Label, code, B, v.Items) + (v.Before.Length > 0 ? $" (was {code(v.Before)})" : "");
             case "list" or "combo" when v.After.Length > 0:
                 return $"Choose {code(v.After)} in {B(v.Label)}" + (v.Before.Length > 0 ? $" (was {code(v.Before)})" : "");
             default:

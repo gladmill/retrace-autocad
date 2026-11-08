@@ -50,7 +50,7 @@ static class DialogFill
     }
 
     /// <summary>WM_COMMAND(code, id) to the control's parent, as the control itself would send it.</summary>
-    static void Notify(IntPtr ctl, int code)
+    internal static void Notify(IntPtr ctl, int code)
     {
         var parent = GetParent(ctl);
         if (parent == IntPtr.Zero) return;
@@ -60,11 +60,19 @@ static class DialogFill
 
     // ---- Win32 -----------------------------------------------------------------------------------------------------------
 
-    /// <summary>Puts the recorded `after` value into the live field. Null = done, else why not. UI thread.</summary>
     /// <summary>The live value to compare a recorded value with: the field's, or for a tick of a tree item the item's check state read from the tree now (the item may be one the scan did not list).
     /// The one place for a dialog (<see cref="DialogAutoFiller"/>) and a palette (<see cref="PaletteFill"/>).</summary>
     internal static string? LiveValue(Win32Scan scan, int index, FieldChange recorded) =>
-        TreeChecks.Is(recorded.Kind) ? (scan.Handles[index].Count > 0 ? TreeControl.ReadCheck(scan.Handles[index][0], TreeChecks.PathOf(recorded)) : null) : scan.Fields[index].Value;
+        TreeChecks.Is(recorded.Kind) ? (scan.Handles[index].Count > 0 ? TreeControl.ReadCheck(scan.Handles[index][0], TreeChecks.PathOf(recorded)) : null)
+        : recorded.Kind == ListSelection.Kind ? LiveListSelection(scan.Fields[index]).Key   // compared by items (FillMatcher.Satisfied)
+        : scan.Fields[index].Value;
+
+    /// <summary>A list view field of a scan as the key its selection is compared by and the text a message shows (the items).</summary>
+    internal static (string Key, string Shown) LiveListSelection(DialogField f)
+    {
+        var items = f.Items ?? ListSelection.Parse(f.Value);
+        return (ListSelection.Key(items), ListSelection.Format(items));
+    }
 
     /// <summary>The ticks of one set of recorded values (a segment of a dialog, a palette step), applied tree by tree so that a tree that ticks by itself ends as the recording left it
     /// (<see cref="TreeCheckApplier"/>: a recorded item is set again when a later tick changed it, an unrecorded one that changed is put back).</summary>
@@ -88,7 +96,8 @@ static class DialogFill
         }
     }
 
-    internal static string? ApplyWin32(DialogField live, IReadOnlyList<IntPtr> hs, FieldChange c, TickSession? ticks = null)
+    /// <summary>Puts the recorded `after` value into the live field. Null = done, else why not. UI thread. <paramref name="takeFocus"/>: the window is a modal dialog, so a list view may take the keyboard focus.</summary>
+    internal static string? ApplyWin32(DialogField live, IReadOnlyList<IntPtr> hs, FieldChange c, TickSession? ticks = null, bool takeFocus = false)
     {
         try
         {
@@ -172,6 +181,15 @@ static class DialogFill
                     // opens the parents on the way (a lazily filled tree fills), then TVM_SELECTITEM. Inside this call, like the CBN_SELCHANGE of a
                     // combo (Notify): a handler that fills other fields runs now, in the order the values are set.
                     return TreeControl.Select(h, c.After);
+                case DateText.Kind: return CommonControls.SetDate(h, (uint)GetWindowLong(h, GWL_STYLE), c.After);
+                case CalendarText.Kind: return CommonControls.SetCalendar(h, (uint)GetWindowLong(h, GWL_STYLE), c.After);
+                case IpText.Kind: return CommonControls.SetIp(h, c.After);
+                case HotkeyText.Kind: return CommonControls.SetHotkey(h, c.After);
+                case "comboex": return CommonControls.SetComboEx(h, (uint)GetWindowLong(h, GWL_STYLE), c.After);
+                case ListSelection.Kind:
+                    if (ListSelection.IsNotRecorded(c.After)) return "the selection could not be recorded";
+                    // the items are selected inside this call like a combo's choice: the owner's LVN_ITEMCHANGED handler runs now, in the order the values are set
+                    return MenuListView.SelectItems(h, ListSelection.ItemsOf(c), takeFocus);
                 default:
                     return $"cannot set a {live.Kind}";
             }
@@ -296,11 +314,15 @@ static class DialogFill
         catch (Exception ex) { Log.Error("dialog fill (uia)", ex); return new(results, false, ex.Message); }
     }
 
+    /// <summary>What a list view shows now, as text for a message (the items, not the key it is compared by); null for any other field.</summary>
+    internal static string? LiveShown(Win32Scan scan, int index, FieldChange recorded) =>
+        recorded.Kind == ListSelection.Kind ? LiveListSelection(scan.Fields[index]).Shown : null;
+
     /// <summary>Marks the result failed when the live value is not the expected one.</summary>
-    internal static FieldFillResult Verify(FieldChange c, string? current, FieldFillResult applied)
+    internal static FieldFillResult Verify(FieldChange c, string? current, FieldFillResult applied, string? shown = null)
     {
         if (current == null) return FieldFillResult.Fail(c.Label, "the field is gone after setting it");
-        return FillMatcher.Satisfied(c, current) ? applied : FieldFillResult.Fail(c.Label, $"value is \"{current}\" after setting");
+        return FillMatcher.Satisfied(c, current) ? applied : FieldFillResult.Fail(c.Label, $"value is \"{shown ?? current}\" after setting");
     }
 
     static string? ApplyUia(AutomationElement el, DialogField live, FieldChange c)

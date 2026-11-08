@@ -46,6 +46,34 @@ static class Native
     internal static extern IntPtr SendNum(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
     [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
 
+    public const uint SMTO_ABORTIFHUNG = 2, WM_NOTIFY = 0x004E, SendTimeoutMs = 2000;
+
+    /// <summary>A message sent with SendMessageTimeout and SMTO_ABORTIFHUNG, as every read and set of a control that may belong to another thread is: a hung window costs the timeout, never the caller. The result (0 when it timed out).</summary>
+    public static IntPtr SendTimed(IntPtr h, uint msg, IntPtr w, IntPtr l, uint timeoutMs = SendTimeoutMs)
+    {
+        SendNum(h, msg, w, l, SMTO_ABORTIFHUNG, timeoutMs, out var r);
+        return r;
+    }
+
+    /// <summary>WM_NOTIFY from <paramref name="from"/> to <paramref name="to"/> with <paramref name="code"/>, as a control sends it: an NMHDR (window, id, code) in a zeroed buffer of <paramref name="size"/> bytes, followed by
+    /// <paramref name="data"/> (the notification's own fields). <paramref name="after"/> sees the buffer once the message is handled (a reply the receiver wrote into it). Sent with a timeout (<see cref="SendTimed"/>). The one
+    /// helper for the tab control, the other common controls and the tooltip query.</summary>
+    public static IntPtr SendNotify(IntPtr to, IntPtr from, int id, int code, ReadOnlySpan<byte> data = default, int size = 96, Action<IntPtr>? after = null)
+    {
+        size = Math.Max(size, 24 + data.Length);
+        var buf = Marshal.AllocHGlobal(size);
+        try
+        {
+            for (int i = 0; i < size; i++) Marshal.WriteByte(buf, i, 0);
+            Marshal.WriteIntPtr(buf, 0, from); Marshal.WriteIntPtr(buf, 8, (IntPtr)id); Marshal.WriteInt32(buf, 16, code);
+            for (int i = 0; i < data.Length; i++) Marshal.WriteByte(buf, 24 + i, data[i]);
+            var r = SendTimed(to, WM_NOTIFY, (IntPtr)id, buf);
+            after?.Invoke(buf);
+            return r;
+        }
+        finally { Marshal.FreeHGlobal(buf); }
+    }
+
     /// <summary>The window <paramref name="x"/> itself or its ancestor that is a direct child of <paramref name="parent"/>; zero when <paramref name="x"/> is not under it.</summary>
     public static IntPtr AncestorUnder(IntPtr x, IntPtr parent)
     {

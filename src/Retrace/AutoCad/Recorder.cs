@@ -215,7 +215,8 @@ public sealed class Recorder
         // them out of the steps (DrawingOpen.StartupEvents, same tracker), so they name no checkpoint either
         var startupFlag = f.FirstOrDefault(x => x.Item1 == "startup").Item2 as bool?;
         if (_startup.Feed(type, _w?.ElapsedMs ?? 0, startupFlag)) return;
-        _tally.Note(type == "context_menu" && F("palette") != null ? "palette_click" : type, F("origin"), _ctxCmdDepth, _ctxLispDepth, F("path"), F("id"), F("palette"), F("set"));   // before the depth moves; data only: the status board reads it on its timer
+        _tally.Note(type == "context_menu" && F("palette") != null ? "palette_click" : type, F("origin"), _ctxCmdDepth, _ctxLispDepth, F("path"), F("id"), F("palette"), F("set"),
+            _w?.ElapsedMs ?? -1, F("command"), f.FirstOrDefault(x => x.Item1 == "input").Item2 as bool?, f.FirstOrDefault(x => x.Item1 == "script").Item2 as bool?);   // before the depth moves; data only: the status board reads it on its timer
         switch (type)
         {
             case "cmd_start": _ctxCmdDepth++; break;
@@ -554,6 +555,12 @@ public sealed class Recorder
 
     static bool IsOurs(string? cmd) => OwnCommands.IsOwnCommand(cmd);
 
+    /// <summary>CMDACTIVE bit 4 at this moment: AutoCAD says a script (SCRIPT) is active. Written as `script` on cmd_start, lisp_start and cmd_unknown; null (left out) when the variable cannot be read.</summary>
+    internal static bool? ScriptActive()
+    {
+        return Ask.ActiveBits() is { } active ? (active & 4) != 0 : null;
+    }
+
     void OnCmdStart(object? s, CommandEventArgs e) => Log.Safe("CommandWillStart", () =>
     {
         var name = e.GlobalCommandName;
@@ -566,7 +573,7 @@ public sealed class Recorder
         _cmdDocument = s as Document;
         _view = ViewControl.Read(_cmdDocument); _viewKey = _view == null ? null : ViewControl.ViewKey();
         var (origin, via) = Attribute(name);
-        Emit("cmd_start", DocName(s as Document), ("command", name), ("origin", origin), ("via", via));
+        Emit("cmd_start", DocName(s as Document), ("command", name), ("origin", origin), ("via", via), ("script", ScriptActive()));
     });
 
     void OnCmdEnded(object? s, CommandEventArgs e) => Log.Safe("CommandEnded", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _kinds.Clear(); Emit("cmd_end", DocName(s as Document), ("command", e.GlobalCommandName)); TakePendingMark(); } });
@@ -581,13 +588,13 @@ public sealed class Recorder
         System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background,
             () => Log.Safe("pending checkpoint", () => { if (MarkPending) Commands.Instance.MarkFromKey(PendingAt); }));   // two ends in a row queue two calls
     }
-    void OnUnknown(object? s, UnknownCommandEventArgs e) => Log.Safe("UnknownCommand", () => Emit("cmd_unknown", DocName(s as Document), ("command", e.GlobalCommandName)));
+    void OnUnknown(object? s, UnknownCommandEventArgs e) => Log.Safe("UnknownCommand", () => Emit("cmd_unknown", DocName(s as Document), ("command", e.GlobalCommandName), ("script", ScriptActive())));
     // startup: LISP AutoCAD runs while a drawing opens (no click or key since it opened), not the person's (DrawingOpen)
     void OnLispStart(object? s, LispWillStartEventArgs e) => Log.Safe("LispWillStart", () =>
     {
         _sel.LispStart(_ctxCmdDepth > 0 || _ctxLispDepth > 0);   // its own keys come before an ssget; typed inside a prompt (a replay's (handent ..)) it spoils the text
         _cmdDoc = DocName(s as Document);
-        Emit("lisp_start", _cmdDoc, ("firstLine", e.FirstLine), ("startup", _startup.IsStartupLisp(_w?.ElapsedMs ?? 0, _lastInputMs)));
+        Emit("lisp_start", _cmdDoc, ("firstLine", e.FirstLine), ("startup", _startup.IsStartupLisp(_w?.ElapsedMs ?? 0, _lastInputMs)), ("script", ScriptActive()));
     });
     void OnLispEnded(object? s, EventArgs e) => Log.Safe("LispEnded", () => Emit("lisp_end", DocName(s as Document)));
     void OnLispCancelled(object? s, EventArgs e) => Log.Safe("LispCancelled", () => Emit("lisp_cancel", DocName(s as Document)));
@@ -712,6 +719,7 @@ public sealed class Recorder
         {
             var d = new Dictionary<string, object?> { ["key"] = c.Key, ["label"] = c.Label, ["kind"] = c.Kind, ["before"] = c.Before, ["after"] = c.After };
             if (c.Tab.Length > 0) d["tab"] = c.Tab;
+            if (c.Items != null) d["items"] = ListSelection.ToJson(c.Items);
             return d;
         }).ToList();
 
@@ -731,7 +739,7 @@ public sealed class Recorder
     void EmitDialogButton(DialogWatch.Click c) =>
         Emit("dialog_click", CurDoc(), ("for", c.ForN), ("button", c.Button), ("id", c.Id), ("index", c.Index), ("fields", FieldsJson(c.Changes)), ("read", c.Read),
             ("tab", c.Tab.Length > 0 ? c.Tab : null), ("statics", DialogStatics.ToJson(c.Statics)),
-            ("kind", c.Kind == DialogClickKinds.DoubleClick ? c.Kind : null), ("onDown", c.OnDown ? true : null), ("tree", c.Tree.Length > 0 ? c.Tree : null), ("path", c.Path.Length > 0 ? c.Path : null),
+            ("kind", c.Kind != DialogClickKinds.Click ? c.Kind : null), ("onDown", c.OnDown ? true : null), ("tree", c.Tree.Length > 0 ? c.Tree : null), ("path", c.Path.Length > 0 ? c.Path : null),
             ("treeLabel", c.TreeLabel.Length > 0 ? c.TreeLabel : null));
 
     // ---- prompts -----------------------------------------------------------------------------

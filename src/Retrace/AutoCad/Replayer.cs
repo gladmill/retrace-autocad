@@ -77,6 +77,16 @@ sealed class Replayer
     readonly bool _autoFillOn;      // setting autoFillDialogs, read once at the start (interactive only)
     DialogAutoFiller? _fill;        // fills the current dialog; null = not tried / not applicable
     bool _fillTried, _fillAnnounced;
+    // A script-chain click (Step.ChainClick) whose script asked for input a person gave while recording: each dialog of the chain is filled in turn, and where that input was given the replay
+    // stops for a person (ReplayRules.ChainPauseMessage) and goes on when they press Next step. Retrace types none of it: it cannot know which prompt of the script is waiting.
+    readonly HashSet<int> _netSkip = new();   // steps after a chain's dialogs that its script already ran (ReplayRules.LaterScriptCommands)
+    Step? _chainStep;
+    int _chainPausedFor = -1, _chainWaitFor = -1;   // dialog step index (0-based): paused for a person after it, waiting at it
+    bool _chainPausing;
+    DateTime _scriptBusySince = DateTime.MinValue;
+    int _runBits;     // CMDACTIVE script / LISP bits already set when the replay started (a replay run under a script or LISP wrapper): never waited on
+    int _clickBits;   // the same when the last click was sent: only a script or LISP that started after it counts as the click's
+    DateTime _chainWaitSince; bool _chainWaitSaid;
     string? _deferred;   // answers recorded after the dialog opened: typed once the person confirmed it (see Plan.InputAroundDialog)
     // Tdoc run (RETRACETDOC): pictures for the training document; null for every other replay, and then none of the hooks does anything
     TdocCapture? _tdoc;
@@ -182,7 +192,7 @@ sealed class Replayer
         _result.Interactive = _interactive;
         // a test folder keeps its history; only results/latest.json is replaced, when this run ends
         CompareStart(initial);
-        _running = true;
+        _running = true; _runBits = Ask.ScriptOrLispBits();   // set when the replay started: a replay run under a script or LISP wrapper has them for the whole run
         AcApp.EnterModal += OnEnterModal;
         AcApp.LeaveModal += OnLeaveModal;
         Hook(_doc);
@@ -233,7 +243,7 @@ sealed class Replayer
         d.LispCancelled -= OnLispEnd;
     }
 
-    void OnLispStart(object? s, LispWillStartEventArgs e) => _lispRunning++;
+    void OnLispStart(object? s, LispWillStartEventArgs e) { _lispRunning++; if (_clicked is { ChainClick: true }) { _pendingStart = false; _clicked = null; } }   // a LISP started: the click did something (its LISP may run for a while, and runs commands later)
 
     /// <summary>The drawing being replayed in is closing: AutoCAD Electrical closes an untouched new drawing when it opens a project drawing or
     /// switches projects. Unhooked now; the next tick goes on in the active drawing (<see cref="_docGone"/>).</summary>
@@ -415,8 +425,8 @@ sealed class Replayer
     }
 
     // handlers: plain field writes, no AutoCAD calls
-    void OnEnterModal(object? s, EventArgs e) { _modalDepth++; _modalsSeen++; _dialog.ModalEntered(); }
-    void OnLeaveModal(object? s, EventArgs e) { if (_modalDepth > 0) _modalDepth--; _dialog.ModalLeft(_modalDepth); }
+    void OnEnterModal(object? s, EventArgs e) { _modalDepth++; _modalsSeen++; _dialog.ModalEntered(); Log.Info($"replay: modal entered, depth {_modalDepth}"); }
+    void OnLeaveModal(object? s, EventArgs e) { if (_modalDepth > 0) _modalDepth--; _dialog.ModalLeft(_modalDepth); Log.Info($"replay: modal left, depth {_modalDepth}"); }
     void OnCmdEnded(object? s, CommandEventArgs e) { if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) _dialog.CommandEnded(false, DateTime.Now); }
     void OnCmdCancelled(object? s, CommandEventArgs e) { if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) _dialog.CommandEnded(true, DateTime.Now); }
     void OnCmdFailed(object? s, CommandEventArgs e) { if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) _eventError ??= $"command {e.GlobalCommandName} failed"; }
@@ -459,6 +469,14 @@ sealed class Replayer
         if (_pendingStart && (DateTime.Now - _sentAt).TotalSeconds < 2) return false; // wait for the command to actually start
         if (_pendingStart && _clicked is { } clicked) { _clicked = null; if (TypeAfterSilentClick(clicked)) return false; }
         _pendingStart = false;
+        // AutoCAD says a script (bit 4) or AutoLISP (bit 32) is active: a script that waits longer than any gap between its commands is still running, so the next step is not typed in between
+        // (a replay started from a script itself would never end: after 60 s the bits are ignored)
+        if (ReplayRules.NewScriptBits(Ask.ActiveBits(), _runBits) != 0)
+        {
+            if (_scriptBusySince == DateTime.MinValue) _scriptBusySince = DateTime.Now;
+            if ((DateTime.Now - _scriptBusySince).TotalSeconds < 60) return false;
+        }
+        else _scriptBusySince = DateTime.MinValue;
         var inProgress = _doc.CommandInProgress;
         // our own RETRACEREPLAY command has already returned (the timer runs after it), so anything in progress is replayed work
         var quiet = string.IsNullOrEmpty(inProgress) && _doc.Editor.IsQuiescent && _lispRunning == 0;
@@ -493,6 +511,25 @@ sealed class Replayer
         // stop at once with what to do, in both modes, and leave the prompt open for the person to answer.
         if (Native.OpenSecurityPrompt() is { } prompt) { StopAtSecurityPrompt(prompt); return; }
         if (_suite != null && CheckStepTimeout()) return;
+        // interactive: a dialog opened while the next step is not a dialog step (an older recording planned a click's script chain as steps): skip the steps the open dialog's chain ran
+        if (_interactive && !_dialog.Active && _modalDepth > 0 && _i > 0 && _i < _steps.Count && _steps[_i].Kind != "dialog" && _steps[_i - 1].Kind == "ribbon"   // cheap checks first: no Win32 call otherwise
+            && Native.ForegroundOfThisProcess() is var openDlg && openDlg != IntPtr.Zero && openDlg != AcApp.MainWindow.Handle && openDlg != _win.Handle
+            && ReplayRules.DialogAfterChain(_steps, _i, Native.TitleOf(openDlg), Native.ClassOf(openDlg), Native.TitleOf(AcApp.MainWindow.Handle)) is { } dialogAt)
+        {
+            Log.Info($"replay: dialog \"{Native.TitleOf(openDlg)}\" is open while step {_i + 1} is next; steps {_i + 1}-{dialogAt} were run by the click's script chain: skipping to the dialog");
+            _warnings.Add($"steps {_i + 1}-{dialogAt}: the click's LISP and script already ran them (the dialog is open): not typed again");
+            var tail = ReplayRules.LaterScriptCommands(_steps, dialogAt);
+            if (tail.Unsafe != null)
+            {
+                _result.Steps.Add(new StepResult { Index = _i + 1, Kind = _steps[_i].Kind, Title = _steps[_i].Title, Status = "needs-person", Message = tail.Unsafe });
+                Finish(false, false, $"needs a person: {tail.Unsafe}", needsPerson: true);
+                return;
+            }
+            foreach (var later in tail.Skip) _netSkip.Add(later);
+            if (tail.Skip.Count > 0) _warnings.Add($"steps {string.Join(", ", tail.Skip.Select(x => x + 1))}: typed by the click's script after the dialog: not typed again");
+            for (; _i < dialogAt; _i++) _result.Steps.Add(new StepResult { Index = _i + 1, Kind = _steps[_i].Kind, Title = _steps[_i].Title, Message = "run by the click's script chain" });
+            _shown = false;
+        }
         // interactive: the step that opens a dialog was sent; wait for the dialog and the person
         if (_interactive && !_dialog.Active && _i < _steps.Count && _steps[_i].Kind == "dialog") 
         {
@@ -540,7 +577,15 @@ sealed class Replayer
         RestoreView();   // the step is done: the person's view comes back
         if (_i >= _steps.Count) { Finish(true, false, "finished"); return; }
 
+        if (_netSkip.Remove(_i))
+        {
+            // a command the click's script typed after its dialog (the safety net for a recording planned the old way): not typed again
+            _result.Steps.Add(new StepResult { Index = _i + 1, Kind = _steps[_i].Kind, Title = _steps[_i].Title, Message = "run by the click's script chain" });
+            _i++; _shown = false;
+            return;
+        }
         var s = _steps[_i];
+        if (_chainStep != null && s.Kind != "dialog" && !ReferenceEquals(s, _chainStep)) { _chainStep = null; _chainPausedFor = _chainWaitFor = -1; _chainPausing = false; }   // a step that is no part of the chain (a palette step too): the chain is over
         _clock?.Begin(_i + 1, DateTime.Now);   // suite: this step runs from now (it is sent next) until the next one starts
         if (!_shown)
         {
@@ -679,6 +724,34 @@ sealed class Replayer
         }
         // Done: the person confirmed the dialog; now type the answers the command asks for after it (once)
         // (a WinForms dialog's Cancel usually ends its command normally: give it a moment, then type only if the command still runs)
+        // a chain: where the recording has input a person gave (after this dialog opened, until the next one opened), the script the click started asks for it now
+        if (d.Phase == DialogWaitPhase.Done && _chainStep != null && _modalDepth == 0 && _chainPausedFor != _i)
+        {
+            var due = ReplayRules.ChainAnswersAfter(_chainStep.Answers, _steps, _i);
+            if (due.Count == 0) _chainPausedFor = _i;
+            else
+            {
+                var pause = ReplayRules.ChainPauseMessage(_chainStep, due);
+                _chainPausedFor = _i;
+                if (_suite != null)
+                {
+                    _result.Steps.Add(new StepResult { Index = _i + 1, Kind = "dialog", Title = _steps[_i].Title, Status = "needs-person", Message = pause });
+                    Finish(false, false, $"needs a person: {pause}", needsPerson: true);
+                    return;
+                }
+                Say($"\n  {pause}\n");
+                Log.Info("replay: " + pause);
+                _win.Show($"Step {_i + 1}/{_steps.Count}: input needed", pause, true);
+                _userNext = false; _chainPausing = true;
+                return;
+            }
+        }
+        if (_chainPausing)
+        {
+            if (!_userNext) return;
+            _chainPausing = false; _userNext = false;
+            _notBefore = DateTime.Now.AddMilliseconds(400);
+        }
         if (d.Phase == DialogWaitPhase.Done && _deferred != null && _modalDepth == 0)
         {
             if (_doneAt == DateTime.MinValue) { _doneAt = DateTime.Now; return; }
@@ -704,9 +777,17 @@ sealed class Replayer
         // after its DCL dialog). This step is done; the next one starts with its dialog open, so it is filled or waited for as its own step.
         // Waiting here for the command to finish would wait for that dialog, which no step handles.
         // Only when the open dialog is the one recorded next (its title): an unexpected warning keeps the old wait.
-        bool chained = d.Phase == DialogWaitPhase.Done && _modalDepth > 0 && _deferred == null && _i + 1 < _steps.Count && _steps[_i + 1].Kind == "dialog"
-            && Native.ForegroundOfThisProcess() is var open && open != IntPtr.Zero && FillMatcher.TitleMatches(_steps[_i + 1].DialogTitle, Native.TitleOf(open));
-        if (!chained && (_modalDepth > 0 || !Settled())) return;   // Done: wait until the command that owned the dialog has finished (a cancel arrives as an event first)
+        bool chained = d.Phase == DialogWaitPhase.Done && _deferred == null && NextDialogOpen();
+        if (!chained && (_modalDepth > 0 || !Settled())) { NoteChainWait(); return; }   // Done: wait until the command that owned the dialog has finished (a cancel arrives as an event first)
+        // the next dialog opened before the answers recorded after this one could be typed (a person closed this one while the command went on to the next): say so, do not drop them silently
+        string? droppedNote = null;
+        if (chained && _chainStep != null && _chainPausedFor != _i && ReplayRules.ChainAnswersAfter(_chainStep.Answers, _steps, _i).Count > 0)
+        {
+            droppedNote = $"input a person gave after \"{_steps[_i].DialogTitle}\" were not typed: \"{_steps[_i + 1].DialogTitle}\" opened first";
+            Say($"\n  WARNING: {droppedNote}\n");
+            Log.Info("replay: " + droppedNote);
+            _warnings.Add($"step {_i + 1}: {droppedNote}");
+        }
         var failed = d.Phase == DialogWaitPhase.Failed;
         var auto = !failed && _fill?.Completed == true;   // the replay filled it and closed it: nobody waited
         var first = true;
@@ -714,7 +795,7 @@ sealed class Replayer
         {
             _result.Steps.Add(new StepResult
             {
-                Index = _i + 1, Kind = "dialog", Title = _steps[_i].Title, Status = failed ? "failed" : "ok", WaitedForPerson = d.PersonWaited && !auto, Message = failed ? d.FailReason : null,
+                Index = _i + 1, Kind = "dialog", Title = _steps[_i].Title, Status = failed ? "failed" : "ok", WaitedForPerson = d.PersonWaited && !auto, Message = failed ? d.FailReason : first ? droppedNote : null,
                 AutoFilled = first && auto,
                 Fields = first && _fill is { Mode: AutoMode.Ok } && _fill.Results.Count > 0 ? _fill.Results : null,
                 Segments = first && _fill is { UsedUia: false } && (_fill.Completed || _fill.State == DialogAutoFiller.Phase.GaveUp) ? _fill.SegmentResults(personFinished: !failed && !auto) : null,   // a person finished what the replay gave up on: those segments are "person"
@@ -722,11 +803,20 @@ sealed class Replayer
             first = false;
             _i++;
         }
+        if (_chainStep != null && !IsDialogStep(_i)) { _chainStep = null; _chainPausedFor = _chainWaitFor = -1; _chainPausing = false; }   // the chain's last dialog is done
         if (failed) Say($"\nDialog step failed: {d.FailReason}. Continuing with the next steps.\n");
         d.Reset(); _doneAt = DateTime.MinValue;
         _fill?.Cancel(); _fill = null; _fillTried = false; _fillAnnounced = false;
         _announced = false; _cancelSent = false; _shown = false;
         _notBefore = DateTime.Now.AddMilliseconds(chained ? 0 : 400);
+    }
+
+    /// <summary>The next recorded step is a dialog and it is the modal in front now (<see cref="DialogChain.IsNext"/>; AutoCAD's own window and the replay window are no dialog).</summary>
+    bool NextDialogOpen()
+    {
+        if (_modalDepth <= 0 || _i + 1 >= _steps.Count) return false;
+        var open = Native.ForegroundOfThisProcess();
+        return open != IntPtr.Zero && open != AcApp.MainWindow.Handle && open != _win.Handle && DialogChain.IsNext(_modalDepth, _steps[_i + 1], Native.TitleOf(open));
     }
 
     /// <summary>"A dialog opens: X. Fill it in and confirm (see s.md, step N), then close it with OK." Step N is read from the script the engine wrote.</summary>
@@ -800,7 +890,7 @@ sealed class Replayer
             // a right-click in a native palette: its menu is not replayed, the command picked from it is typed (the item is selected now)
             if (s.Native is { Action: "rclick" } && s.Command != null)
             {
-                var typed = Plan.InputText(new Step { Kind = "command", Command = s.Command, Answers = s.Answers }, handleExists: HandleExists);
+                var typed = Plan.InputText(new Step { Kind = "command", Command = s.Command }.WithAnswers(s.Answers), handleExists: HandleExists);
                 if (!string.IsNullOrEmpty(typed)) { NoteSent(s.Command); _doc.SendStringToExecute(typed, true, false, true); _pendingStart = true; _sentAt = now; }
                 NextPaletteStep();
                 return;
@@ -1065,7 +1155,7 @@ sealed class Replayer
     /// <summary>Starts a command step; false when the run ended in it (a step Retrace cannot type: a person must do it).</summary>
     bool RunStep(Step s)
     {
-        if (Plan.Problem(s) is { } problem)
+        if (Plan.Problem(s.ChainClick ? s.WithAnswers(s.Answers.Where(a => a.T < s.ChainFromT)) : s) is { } problem)   // a chain click types only what came before its script
         {
             // typing it would put text where it does not belong; an unattended run must not end as PASS without it
             Say($"\n  WARNING: {problem}\n");
@@ -1075,11 +1165,23 @@ sealed class Replayer
             return false;
         }
         _clicked = null;
+        // a script-chain click with a person's answers: the same per-dialog delivery whether the live button is clicked or its macro / LISP is typed (below)
+        _chainStep = s.ChainClick && _interactive && s.ChainAnswers.Any() && _i + 1 < _steps.Count && _steps[_i + 1].Kind == "dialog" ? s : null;
+        _chainPausedFor = _chainWaitFor = -1; _chainPausing = false;
+        // RETRACEREPLAY (Step / Auto) has no person confirming dialogs, so answers given after a chain's dialog cannot be typed: stop before the click and name them (as it does for a dialog step)
+        if (!_interactive && ReplayRules.ChainAnswersNeedPerson(s) is { } lost)
+        {
+            Say($"\n  WARNING: {lost}\n");
+            _deferred = null;
+            _result.Steps.Add(new StepResult { Index = _i + 1, Kind = s.Kind, Title = s.Title, Status = "needs-person", Message = lost });
+            Finish(false, false, $"needs a person: {lost}", needsPerson: true);
+            return false;
+        }
         NoteSent(s.Command);   // before the click: the command it starts may be reported as unknown at once
-        if (s.Kind == "ribbon" && s.Answers.Count == 0 && !s.HadDialog)
+        if (s.Kind == "ribbon" && (s.ChainClick || (s.Answers.Count == 0 && !s.HadDialog)))
         {
             // armed before the handler runs: a command it starts at once clears this in OnCmdStart and is neither waited for nor typed again
-            _clicked = s; _clickedIndex = _i + 1; _pendingStart = true; _sentAt = DateTime.Now; _deferred = null;
+            _clickBits = Ask.ScriptOrLispBits(); _clicked = s; _clickedIndex = _i + 1; _pendingStart = true; _sentAt = DateTime.Now; _deferred = null;
             if (TryClick(s)) return true;
             _clicked = null; _pendingStart = false;
         }
@@ -1087,12 +1189,40 @@ sealed class Replayer
         var dialog = _interactive && _i + 1 < _steps.Count && _steps[_i + 1].Kind == "dialog" ? _steps[_i + 1] : null;
         string? text;
         // the view the points were made in is shown before they are typed and put back after the step; without it the step uses handles
-        if (dialog != null) (text, _deferred) = WithPick(pick => Plan.InputAroundDialog(s, dialog.T, HandleExists, pick), r => !string.IsNullOrEmpty(r.First));
+        if (dialog != null)
+        {
+            (text, _deferred) = WithPick(pick => Plan.InputAroundDialog(s, dialog.T, HandleExists, pick), r => !string.IsNullOrEmpty(r.First));
+            if (_chainStep != null) _deferred = null;   // a chain's input is a person's (_chainStep), not typed
+        }
         else { text = WithPick(pick => Plan.InputText(s, handleExists: HandleExists, pick: pick), r => !string.IsNullOrEmpty(r)); _deferred = null; }
         if (string.IsNullOrEmpty(text)) { Say("\n  (nothing replayable in this step)\n"); return true; }
         Type(s, text);
         return true;
     }
+
+    /// <summary>A chain click's script is still running and nothing happens (it has not opened the next dialog, or waits for an answer): after 10 s of this, say so instead of sitting silent.</summary>
+    void NoteChainWait()
+    {
+        if (_chainStep == null || !IsDialogStep(_i)) return;
+        if (_chainWaitFor != _i) { _chainWaitFor = _i; _chainWaitSince = DateTime.Now; _chainWaitSaid = false; }
+        if (_chainWaitSaid || (DateTime.Now - _chainWaitSince).TotalSeconds < 10) return;
+        _chainWaitSaid = true;
+        var why = "it has not opened the next dialog, or is waiting for an answer";
+        if (_modalDepth > 0)
+        {
+            var open = Native.ForegroundOfThisProcess();
+            var openTitle = open != IntPtr.Zero ? Native.TitleOf(open) : "";
+            var expected = _i + 1 < _steps.Count && _steps[_i + 1].Kind == "dialog" ? _steps[_i + 1].DialogTitle : null;
+            why = expected != null ? $"a window '{openTitle}' is open, expected '{expected}'" : $"a window '{openTitle}' is open";
+        }
+        var msg = $"paused: the click's script is still running and nothing has happened for 10 s ({why}). Open the next dialog or answer by hand; the replay goes on after it.";
+        Say("\n  " + msg + "\n");
+        Log.Info("replay: " + msg);
+        _warnings.Add($"step {_i + 1}: {msg}");
+        _win.Show($"Step {_i + 1}/{_steps.Count}: paused", msg, false);
+    }
+
+    bool IsDialogStep(int i) => i >= 0 && i < _steps.Count && _steps[i].Kind == "dialog";
 
     /// <summary>Types a step's text. SendStringToExecute: queued, runs as typed input when AutoCAD is next quiescent; "\n" is Enter.</summary>
     void Type(Step s, string text)
@@ -1140,19 +1270,25 @@ sealed class Replayer
     bool TypeAfterSilentClick(Step s)
     {
         if (_modalsSeen > _modalsAtStepStart) { Log.Info($"replay click: {s.ItemId} started no command within 2 s but opened a dialog; nothing typed"); return false; }
-        if (s.Command == null) { Log.Info($"replay click: {s.ItemId} started no command within 2 s; its recording has none either, nothing typed"); return false; }
-        var text = Plan.InputText(s, handleExists: HandleExists);
+        // its LISP is still running (it runs commands later), or AutoCAD says AutoLISP / a script is active: something started
+        // a chain click's LISP and script run for a while: while one that started after the click is active, nothing is typed (another click does not wait: nothing it started can be told from what ran before)
+        if (s.ChainClick && (_lispRunning > 0 || ReplayRules.NewScriptBits(Ask.ActiveBits(), _clickBits) != 0)) { Log.Info($"replay click: {s.ItemId} started no command within 2 s but its LISP or script is running; nothing typed"); return false; }
+        // a chain click has no command of its own: it types its macro, else (blank macro) its LISP form
+        var formName = !s.ChainClick ? "macro" : !string.IsNullOrWhiteSpace(s.Macro) ? "macro" : !string.IsNullOrWhiteSpace(s.Lisp) ? "LISP form" : null;
+        if (s.Command == null && !(s.ChainClick && formName != null)) { Log.Info($"replay click: {s.ItemId} started no command within 2 s; its recording has none either, nothing typed"); return false; }
+        // a chain click: its macro, else its LISP form (the old separate lisp step); the person's answers wait for the dialogs (_chainStep)
+        var text = Plan.InputText(s.ChainClick ? s.WithAnswers(Array.Empty<Answer>()) : s, handleExists: HandleExists);
         var row = _result.Steps.LastOrDefault(x => x.Index == _clickedIndex);
         if (string.IsNullOrEmpty(text))
         {
-            var none = $"the click started no command within 2 s ({s.Command} when recorded), and the step has nothing to type instead";
+            var none = $"the click started no command within 2 s ({s.Command ?? "no command"} when recorded), and the step has nothing to type instead (no macro or LISP form)";
             Say($"\n  WARNING: {none}\n");
             Log.Info($"replay click: {s.ItemId}: {none}");
             _warnings.Add($"step {_clickedIndex}: {none}");
             if (row != null) row.Message = none;
             return false;
         }
-        var typed = $"the click started no command within 2 s ({s.Command} when recorded); its macro was typed instead";
+        var typed = $"the click started no command within 2 s ({s.Command ?? "no command"} when recorded); its {formName ?? "macro"} was typed instead";
         Say($"\n  {typed}\n");
         Log.Info($"replay click: {s.ItemId}: {typed}: '{text.Replace("\u0003", "^C").Replace("\u001b", "^C").Replace("\n", ";")}'");
         _warnings.Add($"step {_clickedIndex}: {typed}");
