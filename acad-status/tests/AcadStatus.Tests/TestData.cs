@@ -15,7 +15,7 @@ static class TestData
     /// <summary>A valid status file as JSON text; <paramref name="extra"/> is inserted before the closing brace (start it with a comma).</summary>
     public static string Json(string source = "retrace", int pid = 4812, DateTime? updated = null, int ttl = 15, string state = "running",
         string summary = "Suite 3/7", string? @short = null, string? since = null, string? owner = null, string? extra = null, int v = 1,
-        string writer = "Retrace 0.6.3", DateTime? pidStart = null)
+        string writer = "Retrace 0.6.4", DateTime? pidStart = null)
     {
         var parts = new List<string>
         {

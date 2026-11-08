@@ -86,7 +86,12 @@ sealed class Replayer
     DialogAutoFiller? _fill;        // fills the current dialog; null = not tried / not applicable
     bool _fillTried, _fillAnnounced;
     // A script-chain click (Step.ChainClick) whose script asked for input a person gave while recording: each dialog of the chain is filled in turn, and where that input was given the replay
-    // stops for a person (ReplayRules.ChainPauseMessage) and goes on when they press Next step. Retrace types none of it: it cannot know which prompt of the script is waiting.
+    // types it (ChainDelivery): in order, each answer when the command waits at a prompt of the same kind and message (PromptWatch, fed by the editor's Prompting / Prompted events).
+    // What cannot be typed safely, or a prompt that does not come within 20 s, stops for a person (ReplayRules.ChainPauseMessage): they give it and press Next step.
+    readonly PromptWatch _watch = new();
+    readonly List<Action> _promptUnhook = new();
+    DateTime _modalEnteredAt = DateTime.MinValue;   // when a modal dialog was entered last: what the command asked before is not what its answers wait for
+    ChainDelivery? _delivery; int _deliveryFor = -1; DateTime _deliveryNoted = DateTime.MinValue;
     readonly HashSet<int> _netSkip = new();   // steps after a chain's dialogs that its script already ran (ReplayRules.LaterScriptCommands)
     Step? _chainStep;
     int _chainPausedFor = -1, _chainWaitFor = -1;   // dialog step index (0-based): paused for a person after it, waiting at it
@@ -251,6 +256,23 @@ sealed class Replayer
         d.LispWillStart += OnLispStart;
         d.LispEnded += OnLispEnd;
         d.LispCancelled += OnLispEnd;
+        HookPrompts(d.Editor);
+    }
+
+    /// <summary>Tells <see cref="_watch"/> which prompt the command asked for last: the kind and message of every Prompting event. (Only the message: reading more of the options made AutoCAD reject picks.
+    /// No Prompted event: a jig raises one for its first sample at once and then waits, so a result does not say that the prompt is answered.)</summary>
+    void HookPrompts(Autodesk.AutoCAD.EditorInput.Editor ed)
+    {
+        foreach (var u in _promptUnhook) { try { u(); } catch { } }
+        _promptUnhook.Clear();
+        Autodesk.AutoCAD.EditorInput.PromptPointOptionsEventHandler pt = (s, e) => _watch.Prompting("point", e.Options?.Message, DateTime.Now); ed.PromptingForPoint += pt; _promptUnhook.Add(() => ed.PromptingForPoint -= pt);
+        Autodesk.AutoCAD.EditorInput.PromptPointOptionsEventHandler co = (s, e) => _watch.Prompting("corner", e.Options?.Message, DateTime.Now); ed.PromptingForCorner += co; _promptUnhook.Add(() => ed.PromptingForCorner -= co);
+        Autodesk.AutoCAD.EditorInput.PromptDistanceOptionsEventHandler di = (s, e) => _watch.Prompting("distance", e.Options?.Message, DateTime.Now); ed.PromptingForDistance += di; _promptUnhook.Add(() => ed.PromptingForDistance -= di);
+        Autodesk.AutoCAD.EditorInput.PromptAngleOptionsEventHandler an = (s, e) => _watch.Prompting("angle", e.Options?.Message, DateTime.Now); ed.PromptingForAngle += an; _promptUnhook.Add(() => ed.PromptingForAngle -= an);
+        Autodesk.AutoCAD.EditorInput.PromptDoubleOptionsEventHandler db = (s, e) => _watch.Prompting("double", e.Options?.Message, DateTime.Now); ed.PromptingForDouble += db; _promptUnhook.Add(() => ed.PromptingForDouble -= db);
+        Autodesk.AutoCAD.EditorInput.PromptIntegerOptionsEventHandler it = (s, e) => _watch.Prompting("integer", e.Options?.Message, DateTime.Now); ed.PromptingForInteger += it; _promptUnhook.Add(() => ed.PromptingForInteger -= it);
+        Autodesk.AutoCAD.EditorInput.PromptStringOptionsEventHandler st = (s, e) => _watch.Prompting("string", e.Options?.Message, DateTime.Now); ed.PromptingForString += st; _promptUnhook.Add(() => ed.PromptingForString -= st);
+        Autodesk.AutoCAD.EditorInput.PromptKeywordOptionsEventHandler kw = (s, e) => _watch.Prompting("keyword", e.Options?.Message, DateTime.Now); ed.PromptingForKeyword += kw; _promptUnhook.Add(() => ed.PromptingForKeyword -= kw);
     }
 
     void Unhook(Document d)
@@ -264,6 +286,8 @@ sealed class Replayer
         d.LispWillStart -= OnLispStart;
         d.LispEnded -= OnLispEnd;
         d.LispCancelled -= OnLispEnd;
+        foreach (var u in _promptUnhook) { try { u(); } catch { } }
+        _promptUnhook.Clear();
     }
 
     void OnLispStart(object? s, LispWillStartEventArgs e) { _lispRunning++; if (_clicked is { ChainClick: true }) { _pendingStart = false; _clicked = null; } }   // a LISP started: the click did something (its LISP may run for a while, and runs commands later)
@@ -535,7 +559,7 @@ sealed class Replayer
     }
 
     // handlers: plain field writes, no AutoCAD calls
-    void OnEnterModal(object? s, EventArgs e) { _modalDepth++; _modalsSeen++; _dialog.ModalEntered(); Log.Info($"replay: modal entered, depth {_modalDepth}"); }
+    void OnEnterModal(object? s, EventArgs e) { _modalDepth++; _modalEnteredAt = DateTime.Now; _modalsSeen++; _dialog.ModalEntered(); Log.Info($"replay: modal entered, depth {_modalDepth}"); }
     void OnLeaveModal(object? s, EventArgs e) { if (_modalDepth > 0) _modalDepth--; _dialog.ModalLeft(_modalDepth); Log.Info($"replay: modal left, depth {_modalDepth}"); }
     void OnCmdEnded(object? s, CommandEventArgs e) { if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) _dialog.CommandEnded(false, DateTime.Now); }
     void OnCmdCancelled(object? s, CommandEventArgs e) { if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) _dialog.CommandEnded(true, DateTime.Now); }
@@ -708,7 +732,7 @@ sealed class Replayer
             return;
         }
         var s = _steps[_i];
-        if (_chainStep != null && s.Kind != "dialog" && !ReferenceEquals(s, _chainStep)) { _chainStep = null; _chainPausedFor = _chainWaitFor = -1; _chainPausing = false; }   // a step that is no part of the chain (a palette step too): the chain is over
+        if (_chainStep != null && s.Kind != "dialog" && !ReferenceEquals(s, _chainStep)) { _chainStep = null; _chainPausedFor = _chainWaitFor = -1; _chainPausing = false; _delivery = null; _deliveryFor = -1; }   // a step that is no part of the chain (a palette step too): the chain is over
         _clock?.Begin(_i + 1, DateTime.Now);   // suite: this step runs from now (it is sent next) until the next one starts
         if (!_shown)
         {
@@ -848,19 +872,54 @@ sealed class Replayer
         if (d.Phase == DialogWaitPhase.Done && _chainStep != null && _modalDepth == 0 && _chainPausedFor != _i)
         {
             var due = ReplayRules.ChainAnswersAfter(_chainStep.Answers, _steps, _i);
-            if (due.Count == 0) _chainPausedFor = _i;
-            else
+            if (_deliveryFor != _i)
             {
-                var pause = ReplayRules.ChainPauseMessage(_chainStep, due);
+                // the first look after this dialog: type what the command asks for next, or say why it cannot be typed
+                _deliveryFor = _i; _delivery = null;
+                if (due.Count > 0)
+                {
+                    if (ChainDelivery.Unsafe(due) is { } unsafeWhy) Log.Info("replay: the chain's answers are not typed: " + unsafeWhy);
+                    else _delivery = new ChainDelivery(due, DateTime.Now, _modalEnteredAt);
+                }
+            }
+            string? pauseMessage = null;
+            if (_delivery != null)
+            {
+                var tick = _delivery.Tick(DateTime.Now, _watch, !string.IsNullOrEmpty(_doc.CommandInProgress));
+                switch (tick.Kind)
+                {
+                    case DeliveryKind.Type:
+                        Log.Info($"replay: the script's command waits at \"{tick.Answer!.Message}\" ({tick.Answer.Kind}): typing {ReplayRules.AnswerText(tick.Answer)}");
+                        Say($"\n  typing {ReplayRules.AnswerText(tick.Answer)}\n");
+                        SendTracked(tick.Text!);
+                        _win.Show($"Step {_i + 1}/{_steps.Count}: typing the script's input", ReplayRules.AnswerText(tick.Answer), false);
+                        return;
+                    case DeliveryKind.Wait:
+                        if ((DateTime.Now - _deliveryNoted).TotalSeconds >= 4) { _deliveryNoted = DateTime.Now; Log.Info($"replay: waiting to type {ReplayRules.AnswerText(tick.Answer!)}; the newest prompt is {(_watch.Last is { } lp ? $"{lp.Kind} \"{lp.Message}\"" : "none")}, command in progress: \"{_doc.CommandInProgress}\""); }
+                        _win.Show($"Step {_i + 1}/{_steps.Count}: waiting for the script's prompt", $"the command should ask for {ReplayRules.AnswerText(tick.Answer!)} (waits up to {(int)ChainDelivery.WaitSeconds} s).", false);
+                        return;
+                    case DeliveryKind.Done:
+                        _delivery = null; _chainPausedFor = _i; _notBefore = DateTime.Now.AddMilliseconds(400);
+                        break;
+                    case DeliveryKind.TimedOut:
+                        pauseMessage = _delivery.TimedOutMessage(_chainStep);
+                        _delivery = null;
+                        break;
+                }
+            }
+            else if (due.Count > 0) pauseMessage = ReplayRules.ChainPauseMessage(_chainStep, due);
+            if (due.Count == 0) _chainPausedFor = _i;
+            else if (pauseMessage != null)
+            {
                 _chainPausedFor = _i;
                 if (_suite != null)
                 {
-                    StopForPerson("dialog", _steps[_i].Title, pause);
+                    StopForPerson("dialog", _steps[_i].Title, pauseMessage);
                     return;
                 }
-                Say($"\n  {pause}\n");
-                Log.Info("replay: " + pause);
-                _win.Show($"Step {_i + 1}/{_steps.Count}: input needed", pause, true);
+                Say($"\n  {pauseMessage}\n");
+                Log.Info("replay: " + pauseMessage);
+                _win.Show($"Step {_i + 1}/{_steps.Count}: input needed", pauseMessage, true);
                 _userNext = false; _chainPausing = true;
                 return;
             }
@@ -922,7 +981,7 @@ sealed class Replayer
             first = false;
             _i++;
         }
-        if (_chainStep != null && !IsDialogStep(_i)) { _chainStep = null; _chainPausedFor = _chainWaitFor = -1; _chainPausing = false; }   // the chain's last dialog is done
+        if (_chainStep != null && !IsDialogStep(_i)) { _chainStep = null; _chainPausedFor = _chainWaitFor = -1; _chainPausing = false; _delivery = null; _deliveryFor = -1; }   // the chain's last dialog is done
         if (failed) Say($"\nDialog step failed: {d.FailReason}. Continuing with the next steps.\n");
         d.Reset(); _doneAt = DateTime.MinValue;
         _fill?.Cancel(); _fill = null; _fillTried = false; _fillAnnounced = false;
@@ -1324,7 +1383,7 @@ sealed class Replayer
         _clicked = null;
         // a script-chain click with a person's answers: the same per-dialog delivery whether the live button is clicked or its macro / LISP is typed (below)
         _chainStep = s.ChainClick && _interactive && s.ChainAnswers.Any() && _i + 1 < _steps.Count && _steps[_i + 1].Kind == "dialog" ? s : null;
-        _chainPausedFor = _chainWaitFor = -1; _chainPausing = false;
+        _chainPausedFor = _chainWaitFor = -1; _chainPausing = false; _delivery = null; _deliveryFor = -1;
         // RETRACEREPLAY (Step / Auto) has no person confirming dialogs, so answers given after a chain's dialog cannot be typed: stop before the click and name them (as it does for a dialog step)
         if (!_interactive && ReplayRules.ChainAnswersNeedPerson(s) is { } lost)
         {

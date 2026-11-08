@@ -96,8 +96,8 @@ public static class ReplayRules
     /// <summary>When the dialog step after step <paramref name="i"/> opened, <c>long.MaxValue</c> when step i + 1 is no dialog step.</summary>
     public static long NextDialogT(IReadOnlyList<Step> steps, int i) => i + 1 < steps.Count && steps[i + 1].Kind == "dialog" ? steps[i + 1].T : long.MaxValue;
 
-    /// <summary>What the replay says when it reaches the point of a chain where a person gave input while recording: the script the click started asks for it, and Retrace does not type it (it would
-    /// have to know which prompt the script is at). The person gives it, then continues.</summary>
+    /// <summary>What the replay says when it reaches the point of a chain where a person gave input while recording and Retrace cannot type it (<see cref="ChainDelivery.Unsafe"/>: an object pick, Esc, text with a space)
+    /// or the prompt for it did not come in time (<see cref="ChainDelivery.TimedOutMessage"/>): the script the click started asks for it. The person gives it, then continues.</summary>
     public static string ChainPauseMessage(Step s, IReadOnlyList<Answer> due) =>
         $"the script \"{ButtonName(s)}\" started asks for input a person gave while recording ({AnswerText(due[0])}" + (due.Count > 1 ? $", and {due.Count - 1} more" : "") + "); give it, then press Next step";
 

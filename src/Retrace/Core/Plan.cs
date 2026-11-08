@@ -202,7 +202,7 @@ public static class Plan
     static bool IsNeutral(JsonElement e)
     {
         var ty = Str(e, "type");
-        if (ty is "shot" or "view_stale" or "state" or "mark" or "doc_active" or "modal_enter" or "modal_title" or "modal_leave" or "modal_alias" or "dialog_values" or "dialog_click") return true;
+        if (ty is "shot" or "view_stale" or "state" or "mark" or "doc_active" or "modal_enter" or "modal_title" or "modal_leave" or "modal_alias" or "dialog_values" or "dialog_click" or DragRuns.DroppedType) return true;
         return ty == "context_menu" && e.TryGetProperty("for", out var f) && f.ValueKind == JsonValueKind.Number;
     }
 
@@ -385,7 +385,7 @@ public static class Plan
         var modalInfo = new Dictionary<Step, (Step? Owner, bool HadBefore)>();
         var modalByN = new Dictionary<long, Step>();   // event n of modal_enter / modal_title -> its dialog step
         var nativeByN = new Dictionary<long, Step>();  // event n of native_select -> its step (a native_value names the entry later)
-        var list = events as IReadOnlyCollection<JsonElement> ?? events.ToList();
+        var list = DragRuns.Collapse(events as IReadOnlyList<JsonElement> ?? events.ToList());   // a drag (jig) is one answer, not one per sample
         // `view_stale` events: the recorder found that the view of a pick or click had changed since it was read; the answer of that event keeps no `view` (handles)
         var staleViews = new HashSet<long>();
         foreach (var x in list)

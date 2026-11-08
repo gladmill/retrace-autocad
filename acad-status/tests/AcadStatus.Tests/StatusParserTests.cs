@@ -13,7 +13,7 @@ public class StatusParserTests
         Assert.True(r.Ok);
         var e = r.Entry!;
         Assert.Equal("retrace", e.Source);
-        Assert.Equal("Retrace 0.6.3", e.Writer);
+        Assert.Equal("Retrace 0.6.4", e.Writer);
         Assert.Equal(4812, e.Pid);
         Assert.Equal(15, e.TtlSec);
         Assert.Equal("running", e.State);
