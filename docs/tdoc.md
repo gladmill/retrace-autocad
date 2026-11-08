@@ -64,6 +64,7 @@ While a Tdoc run is active, Retrace writes `Tdoc i/n` and the current test and s
 - A ribbon button in a panel slide-out or on a tab that cannot be shown has no box (a collapsed panel gets the box, see above).
 - A palette that is auto-hidden is pictured as part of AutoCAD's window, without boxes. A palette step is pictured before it runs, so the values it sets are not on the picture.
 - Each test leaves its new drawing open, as Run test does. Retrace > Tools > Close all drawings closes them.
+- With `SDI` = 1 each test opens a copy of the template in place of the drawing that is open (see [suite.md](suite.md#with-sdi--1-single-document-interface)); a test does not start over a drawing with unsaved changes. Only the last test's drawing is left open.
 - Pictures are scaled down to at most 1400 pixels on the long side.
 - A recorded answer AutoCAD reported as an error (Enter at an empty selection: `status` Error) is not typed again; the replay waits at that prompt for a person, as in Run test.
 - Tested on AutoCAD 2026 in a VM (October 2026): a LISP command with a DCL dialog and its alert, a ribbon button, typed prompts and checkpoints, with AutoCAD covered by another window; the document opened with two tests. Not tested: palettes, WPF dialogs, more than one monitor, display scaling above 100 %.

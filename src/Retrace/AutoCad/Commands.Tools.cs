@@ -22,6 +22,8 @@ public sealed partial class Commands
         public required string Path;
         public required DrawingDigest? Initial;
         public DateTime Created = DateTime.UtcNow;
+        public bool Single;            // the document mode this test was started in (read once)
+        public string? ExpectedPath;   // SDI: the copy RETRACERUN opened (null: the drawing was added, SDI is off)
         public TdocCapture? Tdoc;   // set by a Tdoc run (RETRACETDOC) for the test it sent here
         public SuiteHook? Suite;    // set by a suite run (RETRACESUITE) for the test it sent here
     }
@@ -85,9 +87,12 @@ public sealed partial class Commands
 
             // this command runs with CommandFlags.Session, which is what allows adding and activating a document
             var dm = AcApp.DocumentManager;
-            var doc = dm.Add(FindTemplate());
+            // the document mode, read once for this run (a suite or Tdoc run that started this test reads it once for all of them)
+            var single = SuiteRun.Current?.Single ?? TdocRun.Current?.Single ?? SdiDocs.IsSingleNow();
+            var (doc, copyPath) = NewTestDocument(ed, single);
+            if (doc == null) return;
             dm.MdiActiveDocument = doc;
-            _pending = new PendingTest { Doc = doc, Steps = steps, Path = path, Initial = initial, Tdoc = TdocRun.CaptureFor(path, steps), Suite = SuiteRun.HookFor(path) };
+            _pending = new PendingTest { Doc = doc, Steps = steps, Path = path, Initial = initial, Tdoc = TdocRun.CaptureFor(path, steps), Suite = SuiteRun.HookFor(path), ExpectedPath = copyPath, Single = single };
             if (!_testIdleHooked) { AcApp.Idle += OnTestIdle; _testIdleHooked = true; }
             // the new drawing is active now: the old one's editor rejects messages (eNotApplicable)
             doc.Editor.WriteMessage($"\nRETRACERUN: new drawing opened; the test starts when it is ready ({steps.Count} steps, Auto).\n");
@@ -100,10 +105,49 @@ public sealed partial class Commands
         }
     }
 
+    /// <summary>The drawing a test replays into. Normally a new drawing beside the others (<c>DocumentCollection.Add</c>). With the single document interface
+    /// (SDI = 1) <c>Add</c> is not available ("Method not available in SDI mode") and opening a drawing replaces the one that is open: then a copy of the
+    /// template is opened instead, after checking that nothing with unsaved changes would be replaced (<see cref="SdiGuard"/>). Null when the test must not
+    /// start; the reason is printed and given to a waiting suite or Tdoc run.</summary>
+    internal static (Document? Doc, string? CopyPath) NewTestDocument(Editor ed, bool single)
+    {
+        var dm = AcApp.DocumentManager;
+        if (!single) return (dm.Add(FindTemplate()), null);
+        if (SdiDocs.PrepareForOpen(true) is { } refusal)
+        {
+            ed.WriteMessage("\n" + refusal + "\n");
+            TestQueue.StartFailed(refusal);
+            return (null, null);
+        }
+        var copy = SdiDocs.NewTemplateCopy();   // a template is a drawing file: its copy opens as a plain drawing
+        Log.Info($"RETRACERUN: SDI is on: opening a copy of the template ({copy}) instead of adding a drawing");
+        return (SdiDocs.Open(copy, true), copy);
+    }
+
+    /// <summary>The system variable SDI (0 = several drawings, 1 = one, 2 = one because an application needs it); 0 when it cannot be read.</summary>
+    internal static int SdiValue()
+    {
+        try { return Convert.ToInt32(AcApp.GetSystemVariable("SDI")); }
+        catch (Exception) { return 0; }
+    }
+
+    static string _lastTemplate = "";
+
     internal static string FindTemplate()
     {
-        try { return HostApplicationServices.Current.FindFile("acad.dwt", HostApplicationServices.WorkingDatabase, FindFileHint.Default); }
-        catch (Exception) { return ""; }
+        try { var f = HostApplicationServices.Current.FindFile("acad.dwt", HostApplicationServices.WorkingDatabase, FindFileHint.Default); if (!string.IsNullOrEmpty(f)) return _lastTemplate = f; }
+        catch (Exception) { /* the next ways */ }
+        if (!SdiDocs.IsSingleNow()) return "";   // SDI = 0: as before; the ways below are for SDI, which needs a file to open (a template found there is not the one Add("") would use)
+        if (_lastTemplate.Length > 0 && File.Exists(_lastTemplate)) return _lastTemplate;
+        // FindFile found nothing (seen with the drawing a test opened itself under SDI): the Template folder of the user's local profile
+        try
+        {
+            var local = Convert.ToString(AcApp.GetSystemVariable("LOCALROOTPREFIX")) ?? "";
+            var f = local.Length == 0 ? "" : Path.Combine(local, "Template", "acad.dwt");
+            if (f.Length > 0 && File.Exists(f)) return _lastTemplate = f;
+        }
+        catch (Exception) { }
+        return "";
     }
 
     /// <summary>Starts the replay once the new document is the active one and AutoCAD is quiet (idle callback: reading the drawing is allowed here).</summary>
@@ -116,18 +160,30 @@ public sealed partial class Commands
             if (DateTime.UtcNow - p.Created > TimeSpan.FromSeconds(60))
             {
                 AcApp.Idle -= OnTestIdle; _testIdleHooked = false; _pending = null;
+                SdiDocs.AbandonCopy(p.ExpectedPath, p.Tdoc != null || p.Suite != null);
                 Print("RETRACERUN: the new drawing did not become active within 60 s; test not started.");
                 if (p.Tdoc != null || p.Suite != null) TestQueue.StartFailed("the new drawing did not become active within 60 s");
                 return;
             }
             var doc = AcApp.DocumentManager.MdiActiveDocument;
             if (doc == null || !ReferenceEquals(doc, p.Doc) || !string.IsNullOrEmpty(doc.CommandInProgress) || !doc.Editor.IsQuiescent) return;
+            if (p.ExpectedPath != null && !SdiGuard.Own.SamePath(doc.Name, p.ExpectedPath))
+            {
+                // the drawing that is open is not the copy that was opened: the test must not run in it
+                AcApp.Idle -= OnTestIdle; _testIdleHooked = false; _pending = null;
+                SdiDocs.AbandonCopy(p.ExpectedPath, p.Tdoc != null || p.Suite != null);
+                var wrong = $"ERROR: the test drawing is not the one open: expected {Path.GetFileName(p.ExpectedPath)}, {Path.GetFileName(doc.Name)} is open.";
+                Print("RETRACERUN: " + wrong);
+                if (p.Tdoc != null || p.Suite != null) TestQueue.StartFailed(wrong);
+                return;
+            }
             AcApp.Idle -= OnTestIdle; _testIdleHooked = false; _pending = null;
             // a Tdoc run shows no verdict box between its tests and hears when the test is over
             var tdoc = p.Tdoc; var suite = p.Suite;
             Action<ReplayResult>? finished = tdoc != null ? r => TdocRun.Finished(tdoc, r) : suite != null ? r => SuiteRun.Finished(suite, p.Path, r) : null;
-            if (!Replayer.Start(p.Steps, ReplayMode.Auto, p.Path, p.Initial, out var msg, alert: tdoc == null && suite == null, interactive: true, tdoc: tdoc, finished: finished, suite: suite))
+            if (!Replayer.Start(p.Steps, ReplayMode.Auto, p.Path, p.Initial, out var msg, alert: tdoc == null && suite == null, interactive: true, tdoc: tdoc, finished: finished, suite: suite, single: p.Single))
             {
+                SdiDocs.AbandonCopy(p.ExpectedPath, p.Tdoc != null || p.Suite != null);
                 Print("RETRACERUN: " + msg);
                 if (tdoc != null || suite != null) TestQueue.StartFailed(msg);
             }
@@ -137,6 +193,7 @@ public sealed partial class Commands
         {
             Log.Error("RETRACERUN idle", ex);
             AcApp.Idle -= OnTestIdle; _testIdleHooked = false; _pending = null;
+            SdiDocs.AbandonCopy(p?.ExpectedPath, p?.Tdoc != null || p?.Suite != null);
             Print("RETRACERUN failed: " + ex.Message);
             if (p?.Tdoc != null || p?.Suite != null) TestQueue.StartFailed(ex.Message);
         }

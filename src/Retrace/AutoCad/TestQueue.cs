@@ -81,6 +81,16 @@ sealed class TestQueue
 
     public void MarkRunning() => Current = State.Running;
 
+    int _sendSeq;   // the number of the latest RETRACERUN send
+
+    /// <summary>The typed RETRACERUN (send number <paramref name="token"/>) could not be delivered (SDI): the same guard as StartFailed, and only while that send is still the latest one:
+    /// a late failure never acts on a queue that has moved on.</summary>
+    void SendFailed(int token, string why)
+    {
+        if (Active == this && Current == State.Sent && token == _sendSeq) Skip(why);
+        else Log.Info("queue: a late send failure was ignored: " + why);
+    }
+
     /// <summary>The test that was sent could not be started (the recording is gone, the new drawing never became active...): skip it.</summary>
     public static void StartFailed(string why)
     {
@@ -122,7 +132,9 @@ sealed class TestQueue
         SentPath = Recordings[Index]; _taken = false; SentAt = DateTime.Now; Current = State.Sent;
         // Test() asks TakeExpected for the recording; this is what the Run test button types, ^C^C first: the test before may have left a
         // prompt open (a step that failed), and the text would answer it instead of starting the next test
-        doc.SendStringToExecute("\u0003\u0003_RETRACERUN ", true, false, false);
+        var token = ++_sendSeq;   // a failure of this send acts only while it is still the one that was sent
+        Action<string> failed = why => SendFailed(token, why);
+        SdiDocs.Send(doc, "_RETRACERUN ", true, false, false, failed, cancelFirst: true);   // ^C^C first (SDI = 0: in the same string; SDI: only when something runs, then RETRACERUN once it has taken effect)
         StatusBoardHost.Changed();   // the status board: "Suite i/n" moves to the next test
     }
 

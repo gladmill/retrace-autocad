@@ -18,6 +18,7 @@ static class ViewRestorer
     sealed class Pending
     {
         public Document Doc = null!;
+        public IntPtr DbId;   // the drawing the view was saved in (SDI replaces the drawing inside the same Document)
         public ViewTableRecord View = null!;
         public int Quiet, Tries;
         public DateTime Since;
@@ -37,7 +38,7 @@ static class ViewRestorer
     {
         if (_shutdown) { try { saved.Dispose(); } catch { } return; }
         var now = ViewControl.Read(doc);
-        Items.Add(new Pending { Doc = doc, View = saved, Since = DateTime.Now, Space = now?.Space, Layout = now?.Layout, Key = ViewControl.ViewKey() });
+        Items.Add(new Pending { Doc = doc, DbId = SdiDocs.DbId(doc), View = saved, Since = DateTime.Now, Space = now?.Space, Layout = now?.Layout, Key = ViewControl.ViewKey() });
         if (_timer != null) return;
         _timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(200) };
         _timer.Tick += (_, _) => Log.Safe("view restorer", Tick);
@@ -67,6 +68,7 @@ static class ViewRestorer
             if ((DateTime.Now - p.Since).TotalMinutes > HardCapMinutes) { Drop(p, "expired after " + HardCapMinutes + " minutes"); continue; }
             if (p.QuietSince is { } q && (DateTime.Now - q).TotalSeconds > QuietExpireSeconds) { Drop(p, "the drawing was quiet but the view could not be set"); continue; }
             if (!AcApp.DocumentManager.Cast<Document>().Contains(p.Doc)) { Drop(p, "its drawing is gone"); continue; }
+            if (!SdiDocs.SameDb(SdiDocs.DbId(p.Doc), p.DbId)) { Drop(p, "another drawing was opened in its place (SDI)"); continue; }
             if (!ReferenceEquals(p.Doc, AcApp.DocumentManager.MdiActiveDocument) || !Quiet(p.Doc)) { p.Quiet = 0; p.QuietSince = null; continue; }
             p.QuietSince ??= DateTime.Now;
             if (++p.Quiet < 3) continue;

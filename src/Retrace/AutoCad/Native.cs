@@ -208,6 +208,21 @@ static class Native
         catch (Exception ex) { Log.Error("window onto screen", ex); return (0, 0); }
     }
 
+    /// <summary>The foreground window belongs to this process and has a child window whose text starts with <paramref name="prefix"/> (how Retrace's own verdict box is told from a
+    /// dialog of anybody else's: its message starts with "Retrace test:"). The text read is the first 255 characters.</summary>
+    public static bool ForegroundDialogStartsWith(string prefix)
+    {
+        try
+        {
+            var h = ForegroundOfThisProcess();
+            if (h == IntPtr.Zero) return false;
+            var found = false;
+            EnumChildWindows(h, (c, _) => { if (TitleOf(c).StartsWith(prefix, StringComparison.Ordinal)) { found = true; return false; } return true; }, IntPtr.Zero);
+            return found;
+        }
+        catch (Exception) { return false; }
+    }
+
     /// <summary>Title and window class of the current foreground window (null on failure).</summary>
     public static (string Title, string Class)? Foreground()
     {

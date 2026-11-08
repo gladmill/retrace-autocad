@@ -50,6 +50,8 @@ sealed class TdocCapture : IDisposable
     /// <summary>The person pressed Stop (or the plugin shut down): the whole queue ends after this test.</summary>
     public bool StopRequested { get; set; }
     public int PictureCount => _pictures.Sum();
+    /// <summary>The document mode (SDI) of the run, read once by it.</summary>
+    public bool? Single { get; init; }
 
     public TdocCapture(TrainingTest test, List<Step> steps, string folder, int testNo, int testCount, RetraceSettings settings)
     {
@@ -114,12 +116,13 @@ sealed class TdocCapture : IDisposable
         if (s.Kind == "dialog") return true;
         if (i != _cur)
         {
-            _cur = i; _ready = false; _begin = now; _hiddenAt = DateTime.MinValue;
+            _cur = i; _ready = false; _begin = now; _hiddenAt = DateTime.MinValue; _zoom = null;
             if (s.Kind == "ribbon") Replayer.ActivateTab(s.Tab);   // the button must show
             if (s.Kind == "mark") ZoomExtents();   // the checkpoint picture shows the whole drawing (the view only; the checkpoint compares objects)
             if (_front) Native.Front(_main);
         }
         if (_ready) return true;
+        if (_zoom is { Pending: true }) return false;   // SDI: the ZOOM is typed a moment after it was sent; the idle check below would not see it yet
         if (now - _begin < _delay) return false;
         if (_hiddenAt == DateTime.MinValue)
         {
@@ -136,9 +139,11 @@ sealed class TdocCapture : IDisposable
 
     /// <summary>ZOOM Extents in the active drawing, typed as a command: AutoCAD is quiescent here (the step has settled), and the step's delay
     /// lets it finish before the picture.</summary>
-    static void ZoomExtents()
+    SdiDocs.SdiSend? _zoom;   // the last ZOOM sent (pending under SDI until it is typed)
+
+    void ZoomExtents()
     {
-        try { Autodesk.AutoCAD.ApplicationServices.Core.Application.DocumentManager.MdiActiveDocument?.SendStringToExecute("_.ZOOM _E ", true, false, false); }
+        try { if (Autodesk.AutoCAD.ApplicationServices.Core.Application.DocumentManager.MdiActiveDocument is { } d) _zoom = SdiDocs.Send(d, "_.ZOOM _E ", true, false, false, single: Single); }
         catch (Exception ex) { Log.Error("tdoc zoom extents", ex); }
     }
 

@@ -22,7 +22,9 @@ public sealed class Recorder
 
     SessionWriter? _w;
     readonly RibbonMap _map = new();
-    readonly HashSet<Document> _hooked = new();
+    // SDI: opening a drawing replaces the drawing inside the same Document object, and the events hooked to the old drawing die with it. The drawing each hooked
+    // document held when it was hooked: a different one means the hooks are dead, whatever order DocumentToBeDestroyed / DocumentCreated / DocumentActivated came in.
+    readonly Dictionary<Document, IntPtr> _hookedDb = new();   // the documents hooked, with the drawing each held then
     readonly Dictionary<string, string?> _promptMsg = new();
     readonly Dictionary<string, string[]?> _promptKeywords = new();
     // one number per Prompting* event, stamped on its Prompted* results: AutoCAD fires many results per prompt as the mouse moves
@@ -382,7 +384,7 @@ public sealed class Recorder
             AcApp.Idle -= OnIdle;
             ComponentManager.ItemExecuted -= OnItemExecuted;
             AcApp.PreTranslateMessage -= OnPreTranslate;
-            foreach (var d in _hooked.ToList()) UnhookDocument(d);
+            foreach (var d in _hookedDb.Keys.ToList()) UnhookDocument(d);
             UnhookRibbon(); _snaps.Clear(); _needSnap.Clear();
             _modalTimer?.Stop();
             _modalTimer = null;
@@ -524,7 +526,15 @@ public sealed class Recorder
 
     void HookDocument(Document d)
     {
-        if (d == null || !_hooked.Add(d)) return;
+        if (d == null) return;
+        if (_hookedDb.TryGetValue(d, out var held))
+        {
+            if (!SdiDocs.NeedsRehook(true, SdiDocs.DbId(d), held)) return;
+            Log.Info($"recorder: {DocName(d)}: the drawing in this document was replaced (SDI); hooking it again");
+            UnhookDocument(d);
+            _snaps.Remove(d); _needSnap.Add(d);   // a new drawing: its own behavior snapshot, as DocumentToBeDestroyed would have discarded the old one
+        }
+        _hookedDb[d] = SdiDocs.DbId(d);
         d.CommandWillStart += OnCmdStart;
         d.CommandEnded += OnCmdEnded;
         d.CommandCancelled += OnCmdCancelled;
@@ -536,9 +546,10 @@ public sealed class Recorder
         HookEditor(d.Editor);
     }
 
+
     void UnhookDocument(Document d)
     {
-        if (d == null || !_hooked.Remove(d)) return;
+        if (d == null || !_hookedDb.Remove(d)) return;
         Log.Safe("UnhookDocument", () =>
         {
             d.CommandWillStart -= OnCmdStart;
