@@ -103,6 +103,7 @@ namespace Retrace.Samples
             only.Items.Add(Button("DRAWGRID", "Grid...", "Opens a dialog where you set rows, columns, spacing and layer, then draws a grid of points."));
             only.Items.Add(ChainButton());
             only.Items.Add(ScriptButton());
+            only.Items.Add(DragButton());
 
             var src = new RibbonPanelSource();
             src.Title = "Dialogs";
@@ -116,6 +117,14 @@ namespace Retrace.Samples
         static RibbonButton ChainButton()
         {
             var b = Button("CHAINADD", "Chain...", "Runs a LISP that runs UCS and a script file, which opens the items dialog. Load samples/Retrace.Samples/chain/chain.lsp first.");
+            b.CommandHandler = new LispCommandHandler();
+            return b;
+        }
+
+        /// <summary>"Drag place...": like "Chain...", but its script types DRAWCHAINDLG and then DRAWDRAGPLACE (a jig: insertion point, then rotation).</summary>
+        static RibbonButton DragButton()
+        {
+            var b = Button("DRAGADD", "Drag place...", "Runs a LISP that runs a script file: the items dialog, then a jig for an insertion point and a rotation. Copy samples/Retrace.Samples/chain/ (chain.lsp, dragplace.scr) to C:/temp/retrace-chain/ first.");
             b.CommandHandler = new LispCommandHandler();
             return b;
         }

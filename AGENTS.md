@@ -6,8 +6,8 @@ The user-facing description is in [README.md](README.md). This file is about wor
 ## Build, test, pack
 
 ```sh
-dotnet build Retrace.sln -c Release          # plugin, tests, samples; builds on Mac, Linux and Windows; on Windows also installs the bundle
-dotnet test tests/Retrace.Tests              # unit tests; synthetic fixtures only, no AutoCAD needed
+dotnet build Retrace.sln -c Release          # plugin, tests, samples and AcadStatus (the acad-status project, plugin + tests); builds on Mac, Linux and Windows; on Windows also installs the bundles
+dotnet test Retrace.sln                      # Retrace and AcadStatus unit tests; synthetic fixtures only, no AutoCAD needed
 scripts/pack.sh /some/out/dir                # builds Release and copies the bundle to /some/out/dir/Retrace.bundle; installs nothing
 ```
 
@@ -20,6 +20,7 @@ scripts/pack.sh /some/out/dir                # builds Release and copies the bun
 - Nothing in `AutoCad/` or `Ui/` can run in the tests. Anything worth testing goes in `Core/` or `Engine/`.
 - `scripts/pack.sh` checks that `Retrace.dll` contains every embedded dependency and the private loader name, and fails if the bundle holds any other dll or exe. It needs `python3`. Publish only bundles made by `scripts/pack.sh`: it builds with `ContinuousIntegrationBuild=true`, so the dll and pdb hold no local folder paths.
 - **The release zip** holds two folders side by side: `Retrace.bundle` (this `scripts/pack.sh`) and `AcadStatus.bundle` (`acad-status/scripts/pack.sh`, see [acad-status/AGENTS.md](acad-status/AGENTS.md)). Each is made by its own script; zip the two folders, nothing else, and test the zip, not the build output.
+- `Retrace.sln` also holds the AcadStatus plugin and its tests (solution folder `acad-status`) because the release zip ships both; `AcadStatus.sln` still builds AcadStatus alone. The public export rewrites the solution's project paths for its layout.
 - `samples/Retrace.Samples` is a demo plugin (own dll, not in the bundle) for practising the flow and for VM tests.
 - `samples/Retrace.MfcSample` is a real MFC DLL (C++, shared MFC, Unicode, x64; `build.ps1` builds it on the Windows machine with the VS 2022 Build Tools, also on an ARM64 VM through `arm64_amd64`) that `Retrace.Samples` calls (`DRAWMFCFRAME`: a modal `CFrameWnd` + `CFormView` with a `CToolBar`; `DRAWMFCDIALOG`: a `CDialog`). No binary is committed (`.gitignore`). It exists because Win32 stand-ins hid how MFC really lays its windows out.
 - AutoCAD only runs on Windows. There a build installs the plugin (above); from macOS or Linux, `scripts/pack.sh` and copy `Retrace.bundle` to `%APPDATA%\Autodesk\ApplicationPlugins\` (see "VM test scripts").

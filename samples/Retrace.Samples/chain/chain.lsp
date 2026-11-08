@@ -6,3 +6,11 @@
   (command "_.SCRIPT" "C:/temp/retrace-chain/chain.scr")
   (princ)
 )
+
+;; DRAGADD: like CHAINADD, but its script (dragplace.scr) types DRAWCHAINDLG and then DRAWDRAGPLACE (a jig: insertion point, then rotation).
+;; The "Drag place..." button of the Retrace Samples tab (Dialogs panel) runs it. Copy dragplace.scr to C:/temp/retrace-chain/ too.
+(defun C:DRAGADD ()
+  (command "_.UCS" "_W")
+  (command "_.SCRIPT" "C:/temp/retrace-chain/dragplace.scr")
+  (princ)
+)

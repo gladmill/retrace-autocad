@@ -372,7 +372,8 @@ public static class RecordingReader
         var startup = DrawingOpen.StartupEvents(s.Events.Select(x => x.Raw));   // LISP AutoCAD ran by itself while a drawing opened: not steps
         // the same rule as the replay's plan (Core/Plan.ScriptChain): a ribbon click whose LISP runs a SCRIPT file owns the commands the script types, so steps.md and the replay number the steps alike
         bool hasInputFlags = Retrace.Core.Plan.HasInputFlags(s.Events.Select(x => x.Raw));
-        var chains = Retrace.Core.Plan.ScriptChain(s.Events.Select(x => x.Raw).ToList(), startup);
+        var collapsed = Retrace.Core.DragRuns.Collapse(s.Events.Select(x => x.Raw).ToList());   // a drag (jig) is one answer, not one per sample: the plan's rule
+        var chains = Retrace.Core.Plan.ScriptChain(collapsed, startup);
         var ribbonAt = new Dictionary<int, RecordingStep>();
         int idx = -1;
         bool ownedEvent = false;
@@ -381,6 +382,7 @@ public static class RecordingReader
             idx++;
             ownedEvent = false;
             if (e.N is { } en && startup.Contains(en)) continue;
+            if (collapsed[idx].TryGetProperty("type", out var collapsedType) && collapsedType.GetString() == Retrace.Core.DragRuns.DroppedType) continue;   // a drag sample that is not the answer
             if (chains.TryGetValue(idx, out var chainOwner) && ribbonAt.TryGetValue(chainOwner, out var chainStep))
             {
                 // an event of the click's chain: the ribbon step owns it; only an answer a person gave is kept (the script gives the rest again)
@@ -388,7 +390,7 @@ public static class RecordingReader
                 if (chainStep.Kind == "ribbon") { lastRibbon = chainStep; ribbonConsumed = true; }
                 if (e.Type == "lisp_start" && chainStep.Kind == "ribbon") chainStep.Lisp ??= e.Str("firstLine");
                 // an answer a person gave is kept (the "prompt" case below); the script's own prompts are not
-                if (e.Type == "prompt" && !Retrace.Core.Plan.IsPersonPrompt(e.Raw, hasInputFlags)) continue;
+                if (e.Type == "prompt" && !Retrace.Core.Plan.IsPersonPrompt(collapsed[idx], hasInputFlags)) continue;
                 if (e.Type is "doc_created" or "doc_active" or "doc_closing") continue;   // a drawing the script opened or closed: not a step
                 // the rest flows on with the usual bookkeeping (depth, inLisp, a cancelled or failed command, a dialog opened inside it), but makes no step of its own
             }
@@ -469,7 +471,7 @@ public static class RecordingReader
                         Options = e.Raw.TryGetProperty("keywords", out var kws) && kws.ValueKind == JsonValueKind.Array
                             ? kws.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!).ToList() : new(),
                         Value = e.Raw.TryGetProperty("value", out var v) ? v : null,
-                        Input = e.Raw.TryGetProperty("input", out var inp) && inp.ValueKind is JsonValueKind.True or JsonValueKind.False ? inp.GetBoolean() : null,
+                        Input = collapsed[idx].TryGetProperty("input", out var inp) && inp.ValueKind is JsonValueKind.True or JsonValueKind.False ? inp.GetBoolean() : null,
                         Seq = e.Raw.TryGetProperty("seq", out var sq) && sq.ValueKind == JsonValueKind.Number ? sq.GetInt64() : null,
                         By = e.Str("by"),
                         T = e.T,

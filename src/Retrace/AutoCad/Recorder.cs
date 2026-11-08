@@ -41,6 +41,15 @@ public sealed class Recorder
     // (each with its own Prompting event, echoing the command's message). A result counts as user input only if a click or
     // key press reached AutoCAD's message loop shortly before it and no earlier result has claimed that press.
     long _inputTick, _claimedTick, _lastInputMs = -100000;
+    // Drag samples (a jig: AutoCAD raises a result for every mouse move and key press, and every millisecond or so in a jig that keeps sampling): a result of the same kind and message as the
+    // one before, with nothing else recorded in between, is a candidate. It is claimed only by the input that ends the prompt (a mouse button, Enter, Space): a key typed on the way ("0" of "0,0")
+    // would claim a sample with the mouse's resting position, and the person's Enter, the last sample, would be left unclaimed behind it. A candidate nothing claimed, at most
+    // DragRuns.BurstGapMs after the one before, is flagged `drag: true`, unless nobody was at the mouse or keyboard since the one before (activity counter) or a LISP is running: a script, LISP or
+    // menu macro that gives its own answers makes such bursts too, and they are not drag samples. The field is written (true or false) on every candidate, so a reader can tell a recording that
+    // knows about drag samples from an older one (DragRuns).
+    long _endTick;                 // the value of _inputTick when the newest input was one that ends a prompt: the left mouse button, Enter, Space (not the middle button (pan), not the right one (Enter or a menu, depending on the setup; the Enter it gives arrives as its own result))
+    long _activity, _activityAtSample;   // counts mouse moves, buttons and key presses; its value at the newest sample
+    bool _haveSample; string? _lastSampleKind, _lastSampleMsg, _lastSampleDoc; long _lastSampleMs;
     int _viewMouse, _viewMouseAtPoint;   // left button down / up in the drawing window, counted; and its value when the last click point was taken
     bool _lastInputMouse;  // the newest input was a mouse button (a pick), else a key (typed value + Enter)
     string? _claimedBy;     // "mouse" | "keys" for the last successful ClaimInput
@@ -201,6 +210,7 @@ public sealed class Recorder
         try
         {
             var n = w.Event(type, doc, f);
+            if (type is not ("prompt" or "shot" or "view_stale" or "state")) _haveSample = false;   // something else happened: the next result starts a new prompt
             NoteContext(type, f);
             var input = type == "prompt" && f.Any(x => x.Item1 == "input" && x.Item2 is true);
             _shots.Request(ShotRules.For(type, n, input, w.ElapsedMs));
@@ -808,6 +818,7 @@ public sealed class Recorder
     void OnPreTranslate(object? s, PreTranslateMessageEventArgs e)
     {
         var m = e.Message.message;
+        if (m == 0x0200) { _activity++; return; }   // WM_MOUSEMOVE: somebody is at the mouse (a script that answers by itself moves nothing)
         if (CheckpointKey.TryHandle(m, e.Message.wParam, e.Message.lParam)) { e.Handled = true; return; }   // the shortcut is not user input
         if (m is 0x0100 or 0x0201 or 0x0202 or 0x0203 && _pal.Enabled) PaletteInput(e.Message.hwnd, (uint)m, e.Message.wParam, e.Message.lParam);
         if (m == 0x0100 && _w != null && !_inOwnCmd) { if (Native.TypedChar((uint)(long)e.Message.wParam) is { } typedChar) _sel.Key(typedChar); }   // WM_KEYDOWN (no WM_CHAR reaches this handler)
@@ -824,6 +835,8 @@ public sealed class Recorder
             _inputTick++;
             _lastInputMs = _w?.ElapsedMs ?? 0;
             _lastInputMouse = m != 0x0100;
+            _activity++;
+            _endTick = Core.DragRuns.EndsPrompt((uint)m, (long)e.Message.wParam) ? _inputTick : 0;   // the left button, Enter or Space ends a prompt; any other key, the middle (pan) and the right button do not
         }
     }
 
@@ -913,11 +926,12 @@ public sealed class Recorder
     }
 
     /// <summary>true if a click/key press within 500 ms led to this result and no earlier result claimed it. Sets <see cref="_claimedBy"/>.</summary>
-    bool ClaimInput()
+    bool ClaimInput(bool dragSample = false)
     {
         var now = _w?.ElapsedMs ?? 0;
         _claimedBy = null;
         if (_inputTick == _claimedTick || now - _lastInputMs > 500) return false;
+        if (dragSample && _endTick != _inputTick) return false;   // a key typed on the way: the sample it would claim is not the answer
         _claimedTick = _inputTick;
         _claimedBy = _lastInputMouse ? "mouse" : "keys";
         return true;
@@ -994,8 +1008,16 @@ public sealed class Recorder
                 : kind == "point" && SelectionReplay.IsSelectionInput(new Answer(kind, "", null, null, msg));
             if (!selectionInput) _sel.OtherAnswer();
             _promptKeywords.TryGetValue(kind, out var kws);
+            // a result of the same kind and message right after the one before is a candidate drag sample (see _endTick)
+            bool ok = r.Status == PromptStatus.OK;
+            var nowMs = _w?.ElapsedMs ?? 0;
+            bool candidate = ok && _haveSample && _lastSampleKind == kind && _lastSampleMsg == msg && _lastSampleDoc == _cmdDoc;
+            long prevMs = _lastSampleMs, activityAtPrev = _activityAtSample;
+            _haveSample = ok; _lastSampleKind = kind; _lastSampleMsg = msg; _lastSampleDoc = _cmdDoc; _lastSampleMs = nowMs; _activityAtSample = _activity;
+            var claimed = ClaimInput(candidate);
+            bool burst = Core.DragRuns.IsDragSample(candidate, claimed, nowMs - prevMs, _activity != activityAtPrev, _ctxLispDepth > 0);
             var pn = Emit("prompt", _cmdDoc,
-                ("kind", kind), ("seq", _promptSeq.TryGetValue(kind, out var q) ? q : null), ("input", ClaimInput()), ("by", _claimedBy), ("message", msg?.Trim()), ("keywords", kws is { Length: > 0 } ? kws : null),
+                ("kind", kind), ("seq", _promptSeq.TryGetValue(kind, out var q) ? q : null), ("input", claimed), ("by", _claimedBy), ("drag", candidate ? burst : null), ("message", msg?.Trim()), ("keywords", kws is { Length: > 0 } ? kws : null),
                 ("status", r.Status.ToString()), ("value", v),
                 ("keyword", r.Status == PromptStatus.Keyword ? r.StringResult : null));
             NotePickView(pn, v);
