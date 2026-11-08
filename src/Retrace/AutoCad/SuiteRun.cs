@@ -17,6 +17,8 @@ sealed class SuiteHook
     public required Func<Document, bool> IsProtected { get; init; }
     /// <summary>A copy of a drawing file in a temp folder (same file name) that the test opens instead of a protected drawing.</summary>
     public required Func<string, string> CopyOf { get; init; }
+    /// <summary>The document mode (SDI) the suite read once at its start.</summary>
+    public bool Single { get; init; }
     /// <summary>Set by the replay window's Stop: the suite ends after this test.</summary>
     public bool StopRequested { get; set; }
 }
@@ -37,8 +39,13 @@ sealed class SuiteRun : ITestQueueOwner
     readonly RetraceSettings _settings;
     readonly SuiteResult _result = new();
     readonly HashSet<Document> _baseline;
+    // SDI (single document interface): there is one Document object for every drawing, so what was open before the suite cannot be told by object. The suite then
+    // goes by the file of the drawing the person had open, which the first test replaces (it is never replaced with unsaved changes, see SdiGuard) and the end puts back.
+    readonly bool _sdi;
+    internal bool Single => _sdi;   // the document mode the suite read once at its start
+    readonly string? _sdiOriginal;   // the full name of the drawing that was open at the start, when it is a saved file
     readonly SuiteHook _hookTemplate;
-    readonly string _tempCopies = Path.Combine(Path.GetTempPath(), "retrace-suite-" + Guid.NewGuid().ToString("N"));
+    readonly string _tempCopies = Path.Combine(Path.GetTempPath(), SdiGuard.SuiteCopyFolderPrefix + Guid.NewGuid().ToString("N"));
     DateTime? _closingSince, _blockedSince;
     Document? _home;   // a blank drawing the suite opens to run from when every drawing that was open before it is gone. Protected (no test continues in it); closed at the end only if it is unchanged since it was created
     string? _homeSnap; // what _home held when it was created (see Snapshot)
@@ -50,6 +57,10 @@ sealed class SuiteRun : ITestQueueOwner
         _settings = settings;
         _queue = new TestQueue(recordings, this);
         _baseline = AcApp.DocumentManager.Cast<Document>().ToHashSet();
+        _sdi = SdiDocs.IsSingleNow();
+        if (_sdi && AcApp.DocumentManager.MdiActiveDocument is { } start)
+            try { _sdiOriginal = start.IsNamedDrawing && File.Exists(start.Name) && !SdiGuard.IsOwnTestDrawing(start.Name) ? start.Name : null; } catch (Exception) { }
+        SdiGuard.Own.SuiteStarted();
         CleanStaleCopies();
         _result.Stamp = TestFolders.Stamp(DateTime.Now);
         _result.StartedUtc = DateTime.UtcNow.ToString("o");
@@ -59,8 +70,9 @@ sealed class SuiteRun : ITestQueueOwner
         {
             StepTimeout = TimeSpan.FromSeconds(settings.SuiteStepTimeoutSeconds),
             Started = () => _queue.MarkRunning(),
-            IsProtected = d => _baseline.Contains(d) || ReferenceEquals(d, _home),
+            IsProtected = d => _sdi ? IsSdiOriginal(d) : _baseline.Contains(d) || ReferenceEquals(d, _home),
             CopyOf = CopyFile,
+            Single = _sdi,
         };
     }
 
@@ -104,7 +116,7 @@ sealed class SuiteRun : ITestQueueOwner
         if (run == null || !run._queue.IsSent(path)) return null;
         return new SuiteHook
         {
-            StepTimeout = run._hookTemplate.StepTimeout, Started = run._hookTemplate.Started, IsProtected = run._hookTemplate.IsProtected, CopyOf = run._hookTemplate.CopyOf,
+            StepTimeout = run._hookTemplate.StepTimeout, Started = run._hookTemplate.Started, IsProtected = run._hookTemplate.IsProtected, CopyOf = run._hookTemplate.CopyOf, Single = run._sdi,
         };
     }
 
@@ -158,15 +170,34 @@ sealed class SuiteRun : ITestQueueOwner
     /// <summary>The queue has no drawing to type the next test into: the suite stops with that reason and the rest is listed as NOT-RUN.</summary>
     void ITestQueueOwner.Aborted(string reason) => Finish(reason);
 
-    List<Document> Extras() => AcApp.DocumentManager.Cast<Document>().Where(d => !_baseline.Contains(d) && !ReferenceEquals(d, _home)).ToList();
+    bool IsSdiOriginal(Document d)
+    {
+        try { return _sdiOriginal != null && SdiGuard.Own.SamePath(d.Name, _sdiOriginal); } catch (Exception) { return false; }
+    }
+
+    List<Document> Extras() => _sdi ? new List<Document>() : AcApp.DocumentManager.Cast<Document>().Where(d => !_baseline.Contains(d) && !ReferenceEquals(d, _home)).ToList();
 
     /// <summary>Temp copies of earlier suites that were never cleaned up (AutoCAD was closed in between): deleted when older than a day.</summary>
     static void CleanStaleCopies()
     {
         try
         {
-            foreach (var d in Directory.EnumerateDirectories(Path.GetTempPath(), "retrace-suite-*"))
-                if (DateTime.UtcNow - Directory.GetLastWriteTimeUtc(d) > TimeSpan.FromDays(1)) try { Directory.Delete(d, true); } catch (Exception) { }
+            var openNames = SdiDocs.OpenNames();   // taken here, on the UI thread: the walk below runs on a pool thread
+            var tmp = Path.GetTempPath();
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    foreach (var d in Directory.EnumerateDirectories(tmp, SdiGuard.SuiteCopyFolderPrefix + "*"))
+                    {
+                        if (!SdiGuard.IsStaleTemp(Directory.GetCreationTimeUtc(d), Directory.GetLastWriteTimeUtc(d), DateTime.UtcNow)) continue;   // the cheap check first: most folders are young
+                        if (SdiDocs.HasSidecar(d)) { SdiDocs.CleanStaleCopyFolder(d, openNames); continue; }   // an SDI session's copies: the record rule (a drawing saved by someone else stays), never one that is open
+                        if (openNames.Any(o => SdiGuard.Own.IsUnder(o, d))) continue;
+                        try { Directory.Delete(d, true); } catch (Exception) { }
+                    }
+                }
+                catch (Exception) { }
+            });
         }
         catch (Exception) { }
     }
@@ -192,6 +223,7 @@ sealed class SuiteRun : ITestQueueOwner
             return QueueGate.Halt;
         }
         _blockedSince = null; _blockedReason = null;
+        if (_sdi) { _closingSince = null; return QueueGate.Go; }   // SDI: the next test's open closes the last one's drawing itself (Commands.NewTestDocument)
         var docs = AcApp.DocumentManager.Cast<Document>().ToList();
         // AutoCAD closed every drawing that was open at the start (an untouched new drawing is closed when a file is opened): a blank drawing of the
         // suite's own is what the next tests start from. A test's drawing is never taken over for that, and never counts as the person's.
@@ -257,7 +289,7 @@ sealed class SuiteRun : ITestQueueOwner
                 if (!string.IsNullOrEmpty(d.CommandInProgress))
                 {
                     if (AcApp.DocumentManager.MdiActiveDocument != d) AcApp.DocumentManager.MdiActiveDocument = d;
-                    d.SendStringToExecute("\u0003\u0003", true, false, false);   // the next try closes it
+                    SdiDocs.Send(d, "\u0003\u0003", true, false, false);   // the next try closes it
                     continue;
                 }
                 d.CloseAndDiscard();
@@ -266,14 +298,7 @@ sealed class SuiteRun : ITestQueueOwner
         }
     }
 
-    string CopyFile(string path)
-    {
-        var dir = Path.Combine(_tempCopies, Guid.NewGuid().ToString("N")[..8]);
-        Directory.CreateDirectory(dir);
-        var copy = Path.Combine(dir, Path.GetFileName(path));
-        File.Copy(path, copy, true);
-        return copy;
-    }
+    string CopyFile(string path) => SdiDocs.CopyInto(Path.Combine(_tempCopies, Guid.NewGuid().ToString("N")[..8]), path, Path.GetFileName(path), track: _sdi);
 
     // ---- the end ----------------------------------------------------------------------------------------------------------------------
 
@@ -299,8 +324,10 @@ sealed class SuiteRun : ITestQueueOwner
         {
             var toClose = Extras();
             if (HomeUnchanged()) toClose.Add(_home!);
+            // SDI: the one drawing, and only when it is a test copy of this suite: its command is cancelled, nothing is closed; the person's own drawing is never sent anything
+            if (_sdi) toClose = AcApp.DocumentManager.MdiActiveDocument is { } last && SdiGuard.IsOwnTestDrawing(last.Name) ? new List<Document> { last } : new List<Document>();
             CancelBusy(toClose);   // once, while the suite still owns the focus
-            CloseLater(toClose);
+            if (_sdi) RestoreSdiLater(); else CloseLater(toClose);
         }
         else Log.Safe("suite copies", () => { if (Directory.Exists(_tempCopies)) Directory.Delete(_tempCopies, true); });
         Log.Safe("suite write", () =>
@@ -320,7 +347,7 @@ sealed class SuiteRun : ITestQueueOwner
             {
                 if (string.IsNullOrEmpty(d.CommandInProgress)) continue;
                 if (AcApp.DocumentManager.MdiActiveDocument != d) AcApp.DocumentManager.MdiActiveDocument = d;
-                d.SendStringToExecute("\u0003\u0003", true, false, false);
+                SdiDocs.Send(d, "\u0003\u0003", true, false, false);
             }
             catch (Exception ex) { Log.Info($"suite: cancel in {System.IO.Path.GetFileName(d.Name)} failed ({ex.Message})"); }
     }
@@ -332,6 +359,55 @@ sealed class SuiteRun : ITestQueueOwner
         foreach (var d in list)
             try { if (string.IsNullOrEmpty(d.CommandInProgress)) d.CloseAndDiscard(); }
             catch (Exception ex) { Log.Info($"suite: {System.IO.Path.GetFileName(d.Name)} not closed yet ({ex.Message})"); }
+    }
+
+    /// <summary>SDI: the drawing the person had open is opened again in place of the last test's drawing (a temp file, saved first so that nothing asks), or a
+    /// blank copy of the template when there was none. On a timer in application context, once nothing runs in the drawing; the temp copies go last,
+    /// when no drawing holds them.</summary>
+    void RestoreSdiLater()
+    {
+        var tries = 0;
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        timer.Tick += (_, _) => Log.Safe("suite sdi restore", () =>
+        {
+            var doc = AcApp.DocumentManager.MdiActiveDocument;
+            var busy = Native.OpenSecurityPrompt() != null || (doc != null ? !SdiDocs.IsIdle(doc) : SdiDocs.IsModalOpen());
+            if (busy && ++tries < 60) return;
+            timer.Stop();
+            SdiGuard.Own.SuiteEnded();   // a test drawing whose end-of-run save never happened is nobody's now: its unsaved changes count as a person's
+            if (busy) { Log.Info("suite: SDI: the last drawing is still busy after 60 s: left as it is"); Say("left open (close it yourself): " + (doc == null ? "" : System.IO.Path.GetFileName(doc.Name))); return; }
+            var restored = false;
+            try
+            {
+                if (doc != null && IsSdiOriginal(doc)) restored = true;   // the person's drawing is open again already
+                else if (SdiDocs.PrepareForOpen(true) is { } refusal) { Log.Info("suite: SDI: the last drawing is left open: " + refusal); Say("left open: " + refusal); }
+                else
+                {
+                    if (_sdiOriginal != null) SdiDocs.Open(_sdiOriginal, true);
+                    else
+                    {
+                        // a blank copy of Retrace's own, opened outside any run: start-up code (acaddoc.lsp) may change it as it opens, and nobody else has: it is saved a few seconds later,
+                        // else the next test would find it "modified" and refuse to replace it
+                        var blank = SdiDocs.OpenBlankCopy();
+                        SdiGuard.Own.BeginRun(blank.Name, false);
+                        SdiDocs.EndRunLater(blank, true, TimeSpan.FromSeconds(4));
+                    }
+                    restored = true;
+                }
+            }
+            catch (Exception ex) { Log.Info($"suite: SDI: the drawing from before the suite was not opened again ({ex.Message})"); Say("the drawing from before the suite was not opened again: " + ex.Message); }
+            // the copies go only when nothing open is one of them (the restore happened and the active drawing is not below the folder)
+            try
+            {
+                var active = AcApp.DocumentManager.MdiActiveDocument;
+                var inUse = active != null && SdiGuard.Own.IsUnder(active.Name, _tempCopies);
+                if (restored && !inUse && Directory.Exists(_tempCopies)) Directory.Delete(_tempCopies, true);
+                else if (Directory.Exists(_tempCopies)) Log.Info("suite: the suite's copy folder stays (a drawing in it is open, or the restore did not happen)");
+            }
+            catch (Exception ex) { Log.Info($"suite copies not deleted: {ex.Message}"); }
+            SdiDocs.CleanStaleSdi();   // once at the end of a suite (and once at start-up)
+        });
+        timer.Start();
     }
 
     /// <summary>The drawings of the suite that are still open (a command was running in one, or a dialog blocked the close) are closed on a timer, in

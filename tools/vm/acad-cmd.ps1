@@ -13,7 +13,19 @@ if (-not $Cmds -and (Test-Path C:\retrace-vm\cmds.txt)) { $Cmds = Get-Content C:
 try {
   $acad = [Runtime.InteropServices.Marshal]::GetActiveObject('AutoCAD.Application')
   $doc = $acad.ActiveDocument
-  if (-not $doc) { W "no active doc, adding one"; $doc = $acad.Documents.Add(); Start-Sleep 5; $doc = $acad.ActiveDocument }
+  if (-not $doc) {
+    W "no active doc, adding one"
+    try { $null = $acad.Documents.Add() }
+    catch {
+      # SDI = 1: Documents.Add is not available ("Method not available in SDI mode"). Open a copy of the drawing template instead.
+      W "Add failed ($($_.Exception.Message)); opening a copy of the template"
+      $tpl = Join-Path $acad.Preferences.Files.TemplateDwgPath 'acad.dwt'
+      $copy = Join-Path $out ("blank-" + [guid]::NewGuid().ToString('N').Substring(0, 6) + ".dwg")
+      Copy-Item $tpl $copy -Force
+      $null = $acad.Documents.Open($copy)
+    }
+    Start-Sleep 5; $doc = $acad.ActiveDocument
+  }
   W "acad: $($acad.Version) doc: $($doc.Name)"
   # read-only COM queries ($acad/$doc in scope); no LISP
   if ($Query) { foreach ($l in (. $Query | Out-String -Width 200) -split "`r?`n") { if ($l) { W $l } } }

@@ -27,6 +27,15 @@ could be done about them. Started 2026-11-07 after the 0.6.0 "untested paths" ro
 - **Localized AutoCAD**: a typed command name that differs from the global one falls back to the old "unknown
   command" error.
 
+- **SDI = 1 follow-ups**: the reason a text sent with `Document.SendStringToExecute` is sometimes lost in a drawing Retrace
+  opened (the replay types through `RETRACETYPE` instead); "the recorder sees no dialogs under SDI" was not reproduced
+  (5 recordings had `modal_enter`); not run in AutoCAD with SDI = 1: the Open test window, xrefs, `RETRACETDOC` with palettes,
+  the stops for a drawing opened outside the replay's own open step.
+- **SDI = 1, not run in AutoCAD** (merged with these limits, #318): the 22-recording regression set (only run with SDI = 0);
+  AutoCAD Electrical and other plug-ins that open drawings themselves; `RETRACETDOC` beyond two tests; the cancel's retry
+  path and a failing COM `SendCommand`; the end-of-run save while another dialog is open beside the verdict box (unit
+  tests only). Text that answers a running command still goes through plain `SendStringToExecute`. Starting AutoCAD with
+  SDI = 1 and switching to 0 live makes style-dup5 / style-x4 fail even on the baseline (passes after a fresh start).
 - `-RETRACESUITE` started from a `.scr` file doesn't start its first test ("did not start within 90 s"): the `RETRACERUN`
   it sends is not run while the script is still active. The second test runs once the script ends. Found while
   verifying #316.

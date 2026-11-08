@@ -105,7 +105,7 @@ public sealed unsafe class DclCapture
                 case State.Next:
                     if (!_queue.TryDequeue(out var job)) { Finish(null); return; }
                     _job = job; _before = TopWindows(); _lispDone = false; _hwnd = IntPtr.Zero; _since = Now;
-                    _doc.SendStringToExecute(Lisp(job) + "\n", true, false, false);
+                    SdiDocs.Send(_doc, Lisp(job) + "\n", true, false, false);
                     _state = State.Waiting;
                     break;
 

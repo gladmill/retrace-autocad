@@ -42,7 +42,15 @@ sealed class Replayer
     readonly string _sessionPath;
     readonly ReplayResult _result = new();
     readonly List<string> _warnings = new();
+    bool _beganRun;   // BeginRun was called: Finish calls EndRun
+    readonly bool _sdi;   // the document mode, read once per run (by the caller of Start)
+    IntPtr _hookedDb;   // the drawing the document held when it was hooked (SDI replaces it inside the same object)
     string? _eventError;            // set by Document events (a plain field write; no AutoCAD calls in handlers)
+    readonly List<SdiDocs.SdiSend> _sends = new();   // this replay's own sends under SDI: Settled waits only for these
+    int _lastActedIndex = -1;   // the step that last acted on AutoCAD (sent text, clicked, opened, filled a dialog, drove a palette): the one a drawing opened in between is blamed on
+    void SendTracked(string text) { _lastActedIndex = _i; _sends.Add(SdiDocs.Send(_doc, text, true, false, true, SendFailed, _sdi, MarkDelivered)); }
+    void MarkDelivered() => _sentAt = DateTime.Now;   // SDI: the text is typed a moment after the call; the 2 s wait for the command to start counts from then
+    void SendFailed(string why) => _eventError ??= why;   // SDI: typed text that could not be delivered fails the step (the next tick ends the run)
     readonly UnknownCommandGrace _unknown = new();   // UnknownCommand for a command the replay sent: waits for its start before it is an error (fed by the handlers and NoteSent, read in Tick)
     bool _unknownWaiting;           // the last poll of _unknown said Waiting: no next step yet
     DateTime _modalSince = DateTime.MinValue;
@@ -96,8 +104,9 @@ sealed class Replayer
     bool Unattended => !_interactive || _suite != null;
     Action<ReplayResult>? _finished;   // called at the end of Finish, after the result file is written
 
-    Replayer(List<Step> steps, ReplayMode mode, Document doc, string sessionPath, bool interactive)
+    Replayer(List<Step> steps, ReplayMode mode, Document doc, string sessionPath, bool interactive, bool single)
     {
+        _sdi = single;
         _steps = steps; _mode = mode; _doc = doc; _sessionPath = sessionPath; _interactive = interactive;
         _autoFillOn = interactive && RetraceSettings.Load().AutoFillDialogs;
         _timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(200) };
@@ -168,12 +177,12 @@ sealed class Replayer
     /// <param name="tdoc">a Tdoc run's pictures for this test (RETRACETDOC); null for a plain replay</param>
     /// <param name="finished">called once at the end of the run with its result (a Tdoc run starts the next test from it)</param>
     public static bool Start(List<Step> steps, ReplayMode mode, string sessionPath, DrawingDigest? initial, out string message, bool alert = false, bool interactive = false,
-        TdocCapture? tdoc = null, Action<ReplayResult>? finished = null, SuiteHook? suite = null)
+        TdocCapture? tdoc = null, Action<ReplayResult>? finished = null, SuiteHook? suite = null, bool? single = null)
     {
         if (Current != null) { message = "A replay is already running (close its window or press Stop)."; return false; }
         var doc = AcApp.DocumentManager.MdiActiveDocument;
         if (doc == null) { message = "No active drawing."; return false; }
-        var r = new Replayer(steps, mode, doc, sessionPath, interactive) { _alert = alert, _tdoc = tdoc, _finished = finished, _suite = suite };
+        var r = new Replayer(steps, mode, doc, sessionPath, interactive, single ?? SdiDocs.IsSingleNow()) { _alert = alert, _tdoc = tdoc, _finished = finished, _suite = suite };
         Current = r;
         r.Begin(initial);
         message = $"Replaying {steps.Count} steps ({mode}).";
@@ -183,6 +192,7 @@ sealed class Replayer
     void Begin(DrawingDigest? initial)
     {
         PaletteFill.Reset();   // no menu state of an earlier replay
+        if (_sdi && SdiGuard.IsOwnTestDrawing(_doc.Name)) { _afterOpen = true; _quietSince = DateTime.MinValue; }   // a drawing just opened is waited for until it has been quiet for a second
         _result.Session = TestFolders.NameOf(_sessionPath);
         _testName = TestList.NameOf(_result.Session);
         _result.StartedUtc = DateTime.UtcNow.ToString("o");
@@ -193,10 +203,18 @@ sealed class Replayer
         // a test folder keeps its history; only results/latest.json is replaced, when this run ends
         CompareStart(initial);
         _running = true; _runBits = Ask.ScriptOrLispBits();   // set when the replay started: a replay run under a script or LISP wrapper has them for the whole run
+        if (_sdi)
+        {
+            // an own test drawing that already holds unsaved changes holds a person's (from an earlier run): it stops counting as Retrace's own
+            var modified = SdiDocs.IsModified(_doc);
+            string? beginName; try { beginName = _doc.Name; } catch (Exception) { beginName = null; }
+            SdiGuard.Own.BeginRun(beginName, modified); _beganRun = true;   // the unsaved changes in the test's drawing are the run's until it ends (Finish: EndRunLater)
+        }
         AcApp.EnterModal += OnEnterModal;
         AcApp.LeaveModal += OnLeaveModal;
         Hook(_doc);
         AcApp.DocumentManager.DocumentToBeDestroyed += OnDocGone;
+        AcApp.DocumentManager.DocumentCreated += OnDocCreated;
         if (_tdoc != null)
         {
             _win.Prefix = _tdoc.Label;
@@ -219,8 +237,12 @@ sealed class Replayer
         catch (Exception ex) { Log.Info($"replay message not shown ({ex.Message}): {message.Trim()}"); }
     }
 
+    bool _hooked;   // the events are on _doc now (Hook sets it, Unhook clears it)
+
     void Hook(Document d)
     {
+        _hooked = true;
+        _hookedDb = SdiDocs.DbId(d);
         d.CommandWillStart += OnCmdStart;
         d.CommandFailed += OnCmdFailed;
         d.UnknownCommand += OnUnknown;
@@ -233,6 +255,7 @@ sealed class Replayer
 
     void Unhook(Document d)
     {
+        _hooked = false;
         d.CommandWillStart -= OnCmdStart;
         d.CommandFailed -= OnCmdFailed;
         d.UnknownCommand -= OnUnknown;
@@ -253,6 +276,54 @@ sealed class Replayer
         Log.Safe("Replay doc gone", () => Unhook(_doc));
         _docGone = true;
     }
+    /// <summary>SDI: opening a drawing (a typed OPEN or NEW, RECOVER, a palette click, another plugin) replaces the drawing in the Document object the replay uses:
+    /// DocumentToBeDestroyed, then DocumentCreated for the same object. The handler only notes it (a plain field write); <see cref="TickRecreated"/> does the work. With
+    /// SDI = 0 a new drawing is a new object and this does nothing.</summary>
+    void OnDocCreated(object? s, DocumentCollectionEventArgs e) { if (_running && _sdi) _docRecreated = true; }   // any drawing: RECOVER, for one, comes in a Document object of its own
+    bool _docRecreated;
+    string? _expectedOpen;   // the file Retrace's own open step is opening (SDI): the only open it expects
+
+    /// <summary>SDI: may the replay go on in <paramref name="doc"/>, a drawing that has just replaced the one it ran in? A drawing that was open before the suite ends the test as
+    /// ERROR; one that is neither the file Retrace's own open step opened nor one of the test's own copies stops the run for a person (the replay must not change the person's file).
+    /// False when the run ended. The expected open is used up.</summary>
+    bool SdiSwitchAllowed(Document doc)
+    {
+        string name; try { name = doc.Name; } catch (Exception) { name = ""; }
+        var expected = _expectedOpen; _expectedOpen = null;
+        if (_suite != null && _suite.IsProtected(doc)) { Finish(false, true, $"the test switched to {Path.GetFileName(name)}, which was open before the suite (or is the suite's own start drawing): not touched; close it and re-run"); return false; }
+        if (!(expected != null && SdiGuard.Own.SamePath(name, expected)) && !SdiGuard.IsOwnTestDrawing(name))
+        {
+            var why = $"a step opened {Path.GetFileName(name)}; under SDI Retrace stops here so it does not change your file. Use SDI = 0 for this test.";
+            // the drawing opened while the step that last sent text ran, which may be an earlier one than the step the replay is at now
+            var idx = _lastActedIndex >= 0 && _lastActedIndex < _steps.Count ? _lastActedIndex : Math.Min(_i, Math.Max(0, _steps.Count - 1));
+            StopForPerson("open", idx < _steps.Count ? _steps[idx].Title : "", why, step: idx);
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>The tick after a drawing was opened in the replay's document (SDI). Hooks the document again; a drawing that was open before the suite ends the test as ERROR (as
+    /// with SDI = 0); any drawing that is neither the one Retrace's own open step opened nor one of the test's own copies stops the run for a person, so that the replay does not go on
+    /// in, and change, the person's file (RECOVER, XOPEN, vla-open, AutoCAD Electrical...); else the replay waits for the drawing to be quiet, as <see cref="Follow"/> does. False when the run ended.</summary>
+    bool TickRecreated()
+    {
+        // the drawing that is open now: the same Document object with another drawing in it, or (RECOVER, XOPEN) a new one
+        var doc = AcApp.DocumentManager.MdiActiveDocument ?? _doc;
+        if (!SdiSwitchAllowed(doc)) return false;
+        string name; try { name = doc.Name; } catch (Exception) { name = ""; }
+        if (!ReferenceEquals(doc, _doc)) { Log.Safe("Replay unhook", () => Unhook(_doc)); _doc = doc; Hook(_doc); }
+        else Log.Safe("Replay doc re-created", RehookIfReplaced);
+        if (_docGone) { _docGone = false; Log.Info($"replay continues in {Path.GetFileName(name)}: SDI replaced the drawing in the document the replay ran in"); }
+        _lispRunning = 0; _afterOpen = true; _quietSince = DateTime.MinValue;
+        _notBefore = DateTime.Now.AddMilliseconds(500);
+        return true;
+    }
+    /// <summary>The events of the document die with the drawing in it (SDI): hooks it again when the drawing is not the one it was hooked for.</summary>
+    void RehookIfReplaced()
+    {
+        if (!SdiDocs.NeedsRehook(_hooked, SdiDocs.DbId(_doc), _hookedDb)) return;   // (not hooked now, e.g. after OnDocGone: always)
+        Unhook(_doc); Hook(_doc);
+    }
     void OnLispEnd(object? s, EventArgs e) { if (_lispRunning > 0) _lispRunning--; }
 
     /// <summary>An "open" step: opens the recorded drawing and replays the rest in it, the way the person went on in the drawing they
@@ -260,6 +331,7 @@ sealed class Replayer
     /// a test never discards someone's changes). False when it could not: the run has finished with the reason.</summary>
     bool OpenDrawing(Step s)
     {
+        _lastActedIndex = _i;
         var path = s.Drawing ?? "";
         var dm = AcApp.DocumentManager;
         try
@@ -268,7 +340,18 @@ sealed class Replayer
             var ownCopy = false;
             // suite run: a drawing the person had open is never replayed into (or saved, or closed): the test gets a copy of the file instead,
             // one copy per file for the whole test (a second open of the same file goes back to it)
-            if (doc != null && _suite != null && _suite.IsProtected(doc))
+            if (SdiGuard.OpenStepNeedsCopy(_sdi, path))
+            {
+                // SDI, every mode: opening the file would replace the drawing that is open and leave the person's file changed for the next open: a temp copy, one per file
+                if (!_copies.TryGetValue(path, out var sdiCopy))
+                {
+                    if (!File.Exists(path)) { Finish(false, true, $"drawing not found: {path}"); return false; }
+                    sdiCopy = _suite != null ? _suite.CopyOf(path) : SdiDocs.TempCopyOf(path); _copies[path] = sdiCopy;
+                    Say($"\n  SDI is on: the test opens a copy of {Path.GetFileName(path)}.\n");
+                }
+                path = sdiCopy; doc = OpenDocument(path); ownCopy = true;
+            }
+            else if (doc != null && _suite != null && _suite.IsProtected(doc))
             {
                 if (!_copies.TryGetValue(path, out var copy))
                 {
@@ -287,7 +370,20 @@ sealed class Replayer
             if (doc == null)
             {
                 if (!File.Exists(path)) { Finish(false, true, $"drawing not found: {path}"); return false; }
-                doc = dm.Open(path, false);
+                // SDI: the drawing that is open is replaced: never one with a person's unsaved changes; the test's own earlier drawing is saved first (it is a temp file)
+                if (SdiDocs.PrepareForOpen(_sdi) is { } refusal)
+                {
+                    // e.g. RETRACEREPLAY: the replay changed the person's drawing, and the open would replace it. Not a failure of the test: it stops for a person
+                    StopForPerson("open", s.Title, refusal, $"needs a person: the step \"{s.Title}\" opens a drawing, and with SDI on that replaces the open one. {refusal}");
+                    return false;
+                }
+                if (_sdi) _expectedOpen = path;
+                doc = SdiDocs.Open(path, _sdi);   // (SDI: through COM, see SdiDocs)
+                if (_sdi && !SdiGuard.Own.SamePath(doc.Name, path))
+                {
+                    StopForPerson("open", s.Title, $"the drawing did not open: {Path.GetFileName(path)} was to be opened, {Path.GetFileName(doc.Name)} is open.");
+                    return false;
+                }
             }
             if (!Follow(doc)) return false;
             Say($"\n  Opened {path}\n");
@@ -306,8 +402,11 @@ sealed class Replayer
         if (RefusedProtected(doc)) return false;
         var dm = AcApp.DocumentManager;
         if (dm.MdiActiveDocument != doc) dm.MdiActiveDocument = doc;
-        if (!ReferenceEquals(doc, _doc)) { Log.Safe("Replay unhook", () => Unhook(_doc)); _doc = doc; Hook(_doc); }
-        if (_suite != null) _docGone = false;
+        // SDI: the drawing just opened is in the same Document object as the one replayed in, whose events died with the old drawing: hook it again
+        var sameObject = ReferenceEquals(doc, _doc);
+        if (!sameObject) { Log.Safe("Replay unhook", () => Unhook(_doc)); _doc = doc; Hook(_doc); }
+        else if (_sdi) Log.Safe("Replay rehook", RehookIfReplaced);   // (the DocumentCreated handler did it already: then nothing is done twice)
+        if (_suite != null || (sameObject && _sdi)) _docGone = false;
         _lispRunning = 0; _afterOpen = true; _quietSince = DateTime.MinValue;
         _notBefore = DateTime.Now.AddMilliseconds(500);
         return true;
@@ -324,8 +423,8 @@ sealed class Replayer
         return true;
     }
 
-    static Document? OpenDocument(string path) =>
-        AcApp.DocumentManager.Cast<Document>().FirstOrDefault(d => d.IsNamedDrawing && string.Equals(d.Name, path, StringComparison.OrdinalIgnoreCase));
+    Document? OpenDocument(string path) =>
+        AcApp.DocumentManager.Cast<Document>().FirstOrDefault(d => d.IsNamedDrawing && (string.Equals(d.Name, path, StringComparison.OrdinalIgnoreCase) || (_sdi && SdiGuard.Own.SamePath(d.Name, path))));   // (SDI: canonical long paths, 8.3 or long form)
 
     /// <summary>A native palette double-click that opened <see cref="Step.Drawing"/> when recorded: follow the drawing once it is open. If it
     /// does not open within 20 s, Retrace opens it itself (the run goes on, with a warning in the result).</summary>
@@ -375,11 +474,22 @@ sealed class Replayer
         CursorBack();
         _timer.Stop();
         Log.Safe("Replay restore view", () => HandOffView(cancel: _userStopped || errored));
+        Log.Safe("Replay SDI end", () =>
+        {
+            if (ViewRestorer.IsShutdown) return;   // the plug-in is unloading: no COM save, no timer
+            foreach (var t in _sends) t.Cancel();   // text this replay typed but that is not typed yet must not be typed after it ended
+            _sends.Clear();
+            if (!_beganRun) return;
+            _beganRun = false;
+            SdiDocs.EndRunLater(_doc, _suite != null || _tdoc != null);   // saves the test's own drawing once nothing runs in it; a failed save disowns a RETRACERUN's drawing
+            if (_suite == null) SdiDocs.NoticeTempDrawing(_doc);
+        });
         Log.Safe("Replay stop", () =>
         {
             AcApp.EnterModal -= OnEnterModal;
             AcApp.LeaveModal -= OnLeaveModal;
             AcApp.DocumentManager.DocumentToBeDestroyed -= OnDocGone;
+            AcApp.DocumentManager.DocumentCreated -= OnDocCreated;
             if (!_docGone) Unhook(_doc);
         });
         Current = null;
@@ -401,7 +511,7 @@ sealed class Replayer
             Say($"\nRetrace replay ended at step {_result.StepsRun}/{_steps.Count}: {message}\n");
             Say($"\n{_result.Summary()}\n" + (written != null ? $"Result: {written}\n" : "Result file could not be written (see retrace.log).\n"));
             StatusBoardHost.ReplayEnded(_result, queued: _tdoc != null || _suite != null, _stoppedForPerson);   // before the verdict box: it blocks until someone closes it
-            if (_alert) ShowAlert(written);
+            if (_alert) { SdiDocs.VerdictBoxOpen = true; try { ShowAlert(written); } finally { SdiDocs.VerdictBoxOpen = false; } }   // (SDI: the end-of-run save may happen with Retrace's own box open)
         });
         if (_finished != null) Log.Safe("Replay finished callback", () => _finished(_result));
     }
@@ -431,6 +541,16 @@ sealed class Replayer
     void OnCmdCancelled(object? s, CommandEventArgs e) { if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) _dialog.CommandEnded(true, DateTime.Now); }
     void OnCmdFailed(object? s, CommandEventArgs e) { if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) _eventError ??= $"command {e.GlobalCommandName} failed"; }
     void OnUnknown(object? s, UnknownCommandEventArgs e) => _unknown.Unknown(e.GlobalCommandName, DateTime.Now);
+
+    /// <summary>The run stops for a person: <paramref name="why"/> goes on the step's result line and, after "needs a person: ", is the run's message.</summary>
+    void StopForPerson(string kind, string title, string why, string? message = null, int? step = null, List<SegmentResult>? segments = null)
+    {
+        var index = (step ?? _i) + 1;
+        var row = _result.Steps.LastOrDefault(x => x.Index == index);   // a step that was sent has its row already: that row says it, a second one for the same step would contradict it
+        if (row != null) { row.Status = "needs-person"; row.Message = why; if (segments != null) row.Segments = segments; }
+        else _result.Steps.Add(new StepResult { Index = index, Kind = kind, Title = title, Status = "needs-person", Message = why, Segments = segments });
+        Finish(false, false, message ?? "needs a person: " + why, needsPerson: true);
+    }
 
     /// <summary>The replay sends <paramref name="command"/> (typed, clicked, or started by a palette click; never something a person typed): AutoCAD may report it
     /// as unknown a moment before it runs it (<see cref="UnknownCommandGrace"/>). Null for a step with no command (a LISP call). Answers typed into a running
@@ -464,6 +584,8 @@ sealed class Replayer
 
     bool Settled()
     {
+        _sends.RemoveAll(x => !x.Pending);
+        if (_sends.Count > 0) return false;   // SDI: text this replay typed is not delivered yet (_pendingStart stays armed)
         if (_modalDepth > 0) return false;
         if (DateTime.Now < _notBefore) return false;
         if (_pendingStart && (DateTime.Now - _sentAt).TotalSeconds < 2) return false; // wait for the command to actually start
@@ -491,6 +613,7 @@ sealed class Replayer
     void Tick()
     {
         if (!_running) return;
+        if (_docRecreated) { _docRecreated = false; if (!TickRecreated()) return; }   // SDI, before anything that reads the document
         // (a palette open that is still pending decides the drawing itself: TickAwaitOpen, bounded by its own timeout)
         if (_docGone && (_suite == null || _awaitOpen == null))
         {
@@ -501,6 +624,7 @@ sealed class Replayer
                 return;
             }
             if (RefusedProtected(active)) return;
+            if (_sdi && !SdiSwitchAllowed(active)) return;   // another drawing replaced the one the replay ran in, outside Retrace's own open step
             _docGone = false;
             _doc = active; Hook(_doc);
             Log.Info($"replay continues in {active.Name}: the drawing it ran in was closed");
@@ -521,8 +645,7 @@ sealed class Replayer
             var tail = ReplayRules.LaterScriptCommands(_steps, dialogAt);
             if (tail.Unsafe != null)
             {
-                _result.Steps.Add(new StepResult { Index = _i + 1, Kind = _steps[_i].Kind, Title = _steps[_i].Title, Status = "needs-person", Message = tail.Unsafe });
-                Finish(false, false, $"needs a person: {tail.Unsafe}", needsPerson: true);
+                StopForPerson(_steps[_i].Kind, _steps[_i].Title, tail.Unsafe);
                 return;
             }
             foreach (var later in tail.Skip) _netSkip.Add(later);
@@ -654,7 +777,7 @@ sealed class Replayer
         if (!clock.Expired(now)) return false;
         var n = Math.Clamp(clock.Step, 1, Math.Max(1, _steps.Count));
         var secs = (int)clock.Limit.TotalSeconds;
-        try { _doc.SendStringToExecute("\u0003\u0003", true, false, true); } catch (Exception ex) { Log.Error("suite cancel", ex); }
+        try { SendTracked("\u0003\u0003"); } catch (Exception ex) { Log.Error("suite cancel", ex); }
         var step = _steps.Count >= n ? _steps[n - 1] : null;
         var text = $"step {n} timed out after {secs} s";
         // a step that was sent has a result already (ok): that line becomes the timed-out one
@@ -680,6 +803,7 @@ sealed class Replayer
         var d = _dialog;
         d.Tick(DateTime.Now);
         var step = _steps[Math.Min(_i, _steps.Count - 1)];
+        _lastActedIndex = Math.Min(_i, _steps.Count - 1);   // the dialog fill acts for this step
         switch (d.Phase)
         {
             case DialogWaitPhase.WaitingForOpen:
@@ -708,12 +832,8 @@ sealed class Replayer
                     var recorded = string.IsNullOrWhiteSpace(step.DialogTitle) ? "" : step.DialogTitle.Trim();
                     var title = actual.Length == 0 ? (recorded.Length == 0 ? "(untitled)" : recorded)
                         : recorded.Length > 0 && !string.Equals(actual, recorded, StringComparison.OrdinalIgnoreCase) ? $"{actual} (recorded: {recorded})" : actual;
-                    _result.Steps.Add(new StepResult
-                    {
-                        Index = _i + 1, Kind = "dialog", Title = step.Title, Status = "needs-person", Message = $"the dialog needs a person: {title}",
-                        Segments = _fill is { UsedUia: false } ? _fill.SegmentResults() : null,   // how far the replay got: the values set, the buttons pressed, the dialog that stopped it
-                    });
-                    Finish(false, false, $"needs a person: dialog {title}", needsPerson: true);
+                    StopForPerson("dialog", step.Title, $"the dialog needs a person: {title}", $"needs a person: dialog {title}",
+                        segments: _fill is { UsedUia: false } ? _fill.SegmentResults() : null);   // how far the replay got: the values set, the buttons pressed, the dialog that stopped it
                     return;
                 }
                 var msg = DialogMessage(step);
@@ -735,8 +855,7 @@ sealed class Replayer
                 _chainPausedFor = _i;
                 if (_suite != null)
                 {
-                    _result.Steps.Add(new StepResult { Index = _i + 1, Kind = "dialog", Title = _steps[_i].Title, Status = "needs-person", Message = pause });
-                    Finish(false, false, $"needs a person: {pause}", needsPerson: true);
+                    StopForPerson("dialog", _steps[_i].Title, pause);
                     return;
                 }
                 Say($"\n  {pause}\n");
@@ -758,7 +877,7 @@ sealed class Replayer
             if ((DateTime.Now - _doneAt).TotalMilliseconds < 500) return;
             if (!string.IsNullOrEmpty(_doc.CommandInProgress))
             {
-                _doc.SendStringToExecute(_deferred, true, false, true);
+                SendTracked(_deferred);
                 _notBefore = DateTime.Now.AddMilliseconds(400);
             }
             else d.FailAfterClose("the command ended when the dialog closed (was it cancelled?)");
@@ -770,7 +889,7 @@ sealed class Replayer
         if (d.Phase == DialogWaitPhase.Failed && !_cancelSent && !string.IsNullOrEmpty(_doc.CommandInProgress))
         {
             _cancelSent = true;
-            _doc.SendStringToExecute("\u0003\u0003", true, false, true);
+            SendTracked("\u0003\u0003");
             _notBefore = DateTime.Now.AddMilliseconds(400);
         }
         // Done, and the next recorded step is a dialog that is open already: the command showed it right after this one closed (a LISP alert
@@ -868,7 +987,15 @@ sealed class Replayer
     /// a command (<see cref="Step.Command"/>) gets the recorded answers once that command runs (<see cref="TickPaletteCommand"/>).</summary>
     void TickPalette(Step s)
     {
+        _lastActedIndex = _i;
         var now = DateTime.Now;
+        if (_sdi && s.Drawing != null)
+        {
+            // AutoCAD itself opens the file at the double-click: it can not be redirected to a copy, and it would replace the drawing the test runs in. Stop before the palette is touched.
+            var why = $"the step \"{s.Title}\" opens {Path.GetFileName(s.Drawing)} by a palette double-click; with SDI on that replaces the open drawing with your file. Run the test with SDI = 0.";
+            StopForPerson("palette", s.Title, why);
+            return;
+        }
         if (_paletteForPerson)
         {
             if (!_userNext) return;
@@ -891,7 +1018,7 @@ sealed class Replayer
             if (s.Native is { Action: "rclick" } && s.Command != null)
             {
                 var typed = Plan.InputText(new Step { Kind = "command", Command = s.Command }.WithAnswers(s.Answers), handleExists: HandleExists);
-                if (!string.IsNullOrEmpty(typed)) { NoteSent(s.Command); _doc.SendStringToExecute(typed, true, false, true); _pendingStart = true; _sentAt = now; }
+                if (!string.IsNullOrEmpty(typed)) { NoteSent(s.Command); SendTracked(typed); _pendingStart = true; _sentAt = now; }
                 NextPaletteStep();
                 return;
             }
@@ -908,8 +1035,7 @@ sealed class Replayer
         PaletteFill.Abandon();   // a context menu the step opened is closed before a person gets it
         if (_mode == ReplayMode.Auto && Unattended)
         {
-            _result.Steps.Add(new StepResult { Index = _i + 1, Kind = "palette", Title = s.Title, Status = "needs-person", Message = problem });
-            Finish(false, false, $"needs a person: palette {s.DialogTitle} ({problem})", needsPerson: true);
+            StopForPerson("palette", s.Title, problem, $"needs a person: palette {s.DialogTitle} ({problem})");
             return;
         }
         Say($"\n  Palette \"{s.DialogTitle}\": {problem}. Do it by hand, then click Next.\n");
@@ -929,7 +1055,7 @@ sealed class Replayer
         if (running || _paletteCommandStarted)
         {
             var text = running ? WithPick(pick => Plan.InputText(s, includeStart: false, handleExists: HandleExists, pick: pick), r => !string.IsNullOrEmpty(r)) : null;
-            if (running && !string.IsNullOrEmpty(text)) _doc.SendStringToExecute(text, true, false, true);
+            if (running && !string.IsNullOrEmpty(text)) SendTracked(text);
             _paletteCommand = null;
             NextPaletteStep();
             _pendingStart = true; _sentAt = DateTime.Now;   // Settled waits until the command is done
@@ -1110,7 +1236,7 @@ sealed class Replayer
         if (pick.View is not { } view) return true;
         var saved = ViewControl.Apply(_doc, view);
         if (saved == null) return false;
-        if (_savedView == null) { _savedView = saved; _savedViewDoc = _doc; }   // the person's own view, kept from the first change of the step
+        if (_savedView == null) { _savedView = saved; _savedViewDoc = _doc; _savedViewDb = SdiDocs.DbId(_doc); }   // the person's own view, kept from the first change of the step
         else saved.Dispose();
         Log.Info($"replay view shown: {view}");
         return true;
@@ -1123,24 +1249,43 @@ sealed class Replayer
     {
         var saved = _savedView; var doc = _savedViewDoc;
         if (saved == null) return;
-        if (doc == null || !AcApp.DocumentManager.Cast<Document>().Contains(doc)) { _savedView = null; _savedViewDoc = null; saved.Dispose(); return; }
+        if (doc == null || !AcApp.DocumentManager.Cast<Document>().Contains(doc) || !SameDrawing(doc, _savedViewDb)) { _savedView = null; _savedViewDoc = null; saved.Dispose(); return; }   // (SDI: the Document object stays when the drawing in it is replaced: the Database tells)
         if (!ViewRestorer.Quiet(doc)) return;
         if (ViewControl.Restore(doc, saved)) { _savedView = null; _savedViewDoc = null; Log.Info("replay view restored"); }
         else Log.Info("the view the person had could not be put back yet, tried again after the next step");   // Restore keeps the view on failure
     }
 
+    /// <summary>^C^C into the replay's drawing when it is the active one and something runs in it.</summary>
+    void SdiCancelRunning()
+    {
+        try
+        {
+            var doc = _doc;
+            if (ViewRestorer.IsShutdown || !AcApp.DocumentManager.Cast<Document>().Contains(doc)) return;
+            if (!ViewRestorer.Quiet(doc) && ReferenceEquals(doc, AcApp.DocumentManager.MdiActiveDocument)) SdiDocs.Send(doc, "\u0003\u0003", false, false, false, null, true);
+        }
+        catch (Exception ex) { Log.Error("SDI cancel at the end of the run", ex); }
+    }
+
     /// <summary>The run ends: the person's view is handed to <see cref="ViewRestorer"/>, which sets it once nothing is running, no input is queued and no dialog is open (and drops it if the
     /// person changed the view meanwhile). A running command is cancelled (Esc Esc) only when <paramref name="cancel"/>: Stop, or an error. A "needs a person" ending, a security prompt and
     /// the unloading of the plugin leave the command and its dialogs to the person, and nothing is sent to AutoCAD then or when the replay's drawing is not the active one.</summary>
+    IntPtr _savedViewDb;   // the drawing the saved view belongs to
+    static bool SameDrawing(Document d, IntPtr db) => SdiDocs.SameDb(SdiDocs.DbId(d), db);
+
     void HandOffView(bool cancel)
     {
-        var saved = _savedView; var doc = _savedViewDoc;
-        _savedView = null; _savedViewDoc = null;
+        // SDI: Stop or an error cancels what runs in the drawing before anything can return early (the end-of-run save waits for it; the view of an own temp drawing is not restored)
+        if (_sdi && cancel) SdiCancelRunning();
+        var saved = _savedView; var doc = _savedViewDoc; var db = _savedViewDb;
+        _savedView = null; _savedViewDoc = null; _savedViewDb = IntPtr.Zero;
         if (saved == null) return;
-        if (ViewRestorer.IsShutdown || doc == null || !AcApp.DocumentManager.Cast<Document>().Contains(doc)) { saved.Dispose(); return; }
-        if (cancel && !ViewRestorer.Quiet(doc) && ReferenceEquals(doc, AcApp.DocumentManager.MdiActiveDocument))
+        if (ViewRestorer.IsShutdown || doc == null || !AcApp.DocumentManager.Cast<Document>().Contains(doc) || !SameDrawing(doc, db)) { saved.Dispose(); return; }
+        // SDI: the run's own test drawing is saved at the end of the run (EndRun): a view set after that would be a change after the save, and there is no person's view in a temp copy
+        if (_sdi && SdiGuard.IsOwnTestDrawing(doc.Name)) { saved.Dispose(); return; }
+        if (!_sdi && cancel && !ViewRestorer.Quiet(doc) && ReferenceEquals(doc, AcApp.DocumentManager.MdiActiveDocument))
         {
-            try { doc.SendStringToExecute("\u0003\u0003", false, false, false); } catch (Exception ex) { Log.Error("cancel before restoring the view", ex); }
+            try { SdiDocs.Send(doc, "\u0003\u0003", false, false, false); } catch (Exception ex) { Log.Error("cancel before restoring the view", ex); }
         }
         ViewRestorer.Hand(doc, saved);
     }
@@ -1160,8 +1305,20 @@ sealed class Replayer
             // typing it would put text where it does not belong; an unattended run must not end as PASS without it
             Say($"\n  WARNING: {problem}\n");
             _deferred = null;
-            _result.Steps.Add(new StepResult { Index = _i + 1, Kind = s.Kind, Title = s.Title, Status = "needs-person", Message = problem });
-            Finish(false, false, $"needs a person: {problem}", needsPerson: true);
+            StopForPerson(s.Kind, s.Title, problem);
+            return false;
+        }
+        if (_sdi && SdiGuard.ClosesDrawingCommand(s.Command))
+        {
+            var why = $"the step \"{s.Title}\" types {s.Command}; closing the only drawing ends AutoCAD under SDI. Run the test with SDI = 0.";
+            StopForPerson(s.Kind, s.Title, why);
+            return false;
+        }
+        if (_sdi && SdiGuard.OpensDrawingCommand(s.Command))
+        {
+            // typed, it would open the person's file (or a new drawing) in place of the test's drawing, and the replay can not point it at a copy
+            var why = $"the step \"{s.Title}\" types {s.Command}; with SDI on that opens a file in place of the open drawing (a copy cannot be substituted in a typed command). Run the test with SDI = 0.";
+            StopForPerson(s.Kind, s.Title, why);
             return false;
         }
         _clicked = null;
@@ -1173,8 +1330,7 @@ sealed class Replayer
         {
             Say($"\n  WARNING: {lost}\n");
             _deferred = null;
-            _result.Steps.Add(new StepResult { Index = _i + 1, Kind = s.Kind, Title = s.Title, Status = "needs-person", Message = lost });
-            Finish(false, false, $"needs a person: {lost}", needsPerson: true);
+            StopForPerson(s.Kind, s.Title, lost);
             return false;
         }
         NoteSent(s.Command);   // before the click: the command it starts may be reported as unknown at once
@@ -1229,7 +1385,7 @@ sealed class Replayer
     {
         if (s.Kind == "ribbon") ActivateTab(s.Tab);
         NoteSent(s.Command);
-        _doc.SendStringToExecute(text, true, false, true);
+        SendTracked(text);
         _pendingStart = true; _sentAt = DateTime.Now;
     }
 
@@ -1239,6 +1395,7 @@ sealed class Replayer
     /// from code can be told apart from one that is gone.</summary>
     bool TryClick(Step s)
     {
+        _lastActedIndex = _i;
         try
         {
             var ribbon = ComponentManager.Ribbon;

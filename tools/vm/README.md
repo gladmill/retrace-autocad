@@ -17,7 +17,7 @@ in the interactive session (`schtasks /create ... /it`, `/run`, then `/delete`).
 | `com-replay-test.sh` | Runs on your Mac or Linux box: regression test that a replay started over COM (`RETRACEREPLAY <path> Auto` through `run-test.sh`) really runs its typed commands. Replays a small recording (CIRCLE, LTSCALE 7.25, `-LAYER Make RTCOM`) in a new drawing, then reads the drawing back over COM: 1 entity, LTSCALE 7.25, layer RTCOM. Exit 0 PASS, 1 the drawing did not change, 2 infrastructure. |
 | `q-ents.ps1` | Query: model space objects by type and some system variables. |
 | `run-test.sh <test folder or recording.jsonl> [--new-drawing] [--run]` | Runs on your Mac or Linux box: copies the recording to the VM (`C:\temp\retrace\tests\<folder>\`), replays it unattended (`RETRACEREPLAY <path> Auto`; with `--run` `RETRACERUN <path>`, which opens its own drawing), waits for `results\latest.json`, copies it back, prints the verdict and checkpoints. Exit 0 PASS, 1 FAIL/INCOMPLETE/ERROR, 2 infra. |
-| `q-newdoc.ps1` | Query: opens a new drawing (`$acad.Documents.Add()`). Run it in a call of its own: later commands go to the document that was active before the query. |
+| `q-newdoc.ps1` | Query: opens a new drawing (`$acad.Documents.Add()`; with SDI = 1, where Add is not available, a copy of the template, and only when the open drawing has no unsaved changes). Run it in a call of its own: later commands go to the document that was active before the query. |
 | `q-netload.ps1` | Query: NETLOADs Retrace.dll from the installed bundle with `FILEDIA` off. AutoCAD then asks once whether to load the unsigned dll; a person answers that. |
 | `esc.ps1` | Brings AutoCAD's frame to the front and presses Esc twice, without COM (leaves a prompt). Writes `C:\retrace-vm\out\esc.txt`; `foreground: False` there means Esc was only posted, so check with a query or `shot.ps1`. |
 | `shot.ps1` | Screenshot without COM. |
@@ -55,6 +55,7 @@ Lessons learned:
 * To take the foreground a hidden task taps Alt: that shows the ribbon's key tips (they eat the next letters: press Esc) and rolls up an
   open auto roll-up palette. `ui-act.ps1`'s `chordraw`, `raw` and `rawmouse` skip it.
 * `SetVariable` over COM needs the variable's type, e.g. `[int16]0` for `DYNMODE` and `FILEDIA`.
+* SDI = 1 (a stored setting): `Documents.Add` throws "Method not available in SDI mode" (`acad-cmd.ps1` and `q-newdoc.ps1` open a copy of the template instead), opening a drawing replaces the one that is open, and a COM call made while a "Save changes?" question or a dialog is open hangs, as everywhere. Set it from a query (`$doc.SetVariable("SDI", [int16]1)`) while one drawing is open; AutoCAD 2026 refused it with several open.
 
 ## Fixtures
 

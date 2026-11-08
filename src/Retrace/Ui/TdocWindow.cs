@@ -128,7 +128,7 @@ sealed class TdocWindow : Window
     {
         var doc = Autodesk.AutoCAD.ApplicationServices.Core.Application.DocumentManager.MdiActiveDocument;
         if (doc == null) { Say("Open a drawing first: the command is typed into the active drawing."); return; }
-        doc.SendStringToExecute("_" + name + " ", true, false, false);
+        Retrace.AutoCad.SdiDocs.Send(doc, "_" + name + " ", true, false, false);
     }
 
     void Start()

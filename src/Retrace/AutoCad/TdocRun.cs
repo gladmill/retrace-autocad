@@ -16,6 +16,8 @@ namespace Retrace.AutoCad;
 sealed class TdocRun : ITestQueueOwner
 {
     public static TdocRun? Current { get; private set; }
+    /// <summary>The document mode (SDI), read once when the run was made.</summary>
+    public bool Single { get; } = SdiDocs.IsSingleNow();
 
     readonly string _title, _folder, _manifestPath, _docxPath;
     readonly TestQueue _queue;
@@ -49,6 +51,7 @@ sealed class TdocRun : ITestQueueOwner
         try { run = new TdocRun(title, recordings, s); }
         catch (Exception ex) { Log.Error("Tdoc start", ex); message = "Tdoc could not start: " + ex.Message; return false; }
         Current = run;
+        SdiGuard.Own.SuiteStarted();
         message = $"Tdoc: {recordings.Count} test(s), written to {run._folder} (as {Path.GetFileName(run._docxPath)} beside it).";
         run.Say(message);
         if (!s.AutoFillDialogs) run.Say("Tdoc: the setting autoFillDialogs is off, so dialogs are not filled in and get no picture.");
@@ -68,7 +71,7 @@ sealed class TdocRun : ITestQueueOwner
         var run = Current;
         if (run == null || !run._queue.IsSent(path)) return null;
         var test = new TrainingTest { Name = TestList.NameOf(TestFolders.NameOf(path)), Folder = Path.GetDirectoryName(path) ?? "" };
-        var capture = new TdocCapture(test, steps, run._folder, run._queue.Index + 1, run._queue.Recordings.Count, run._settings);
+        var capture = new TdocCapture(test, steps, run._folder, run._queue.Index + 1, run._queue.Recordings.Count, run._settings) { Single = run.Single };
         run._captures.Add(capture);
         return capture;
     }
@@ -118,6 +121,7 @@ sealed class TdocRun : ITestQueueOwner
         if (run == null) return;
         Current = null;
         run._queue.End();
+        SdiGuard.Own.SuiteEnded();
         foreach (var c in run._captures) c.Dispose();
         run._queue.Stopped = true;
         Log.Safe("tdoc abort manifest", () => { if (run.WriteManifest()) run.Say($"Tdoc stopped; the manifest is {run._manifestPath}"); });
@@ -156,6 +160,7 @@ sealed class TdocRun : ITestQueueOwner
         if (Current != this) return;
         Current = null;
         _queue.End();
+        SdiGuard.Own.SuiteEnded();   // like a suite: a drawing of this run whose end-of-run save never happened is nobody's now
         StatusBoardHost.TdocEnded(StatusBoard.PadNotRun(_verdicts, _queue.Recordings.Count), _captures.Sum(c => c.PictureCount), _queue.Stopped);
         foreach (var line in _summary) Say("  " + line);
         if (_manifest.Tests.Count == 0) { Say("no test ran; no document written."); return; }

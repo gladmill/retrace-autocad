@@ -23,6 +23,8 @@ public sealed class RetraceApp : IExtensionApplication
         {
             try { RibbonInstaller.Install(); } catch (Exception ex) { Log.Error("ribbon install", ex); }
             Commands.Instance.Initialize();
+            SdiDocs.Initialize();       // the registry of the test's own files compares canonical long paths
+            SdiDocs.CleanStaleOnFirstIdle();   // test drawings left in the temp folders by an earlier session, when a day old and unchanged (at the first idle moment)
             StatusBoardHost.Start();   // the status board file (setting statusBoard); never throws
         }
         catch (Exception ex) { Log.Error("Initialize", ex); }
@@ -46,7 +48,7 @@ public sealed class RetraceApp : IExtensionApplication
         {
             var doc = AcApp.DocumentManager.MdiActiveDocument;
             if (doc == null) { error = "Open a drawing first: AutoCAD runs commands in a drawing."; return false; }
-            doc.SendStringToExecute(command, true, false, false);
+            SdiDocs.Send(doc, command, true, false, false);
             return true;
         }
         catch (Exception ex) { Log.Error("send " + command, ex); error = ex.Message; return false; }
@@ -63,6 +65,8 @@ public sealed class RetraceApp : IExtensionApplication
 
     // ---- commands ----------------------------------------------------------------------------
 
+    /// <summary>Internal: <see cref="SdiDocs.Send"/> starts it to type a replay's text from inside a command (SDI).</summary>
+    [CommandMethod("RETRACETYPE", CommandFlags.NoUndoMarker | CommandFlags.NoHistory | CommandFlags.NoActionRecording)] public static void TypePending() => Run("RETRACETYPE", SdiDocs.TypePending);
     [CommandMethod("RETRACERECORD")] public static void Record() => Run("RETRACERECORD", Commands.Instance.Start);
     [CommandMethod("RETRACESTOP")] public static void Stop() => Run("RETRACESTOP", Commands.Instance.Stop);
     [CommandMethod("-RETRACESTOP")] public static void StopScripted() => Run("-RETRACESTOP", Commands.Instance.StopScripted);
@@ -99,6 +103,8 @@ public sealed class RetraceApp : IExtensionApplication
     {
         try
         {
+            // SDI: there is one drawing, and closing it without saving (CloseAndDiscard, COM Close) ends in AutoCAD quitting
+            if (SdiDocs.IsSingleNow()) { Commands.Print("RETRACECLOSEALL: not available with SDI on (single document interface): closing the only drawing would end AutoCAD. Use CLOSE, or set SDI to 0."); return; }
             var docs = AcApp.DocumentManager.Cast<Document>().ToList();
             if (docs.Count == 0) { Commands.Print("No drawings are open."); return; }
             var names = string.Join("\n", docs.Take(12).Select(d => "  " + System.IO.Path.GetFileName(d.Name))) + (docs.Count > 12 ? $"\n  ... and {docs.Count - 12} more" : "");
