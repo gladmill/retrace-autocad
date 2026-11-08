@@ -1,0 +1,70 @@
+#include "afxres.h"
+#include "resource.h"
+
+// The controls of both windows (the form view and the dialog use the same block).
+#define SAMPLE_CONTROLS \
+    CONTROL         "",IDC_TAB,"SysTabControl32",WS_TABSTOP,7,22,346,170 \
+    LTEXT           "Name:",3000,14,42,30,8 \
+    EDITTEXT        IDC_NAME,50,40,90,12,ES_AUTOHSCROLL \
+    CONTROL         "Priority",IDC_PRIORITY,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,150,41,50,10 \
+    LTEXT           "Unit:",3001,205,42,22,8 \
+    CONTROL         "",IDC_UNIT,"ComboBoxEx32",CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,230,40,60,80 \
+    LTEXT           "Notes:",3002,14,60,30,8 \
+    CONTROL         "",IDC_NOTES,"RichEdit20W",ES_MULTILINE | ES_AUTOVSCROLL | WS_BORDER | WS_TABSTOP,50,58,120,28 \
+    LTEXT           "More:",3003,180,60,25,8 \
+    CONTROL         "",IDC_NOTES2,"RICHEDIT50W",ES_MULTILINE | ES_AUTOVSCROLL | WS_BORDER | WS_TABSTOP,210,58,100,28 \
+    LTEXT           "Parts:",3004,14,94,30,8 \
+    LISTBOX         IDC_PARTS,50,92,80,45,LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_TABSTOP \
+    LTEXT           "Kind:",3005,140,94,20,8 \
+    COMBOBOX        IDC_KIND,165,92,60,50,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP \
+    LTEXT           "D2D:",3006,235,94,20,8 \
+    LTEXT           "",IDC_NOTES3_HOLDER,258,92,85,40 \
+    LTEXT           "Date:",3020,14,42,30,8 \
+    CONTROL         "",IDC_DATE,"SysDateTimePick32",DTS_SHORTDATEFORMAT | WS_TABSTOP,50,40,90,12 \
+    LTEXT           "Date seen: -",IDC_DATE_ECHO,150,42,120,8 \
+    LTEXT           "Time:",3021,14,60,30,8 \
+    CONTROL         "",IDC_TIME,"SysDateTimePick32",DTS_TIMEFORMAT | DTS_UPDOWN | WS_TABSTOP,50,58,90,12 \
+    LTEXT           "Day:",3022,14,80,30,8 \
+    CONTROL         "",IDC_CAL,"SysMonthCal32",MCS_NOTODAY | WS_TABSTOP,50,78,150,100 \
+    LTEXT           "Day seen: -",IDC_CAL_ECHO,210,80,130,8 \
+    LTEXT           "Address:",3040,14,42,30,8 \
+    CONTROL         "",IDC_IP,"SysIPAddress32",WS_TABSTOP,50,40,100,12 \
+    LTEXT           "Shortcut:",3041,14,60,34,8 \
+    CONTROL         "",IDC_HOTKEY,"msctls_hotkey32",WS_TABSTOP,50,58,100,12 \
+    PUSHBUTTON      "Feature button",IDC_MFCBUTTON,14,40,70,14 \
+    EDITTEXT        IDC_MFCBROWSE,90,40,120,12,ES_AUTOHSCROLL \
+    PUSHBUTTON      "",IDC_MFCCOLOR,220,40,60,14 \
+    LTEXT           "",IDC_MFCTAB_HOLDER,14,62,150,50 \
+    LTEXT           "",IDC_MFCGRID_HOLDER,170,62,170,60 \
+    LTEXT           "",IDC_MFCBAR_HOLDER,14,118,200,20 \
+    LTEXT           "Products:",3100,7,196,40,8 \
+    CONTROL         "",IDC_PRODUCTS,"SysListView32",LVS_ICON | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP,7,206,170,50 \
+    LTEXT           "Parts:",3101,185,196,40,8 \
+    CONTROL         "",IDC_TREE,"SysTreeView32",TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP,185,206,168,50 \
+    LTEXT           "View: none",IDC_LASTVIEW,7,260,100,8
+
+IDD_SAMPLE_VIEW DIALOGEX 0, 0, 360, 280
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    SAMPLE_CONTROLS
+    DEFPUSHBUTTON   "Add",IDC_ADD,303,258,50,14
+END
+
+IDD_SAMPLE_DIALOG DIALOGEX 0, 0, 360, 294
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "MFC dialog sample"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    LTEXT           "",IDC_TOOLBAR_HOLDER,7,4,346,16
+    SAMPLE_CONTROLS
+    DEFPUSHBUTTON   "OK",IDOK,246,274,50,14
+    PUSHBUTTON      "Cancel",IDCANCEL,303,274,50,14
+END
+
+STRINGTABLE
+BEGIN
+    ID_PV_ICONS   "Show the products as icons\nIcon view"
+    ID_PV_LIST    "Show the products as a list\nList view"
+    ID_PV_DETAILS "Show the products with details\nDetail view"
+END

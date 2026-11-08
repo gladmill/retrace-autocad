@@ -93,8 +93,8 @@ namespace Retrace.Samples
         readonly List<DlgProc> _procs = new();
         readonly List<IntPtr> _memory = new();
 
-        /// <summary>Shows the sheet (modal); true = OK was pressed.</summary>
-        public bool Show(IntPtr parent)
+        /// <summary>Shows the sheet (modal) with this title; true = OK was pressed.</summary>
+        public bool Show(IntPtr parent, string caption = "Sheet practice")
         {
             var pages = new PropSheetPage[3];
             var titles = new[] { "General", "Size", "Options" };
@@ -119,7 +119,7 @@ namespace Retrace.Samples
                 dwSize = Marshal.SizeOf<PropSheetHeader>(),
                 dwFlags = PSH_PROPSHEETPAGE | PSH_NOAPPLYNOW | PSH_NOCONTEXTHELP,
                 hwndParent = parent,
-                pszCaption = Alloc(Marshal.StringToHGlobalUni("Sheet practice")),
+                pszCaption = Alloc(Marshal.StringToHGlobalUni(caption)),
                 nPages = pages.Length,
                 ppsp = pageMem,
             };

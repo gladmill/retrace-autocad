@@ -78,10 +78,13 @@ sealed partial class DialogWatch
     }
 
     /// <summary>The parts of the window Retrace does not follow are kept for the dialog's `unsupported`, and a new one is named in the log, once (by <see cref="WpfPresses.Unsupported.Key"/>).</summary>
-    static void NotePartsOf(Entry e, WpfPalette.Parts parts)
+    static void NotePartsOf(Entry e, WpfPalette.Parts parts) => NoteParts(e, parts.Unsupported, "wpf");
+
+    /// <summary>Parts a Win32 dialog holds that no message reads (MFC Feature Pack tabs, property grids and toolbars: <see cref="NativeParts.Classify"/>) are kept the same way, and named in the log once each.</summary>
+    static void NoteParts(Entry e, IEnumerable<WpfPresses.Unsupported> found, string source)
     {
-        var fresh = parts.Unsupported.Where(u => e.WpfParts.TryAdd(u.Key, u)).ToList();
-        if (WpfPresses.UnsupportedParts(fresh) is { } note) Log.Info($"dialog \"{e.Title}\" (wpf): {note}");
+        var fresh = found.Where(u => e.WpfParts.TryAdd(u.Key, u)).ToList();
+        if (WpfPresses.UnsupportedParts(fresh) is { } note) Log.Info($"dialog \"{e.Title}\" ({source}): {note}");
     }
 
     /// <summary>The message hook leaves the mouse and the keys of a WPF dialog to WPF's own events (true = nothing more to do with the message); the close box, Alt+F4 and the rest are the common code's.</summary>

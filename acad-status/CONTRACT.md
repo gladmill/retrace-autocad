@@ -33,7 +33,7 @@ Required in every file:
 |---|---|---|
 | `v` | int | contract version, `1` |
 | `source` | string | as in the file name |
-| `writer` | string | product and version, e.g. `"Retrace 0.6.1"` |
+| `writer` | string | product and version, e.g. `"Retrace 0.6.2"` |
 | `pid` | int | process id of the writer (for in-process writers: acad.exe) |
 | `updated` | string | UTC ISO 8601 with `Z`, last write |
 | `ttlSec` | int | the writer refreshes at least every `ttlSec / 2` seconds while alive; past `updated + ttlSec` the entry is **stale** |
@@ -96,7 +96,7 @@ file that lacks a required field or whose `v` is not an integer >= 1.
 ## Example (`retrace-4812.json`)
 
 ```json
-{ "v": 1, "source": "retrace", "writer": "Retrace 0.6.1", "pid": 4812, "updated": "2026-11-05T10:14:03Z", "ttlSec": 15,
+{ "v": 1, "source": "retrace", "writer": "Retrace 0.6.2", "pid": 4812, "updated": "2026-11-05T10:14:03Z", "ttlSec": 15,
   "state": "running", "short": "Suite 3/7", "summary": "Suite 3/7: smoke040, step 4/5 (BREAK)", "owner": "COM",
   "since": "2026-11-05T10:13:40Z", "detail": { "mode": "suite", "test": "smoke040", "step": 4, "steps": 5 } }
 ```

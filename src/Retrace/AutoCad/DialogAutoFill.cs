@@ -66,7 +66,9 @@ sealed partial class DialogAutoFiller
     DialogFill.UiaOutcome? _hold;
     DialogAutoFiller? _child;
     bool _uia;
-    readonly List<(IntPtr Button, string Label)> _pressed = new();
+    readonly List<(IntPtr Button, string Label, ScreenRect? Box)> _pressed = new();
+    /// <summary>The check button a posted command was for (toolbar, command id, style, state before): it must end as a click leaves it (<see cref="ToolbarPress.CheckProblem"/>), else a person finishes.</summary>
+    (IntPtr Toolbar, int Id, int Style, bool Before)? _toolbarCheck;
     string _pressState = "";   // the field values and static texts when the button was pressed: a retry needs them unchanged
     bool _mouseTried;   // the button was pressed with the mouse messages already (the recording says it acts on mouse-down, or the retry below)
     // tabs: a value, a button or the close that sits on a tab that is not showing makes the dialog show it first (the page's controls exist on the next tick)
@@ -180,6 +182,7 @@ sealed partial class DialogAutoFiller
         var values = Seg.Values;
         // the recorded `source` is not trusted: a recorder read too early fell back to UI Automation on a plain Win32 dialog (Drawing Units)
         var scan = Scan(_dlg, readTicks: false);
+        foreach (var u in scan.Unsupported) _liveParts[u.Key] = u;   // parts no Win32 message reads (MFC Feature Pack): named in the segments' note
         if (_mode == AutoMode.MessageOk)
         {
             // a message box: texts and buttons only. Anything else (fields, a tree (also a field now), a list view or grid the scan does not
@@ -191,8 +194,10 @@ sealed partial class DialogAutoFiller
         }
         if (values.Count == 0)
         {
-            if (scan.Buttons.Count == 0 && !expired) return;
-            if (scan.Buttons.Count == 0 && scan.Fields.Count == 0)
+            // something to press: a push button, or a toolbar (whose buttons a toolbar click finds by command id)
+            bool nothingToPress = scan.Buttons.Count == 0 && scan.Toolbars.Count == 0;
+            if (nothingToPress && !expired) return;
+            if (nothingToPress && scan.Fields.Count == 0)
             {
                 if (HasClicks) GiveUp("the dialog has no controls Retrace can press a button in"); else StartUia(now);
                 return;
@@ -225,7 +230,7 @@ sealed partial class DialogAutoFiller
         foreach (var i in TreeChecks.OrderForApply(values, plan.Set))
         {
             if (FillMatcher.IsNoOp(values[i])) { results[i] = FieldFillResult.Ok(values[i].Label, "nothing to choose"); continue; }
-            var err = DialogFill.ApplyWin32(scan.Fields[map[i]], scan.Handles[map[i]], values[i], Cur.Ticks);
+            var err = DialogFill.ApplyWin32(scan.Fields[map[i]], scan.Handles[map[i]], values[i], Cur.Ticks, takeFocus: true);
             // a value that did not go in is tried again (on its own tab) until its controls timeout: the program may still be filling the dialog (a DCL
             // popup_list gets its items right after the dialog shows; "no entry" was a race, not a missing item)
             results[i] = err == null ? FieldFillResult.Ok(values[i].Label)
@@ -251,7 +256,7 @@ sealed partial class DialogAutoFiller
             // when it was set, and the earlier tabs are not shown again just for this
             if (results[i].Status == FieldFillResult.Applied && !FillMatcher.IsNoOp(values[i]) && (map[i] >= 0 || !Cur.Checked.Contains(i)))
             {
-                results[i] = DialogFill.Verify(values[i], map[i] < 0 ? null : DialogFill.LiveValue(scan, map[i], values[i]), results[i]);
+                results[i] = DialogFill.Verify(values[i], map[i] < 0 ? null : DialogFill.LiveValue(scan, map[i], values[i]), results[i], map[i] < 0 ? null : DialogFill.LiveShown(scan, map[i], values[i]));
                 if (results[i].Status == FieldFillResult.Applied) Cur.Checked.Add(i);
             }
         if (_pendingTab != null && results.All(r => r.Status != FieldFillResult.Failed))
@@ -311,33 +316,56 @@ sealed partial class DialogAutoFiller
         if (seg.Menu != null) { PressMenu(scan, now); return; }
         int want = Math.Max(1, seg.ButtonIndex), seen = 0;
         var target = IntPtr.Zero;
+        ToolbarButton toolbar = default;
+        ScreenRect? toolbarBox = null;   // a toolbar button's own rectangle, for a Tdoc picture
         if (seg.IsDoubleClick)
         {
             // a double-click on a tree item: the tree is the live field of the recorded tree
             var at = FillMatcher.Match(new[] { new FieldChange(seg.Tree, seg.TreeLabel, "tree", "", "", seg.Tab) }, scan.Fields.Select(LiveField.Of).ToList())[0];
             if (at >= 0 && scan.Handles[at].Count > 0) target = scan.Handles[at][0];
         }
+        else if (seg.IsToolbar)
+        {
+            // a toolbar button: by its command id in any toolbar of the window (an MFC id is the same in every run), and by nothing else: its name is for steps.md and messages. Not found yet: looked for again on the next tick.
+            var all = scan.Toolbars.SelectMany(tb => ToolbarControl.Buttons(tb).Select(b => (Tb: tb, B: b))).ToList();
+            var at = ToolbarLabel.FindById(all.Select(x => x.B.Id).ToList(), seg.ButtonId);
+            if (at >= 0) { target = all[at].Tb; toolbar = all[at].B; toolbarBox = ToolbarControl.ItemScreenRect(target, toolbar.Index) is { } r ? new ScreenRect(r.L, r.T, r.R, r.B) : null; }
+        }
         else
             foreach (var (h, _, text) in scan.Buttons)
                 if (string.Equals(PaletteFill.ButtonLabel(text), seg.Button, StringComparison.OrdinalIgnoreCase) && ++seen == want) { target = h; break; }
         if (target == IntPtr.Zero)
         {
-            if (now - _segStart > ControlsTimeout) GiveUp(seg.IsDoubleClick ? $"no tree \"{seg.TreeLabel}\" in the dialog" : $"no enabled button \"{seg.Button}\" in the dialog");
+            if (now - _segStart > ControlsTimeout) GiveUp(seg.IsDoubleClick ? $"no tree \"{seg.TreeLabel}\" in the dialog" : seg.IsToolbar ? $"toolbar button '{seg.Button}' (command {seg.ButtonId}) not found" : $"no enabled button \"{seg.Button}\" in the dialog");
             else State = Phase.Verify;   // tried again on the next tick
             return;
         }
         // the last click of a dialog that no OK or Cancel closes: it is the dialog's close, so a Tdoc run takes its picture first (see Close)
-        if (BeforeClose != null && IsClosingClick && !BeforeClose(ShotOf(scan, true, (target, seg.Button!)))) { State = Phase.Verify; return; }   // tried again on the next tick
+        if (BeforeClose != null && IsClosingClick && !BeforeClose(ShotOf(scan, true, (target, seg.Button!, toolbarBox)))) { State = Phase.Verify; return; }   // tried again on the next tick
         Cur.Statics = ReadStatics(_dlg);   // the static texts just before the press, read on request (the polls of Seek and Verify do not read them)
         if (seg.IsDoubleClick)
         {
             // the item is selected and the mouse messages are sent from the dispatcher after this tick (what its handler opens runs with the ticks going on)
             if (TreeControl.DoubleClick(target, seg.Path, a => DialogFill.Later("tree double-click", a)) is { } why) { GiveUp($"could not double-click {seg.Path}: {why}"); return; }
         }
+        else if (seg.IsToolbar)
+        {
+            // WM_COMMAND to the toolbar's owner, posted: the owner runs the command from its own message loop
+            if (ToolbarPress.StopFor(toolbar.Style, ToolbarControl.ExtendedStyle(target)) is { } toolbarStop) { GiveUp($"{seg.Button}: {toolbarStop}"); return; }
+            // a check button: the state a click leaves it in is set first, as the toolbar does for a click; the command is posted after, and the state is looked at again later (TickPressed)
+            if (ToolbarPress.ExpectedChecked(toolbar.Style, toolbar.Checked) is { } wantChecked && toolbar.Enabled) ToolbarControl.SetChecked(target, toolbar.Id, wantChecked);
+            if (ToolbarControl.Press(target, toolbar.Id, out var toolbarDisabled) is { } toolbarWhy)
+            {
+                // a disabled button may be enabled by the values just set (the program's update of its state): tried again on the next tick until the controls time out, like a push button
+                if (toolbarDisabled && now - _segStart <= ControlsTimeout) { State = Phase.Verify; return; }
+                GiveUp($"could not press the toolbar button {seg.Button}: {toolbarWhy}"); return;
+            }
+        }
         else if (!DialogFill.PostPress(target, seg.OnDown, out var pressWhy)) { GiveUp($"could not press {seg.Button}" + (pressWhy != null ? $": {pressWhy}" : "")); return; }
         Cur.Pressed = true;
-        _pressed.Add((target, seg.Button!));
-        _pressedAt = now; _nestedUsed = 0; _lastNested = IntPtr.Zero; _mouseTried = seg.OnDown || seg.IsDoubleClick || !DialogFill.IsWinForms(target); _pressState = PressState(scan);
+        _toolbarCheck = seg.IsToolbar && ToolbarPress.IsCheck(toolbar.Style) ? (target, toolbar.Id, toolbar.Style, toolbar.Checked) : null;   // a check button: its state is looked at once the command has run
+        _pressed.Add((target, seg.Button!, toolbarBox));
+        _pressedAt = now; _nestedUsed = 0; _lastNested = IntPtr.Zero; _mouseTried = seg.OnDown || seg.IsDoubleClick || seg.IsToolbar || !DialogFill.IsWinForms(target); _pressState = PressState(scan);
         State = Phase.Pressed;
     }
 
@@ -367,6 +395,11 @@ sealed partial class DialogAutoFiller
     void TickPressed(DateTime now)
     {
         var seg = Seg;
+        if (_toolbarCheck is { } tc && now - _pressedAt >= TimeSpan.FromMilliseconds(600))
+        {
+            _toolbarCheck = null;
+            if (Native.Exists(tc.Toolbar) && ToolbarPress.CheckProblem(tc.Style, tc.Before, ToolbarControl.IsChecked(tc.Toolbar, tc.Id)) is { } checkProblem) { GiveUp($"{seg.Button}: {checkProblem}"); return; }
+        }
         if (_lastMenu is { } lm && lm.Run.LateProblem is { } late) { GiveUp($"{lm.Menu.Phrase()}: {late}"); return; }
         var nested = FindNested();
         if (nested != IntPtr.Zero)
@@ -452,7 +485,7 @@ sealed partial class DialogAutoFiller
 
     /// <summary>The filled controls and the close button of a Win32 dialog, for a Tdoc picture. Only the last segment's values are shown (the earlier ones were
     /// replaced or consumed); the buttons pressed on the way get a box of their own.</summary>
-    DialogShot ShotOf(Win32Scan scan, bool ok, (IntPtr Button, string Label)? closingClick = null)
+    DialogShot ShotOf(Win32Scan scan, bool ok, (IntPtr Button, string Label, ScreenRect? Box)? closingClick = null)
     {
         var values = Seg.Values;
         var results = Cur.Results;
@@ -470,9 +503,9 @@ sealed partial class DialogAutoFiller
                 tabBoxes.Add(new DialogBox(IntPtr.Zero, new ScreenRect(tr.L, tr.T, tr.R, tr.B), "Click the " + text + " tab"));
         filled.InsertRange(0, tabBoxes);
         var seenLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (h, label) in _pressed)
-            if (Native.Exists(h) && seenLabels.Add(label)) filled.Add(new DialogBox(h, default, "Click " + label));
-        if (closingClick is { } cc) return new DialogShot(_dlg, filled, new DialogBox(cc.Button, default, TdocPlan.CloseCallout(ok, cc.Label)));
+        foreach (var (h, label, box) in _pressed)
+            if (Native.Exists(h) && seenLabels.Add(label)) filled.Add(box is { } bx ? new DialogBox(IntPtr.Zero, bx, "Click " + label) : new DialogBox(h, default, "Click " + label));   // a toolbar button: its own rectangle, not the whole toolbar
+        if (closingClick is { } cc) return new DialogShot(_dlg, filled, cc.Box is { } cb ? new DialogBox(IntPtr.Zero, cb, TdocPlan.CloseCallout(ok, cc.Label)) : new DialogBox(cc.Button, default, TdocPlan.CloseCallout(ok, cc.Label)));
         int b = FillMatcher.PickButton(scan.Buttons.Select(x => (x.Id, x.Text)).ToList(), ok);
         return new DialogShot(_dlg, filled, b < 0 ? null : new DialogBox(scan.Buttons[b].H, default, TdocPlan.CloseCallout(ok, scan.Buttons[b].Text)));
     }

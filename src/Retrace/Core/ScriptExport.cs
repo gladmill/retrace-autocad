@@ -38,6 +38,16 @@ public static class ScriptExport
                 case "ribbon" or "command" or "lisp":
                 {
                     sb.AppendLine($"; {s.Title}");
+                    if (s.ChainClick)
+                    {
+                        // the click's LISP runs a SCRIPT file; a SCRIPT started inside a running script replaces it, so nothing of the button is exported (neither its macro nor its LISP form)
+                        var button = ReplayRules.ButtonName(s);
+                        sb.AppendLine($"; MANUAL: run \"{button}\" by hand: it starts a script, which would end this one. The dialogs it opens are the steps after this one; the script continues below");
+                        var given = s.ChainAnswers.Where(a => a.Input != false).ToList();
+                        if (given.Count > 0)
+                            sb.AppendLine($"; MANUAL: then give ({given.Count}): " + string.Join("; ", given.Select(ReplayRules.AnswerText)));
+                        break;
+                    }
                     if (s.HadDialog) { sb.AppendLine($"; MANUAL: {s.Command} opened a dialog; run it by hand (use -{s.Command} for the command-line form if one exists)"); break; }
                     if (Plan.Problem(s) is { } problem) { sb.AppendLine($"; MANUAL: {problem}"); break; }
                     var text = Plan.InputText(s);

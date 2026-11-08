@@ -182,18 +182,5 @@ static class TabControl32
     }
 
     /// <summary>WM_NOTIFY from the tab control to its parent with <paramref name="code"/>, as the control sends it; the parent's answer (TCN_SELCHANGING: non-zero = stay).</summary>
-    static long Notify(IntPtr parent, IntPtr tab, int code)
-    {
-        var nm = Marshal.AllocHGlobal(24);   // NMHDR: hwndFrom, idFrom, code
-        try
-        {
-            Marshal.WriteIntPtr(nm, 0, tab);
-            Marshal.WriteInt64(nm, 8, GetDlgCtrlID(tab));
-            Marshal.WriteInt32(nm, 16, code);
-            Marshal.WriteInt32(nm, 20, 0);
-            Native.SendNum(parent, WM_NOTIFY, (IntPtr)GetDlgCtrlID(tab), nm, SMTO_ABORTIFHUNG, TimeoutMs, out var r);
-            return r.ToInt64();
-        }
-        finally { Marshal.FreeHGlobal(nm); }
-    }
+    static long Notify(IntPtr parent, IntPtr tab, int code) => Native.SendNotify(parent, tab, GetDlgCtrlID(tab), code, size: 24).ToInt64();
 }

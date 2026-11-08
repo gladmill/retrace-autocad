@@ -153,7 +153,7 @@ public sealed class RecordingState
 }
 
 /// <summary>A dialog field that changed while the dialog was open. Kind: edit | check | radio | combo | list | slider | tree. Tab: the tab it is on ("Lines", "Fit › Text placement"), "" for none.</summary>
-public sealed record RecordingDialogValue(string Label, string Kind, string Before, string After, string Tab = "");
+public sealed record RecordingDialogValue(string Label, string Kind, string Before, string After, string Tab = "", IReadOnlyList<Retrace.Core.ListItem>? Items = null);
 
 /// <summary>A push button (not OK / Cancel) clicked in a dialog (a `dialog_click` event): the fields changed since the dialog opened or since the click before,
 /// and the dialogs the click opened. A nested dialog is part of the click that opened it, not a step of its own.</summary>
@@ -353,7 +353,7 @@ public static class RecordingReader
 
     /// <summary>The changed fields of a `fields` array (`dialog_values`, `dialog_click`) added to <paramref name="into"/>; anything but an array of objects adds none.</summary>
     static void AddValues(List<RecordingDialogValue> into, JsonElement fields) =>
-        into.AddRange(Retrace.Core.DialogNesting.FieldsOf(fields).Select(f => new RecordingDialogValue(f.Label, f.Kind, f.Before, f.After, Retrace.Core.FillMatcher.TabOfChange(f))));
+        into.AddRange(Retrace.Core.DialogNesting.FieldsOf(fields).Select(f => new RecordingDialogValue(f.Label, f.Kind, f.Before, f.After, Retrace.Core.FillMatcher.TabOfChange(f), f.Items)));
 
     public static void BuildSteps(RecordingSession s)
     {
@@ -370,9 +370,28 @@ public static class RecordingReader
         string? firstDoc = null, lastDoc = null;
         var targets = new Dictionary<long, List<RecordingShot>>();
         var startup = DrawingOpen.StartupEvents(s.Events.Select(x => x.Raw));   // LISP AutoCAD ran by itself while a drawing opened: not steps
+        // the same rule as the replay's plan (Core/Plan.ScriptChain): a ribbon click whose LISP runs a SCRIPT file owns the commands the script types, so steps.md and the replay number the steps alike
+        bool hasInputFlags = Retrace.Core.Plan.HasInputFlags(s.Events.Select(x => x.Raw));
+        var chains = Retrace.Core.Plan.ScriptChain(s.Events.Select(x => x.Raw).ToList(), startup);
+        var ribbonAt = new Dictionary<int, RecordingStep>();
+        int idx = -1;
+        bool ownedEvent = false;
         foreach (var e in s.Events)
         {
+            idx++;
+            ownedEvent = false;
             if (e.N is { } en && startup.Contains(en)) continue;
+            if (chains.TryGetValue(idx, out var chainOwner) && ribbonAt.TryGetValue(chainOwner, out var chainStep))
+            {
+                // an event of the click's chain: the ribbon step owns it; only an answer a person gave is kept (the script gives the rest again)
+                cur = chainStep; ownedEvent = true;
+                if (chainStep.Kind == "ribbon") { lastRibbon = chainStep; ribbonConsumed = true; }
+                if (e.Type == "lisp_start" && chainStep.Kind == "ribbon") chainStep.Lisp ??= e.Str("firstLine");
+                // an answer a person gave is kept (the "prompt" case below); the script's own prompts are not
+                if (e.Type == "prompt" && !Retrace.Core.Plan.IsPersonPrompt(e.Raw, hasInputFlags)) continue;
+                if (e.Type is "doc_created" or "doc_active" or "doc_closing") continue;   // a drawing the script opened or closed: not a step
+                // the rest flows on with the usual bookkeeping (depth, inLisp, a cancelled or failed command, a dialog opened inside it), but makes no step of its own
+            }
             RecordingAnswer? added = null;
             switch (e.Type)
             {
@@ -384,11 +403,13 @@ public static class RecordingReader
                         Macro = CleanMacro(e.Str("macro")), ItemType = e.Str("itemType"),
                     };
                     ribbonConsumed = false;
+                    ribbonAt[idx] = cur;
                     s.Steps.Add(cur);
                     break;
                 case "cmd_start":
                 {
                     var cmd = e.Str("command") ?? "?";
+                    if (ownedEvent) { depth++; break; }   // a command of the click's script chain: the ribbon step owns it
                     if (depth++ > 0) { cur?.Commands.Add(cmd); break; } // nested / transparent command: belongs to the running step
                     // AutoCAD reports some commands (UNITS) as unknown a moment before it runs them: drop that step (same command: CommandName.Same, the replay's rule)
                     if (s.Steps.Count > 0 && s.Steps[^1] is { Kind: "command", Outcome: "unknown" } unk && e.T - unk.T <= 1000
@@ -422,11 +443,13 @@ public static class RecordingReader
                 case "cmd_end": if (depth > 0) depth--; break;
                 case "cmd_cancel": if (depth > 0) depth--; if (cur != null) cur.Outcome = "cancelled"; break;
                 case "cmd_fail": if (depth > 0) depth--; if (cur != null) cur.Outcome = "failed"; break;
+                case "cmd_unknown" when ownedEvent: break;
                 case "cmd_unknown":
                     cur = new RecordingStep { Kind = "command", T = e.T, Command = e.Str("command"), Outcome = "unknown" };
                     s.Steps.Add(cur);
                     break;
                 case "lisp_end" or "lisp_cancel": inLisp = false; break;
+                case "lisp_start" when ownedEvent: inLisp = true; break;
                 case "lisp_start":
                     inLisp = true;
                     cur = new RecordingStep { Kind = "lisp", T = e.T, Lisp = e.Str("firstLine") };
@@ -435,7 +458,7 @@ public static class RecordingReader
                 case "prompt":
                 {
                     // Outside any command or LISP: a prompt of the recorder's own commands (older sessions recorded the checkpoint note).
-                    if (cur == null || (depth == 0 && !inLisp)) break;
+                    if (cur == null || (depth == 0 && !inLisp && !ownedEvent)) break;
                     // Free input at a prompt that also takes keywords (CIRCLE's "radius or [Diameter]" given 10) comes back as a
                     // Keyword result; AutoCAD then re-asks the same message as a different kind. One typed answer covers both.
                     var prev = cur.Answers.Count > 0 ? cur.Answers[^1] : null;
@@ -571,7 +594,7 @@ public static class RecordingReader
                         foreach (var f in pfs.EnumerateArray())
                         {
                             string S(string k) => f.ValueKind == JsonValueKind.Object && f.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
-                            palette.Values.Add(new RecordingDialogValue(S("label"), S("kind"), S("before"), S("after"), S("tab")));
+                            palette.Values.Add(new RecordingDialogValue(S("label"), S("kind"), S("before"), S("after"), S("tab"), Retrace.Core.ListSelection.ItemsFromJson(f)));
                         }
                     break;
                 }

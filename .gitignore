@@ -2,3 +2,12 @@ bin/
 obj/
 *.user
 .vs/
+
+# the MFC sample is built on the Windows machine (samples/Retrace.MfcSample/build.ps1); no binary is committed
+samples/Retrace.MfcSample/*.dll
+samples/Retrace.MfcSample/*.obj
+samples/Retrace.MfcSample/*.res
+samples/Retrace.MfcSample/*.lib
+samples/Retrace.MfcSample/*.exp
+samples/Retrace.MfcSample/*.pdb
+samples/Retrace.MfcSample/*.ilk

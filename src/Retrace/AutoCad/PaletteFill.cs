@@ -125,7 +125,7 @@ static class PaletteFill
             var map2 = FillMatcher.Match(values, after.Fields.Select(LiveField.Of).ToList());
             foreach (var i in plan.Set)
             {
-                var r = DialogFill.Verify(values[i], map2[i] < 0 ? null : DialogFill.LiveValue(after, map2[i], values[i]), FieldFillResult.Ok(values[i].Label));
+                var r = DialogFill.Verify(values[i], map2[i] < 0 ? null : DialogFill.LiveValue(after, map2[i], values[i]), FieldFillResult.Ok(values[i].Label), map2[i] < 0 ? null : DialogFill.LiveShown(after, map2[i], values[i]));
                 if (r.Status != FieldFillResult.Applied) return $"{values[i].Label}: {r.Message}";
                 run.Done.Add(i);
             }

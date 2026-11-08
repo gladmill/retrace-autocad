@@ -11,6 +11,9 @@ namespace Retrace.Core;
 public sealed record DialogSegment(IReadOnlyList<FieldChange> Values, string? Button, int ButtonIndex, IReadOnlyList<Step> Nested, string Tab = "", string Kind = DialogClickKinds.Click, string Tree = "", string Path = "", string TreeLabel = "", bool OnDown = false, MenuChoice? Menu = null)
 {
     public bool IsDoubleClick => Button != null && Kind == DialogClickKinds.DoubleClick;
+    /// <summary>A button of a toolbar: <see cref="ButtonId"/> is its command id. (The id of a push button is information only.)</summary>
+    public bool IsToolbar => Button != null && Kind == DialogClickKinds.Toolbar;
+    public int ButtonId { get; init; }
     /// <summary>"press Add" / "double-click A › B in Tree".</summary>
     public string Phrase => Menu != null ? Menu.Phrase() : DialogClickKinds.Phrase(Kind, Button ?? "", Path, TreeLabel);
 }
@@ -35,7 +38,7 @@ public static class DialogSegments
     public static List<DialogSegment> Of(Step dialog, bool closingValues)
     {
         var list = new List<DialogSegment>();
-        foreach (var c in dialog.Clicks) list.Add(new DialogSegment(c.Values, c.Button, c.Index, c.Nested, c.Tab, c.Kind, c.Tree, c.Path, c.TreeLabel, c.OnDown, c.Menu));
+        foreach (var c in dialog.Clicks) list.Add(new DialogSegment(c.Values, c.Button, c.Index, c.Nested, c.Tab, c.Kind, c.Tree, c.Path, c.TreeLabel, c.OnDown, c.Menu) { ButtonId = c.Id });
         // closed with Cancel the page showing does not matter (and is not shown first); closed with OK the dialog is left from the page the person left it from
         list.Add(new DialogSegment(closingValues && dialog.Values != null ? dialog.Values : new List<FieldChange>(), null, 1, new List<Step>(), closingValues ? dialog.CloseTab ?? "" : ""));
         return list;

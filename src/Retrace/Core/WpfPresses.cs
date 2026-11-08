@@ -85,7 +85,7 @@ public static class WpfPresses
     public static string? UnsupportedParts(IReadOnlyList<Unsupported> parts)
     {
         if (parts.Count == 0) return null;
-        static string One(Unsupported u) => (u.Kind switch { "tabs" => "a tab control", "tree" => "a tree", "grid" => "a grid", "list" => "a list", _ => "a " + u.Kind }) + (string.IsNullOrEmpty(u.Name) ? "" : " \"" + u.Name + "\"");
+        static string One(Unsupported u) => NativeParts.Phrase(u) ?? (u.Kind switch { "tabs" => "a tab control", "tree" => "a tree", "grid" => "a grid", "list" => "a list", _ => "a " + u.Kind }) + (string.IsNullOrEmpty(u.Name) ? "" : " \"" + u.Name + "\"");
         var names = parts.Select(One).Distinct().ToList();
         var list = names.Count == 1 ? names[0] : string.Join(", ", names.Take(names.Count - 1)) + " and " + names[^1];
         return $"the dialog has {list}, which {(names.Count == 1 ? "is" : "are")} not recorded or replayed (what a person chose or switched there is not repeated)";

@@ -38,6 +38,27 @@ public sealed class Step
     /// <summary>dialog: when it closed (the time of its `dialog_values`), -1 = not known. A nested dialog of the same click opens within a window after it.</summary>
     public long ClosedT = -1;
     public bool HadDialog;
+    /// <summary>ribbon: the click starts a LISP that runs a SCRIPT file, and the commands the script runs are part of this step (<see cref="Plan.ScriptChain"/>): not typed, not steps of their own.
+    /// The replay clicks the button; <see cref="Answers"/> then hold only the answers a person gave after the first dialog opened.</summary>
+    public bool ChainClick;
+    /// <summary>ChainClick: when the chain's first event happened.</summary>
+    public long ChainFromT = long.MaxValue;
+    /// <summary>ChainClick: the answers a person gave inside the script (from the time of its first event); the step's own answers (SCRIPT's file name) are before it.</summary>
+    public IEnumerable<Answer> ChainAnswers => Answers.Where(a => a.T >= ChainFromT);
+    /// <summary>command: the recorder's `script` flag of its `cmd_start` (CMDACTIVE bit 4: a script was active), null = the recording has none.</summary>
+    public bool? Script;
+    /// <summary>command: the `origin` of its `cmd_start`; EndT: when it ended (its `cmd_end`), -1 = not known. <see cref="Plan.ContinuesChain"/> needs both.</summary>
+    public string? Origin;
+    public long EndT = -1;
+    /// <summary>A copy of this step that has only <paramref name="answers"/> (the other fields are shared with it). Used to type the answers given at one point of a step.</summary>
+    public Step WithAnswers(IEnumerable<Answer> answers)
+    {
+        var copy = (Step)MemberwiseClone();
+        copy.Answers = answers.ToList();
+        return copy;
+    }
+    /// <summary>dialog: the window class of the dialog as recorded (`modal_title` / `modal_enter` `windowClass`); null = not recorded.</summary>
+    public string? DialogClass;
     /// <summary>dialog / palette: the fields the person changed while it was open; null = the session has no `dialog_values` event for it.</summary>
     public List<FieldChange>? Values;
     /// <summary>dialog: how many fields the recorder could read.</summary>
@@ -59,9 +80,9 @@ public sealed class Step
 /// <summary>The kinds of `dialog_click`.</summary>
 public static class DialogClickKinds
 {
-    public const string Click = "click", DoubleClick = "dblclick";
-    /// <summary>The kind a `kind` property names: only "dblclick" is another one; a missing or unknown kind is a button click (every recording from before double-clicks).</summary>
-    public static string Of(string? kind) => kind == DoubleClick ? DoubleClick : Click;
+    public const string Click = "click", DoubleClick = "dblclick", Toolbar = "toolbar";
+    /// <summary>The kind a `kind` property names: "dblclick" and "toolbar" (a button of a toolbar, by command id) are the other ones; a missing or unknown kind is a button click (every recording from before double-clicks).</summary>
+    public static string Of(string? kind) => kind == DoubleClick ? DoubleClick : kind == Toolbar ? Toolbar : Click;
 
     /// <summary>The words for a click in a pause message or a Tdoc sentence: "press Add", "double-click Parts › Fasteners in Tree".</summary>
     public static string Phrase(string kind, string button, string path, string treeLabel) =>
@@ -163,6 +184,192 @@ public static class Plan
 
     public static long Num(JsonElement e, string key) => e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var l) ? l : 0;
 
+
+    /// <summary>Longest time (ms) between the end of one command of a script chain and the start of the next one the script runs. A person types a command seconds later.</summary>
+    public const long ScriptGapMs = 250;
+
+    /// <summary>A command or LISP that starts at <paramref name="startT"/> belongs to a script chain whose previous command (or LISP) ended at <paramref name="prevEndT"/>. With the recorder's
+    /// <paramref name="script"/> flag (CMDACTIVE bit 4 when it started: "a script is active") the answer is exact. Without it (a recording made before the flag) it is a guess: the script types it (origin
+    /// `typed/other`) at most <see cref="ScriptGapMs"/> after the previous one. The one rule of <see cref="ScriptChain"/>, the replay's safety net (<see cref="ReplayRules.LaterScriptCommands"/>), <see cref="StepTally"/> and the engine's planner.</summary>
+    public static bool ContinuesChain(string? origin, bool? script, long startT, long prevEndT) => script.HasValue ? script.Value : origin == "typed/other" && startT - prevEndT <= ScriptGapMs;
+
+    static readonly HashSet<string> ChainCore = new() { "prompt", "cmd_start", "cmd_end", "cmd_cancel", "cmd_fail", "lisp_start", "lisp_end", "lisp_cancel", "cmd_unknown" };
+
+    /// <summary>Events that never break a script chain: the recorder's bookkeeping (pictures, view marks, the drawing digest, a checkpoint, a drawing switch) and everything it writes
+    /// about a modal dialog, which belongs to the dialog by `for` (`modal_*`, `dialog_click`, `dialog_values`, and a `context_menu` with `for`: a right-click menu inside a dialog).
+    /// Everything else is something a person did outside a dialog and ends the chain: `ribbon`, `tab`, `palette_values`, `palette_click`, a `context_menu` of a palette (`palette`, no `for`),
+    /// `native_click`, `native_select`, `native_value`, `doc_created`, `doc_closing`, `session_end`.</summary>
+    static bool IsNeutral(JsonElement e)
+    {
+        var ty = Str(e, "type");
+        if (ty is "shot" or "view_stale" or "state" or "mark" or "doc_active" or "modal_enter" or "modal_title" or "modal_leave" or "modal_alias" or "dialog_values" or "dialog_click") return true;
+        return ty == "context_menu" && e.TryGetProperty("for", out var f) && f.ValueKind == JsonValueKind.Number;
+    }
+
+    static bool InChain(JsonElement e) => ChainCore.Contains(Str(e, "type") ?? "") || IsNeutral(e);
+
+    /// <summary>The modal_enter at <paramref name="k"/> is AutoCAD's security prompt: its own title or one of its `modal_title` events (up to the next modal_enter / modal_leave) says so, as <see cref="Build"/> decides it.</summary>
+    static bool IsSecurityModal(IReadOnlyList<JsonElement> list, int k)
+    {
+        if (SecurityPrompt.IsRecorded(Str(list[k], "title"), Str(list[k], "windowClass"))) return true;
+        for (int j = k + 1; j < list.Count; j++)
+        {
+            var ty = Str(list[j], "type");
+            if (ty is "modal_enter" or "modal_leave") break;
+            if (ty == "modal_title" && SecurityPrompt.IsRecorded(Str(list[j], "title"), Str(list[j], "windowClass"))) return true;
+        }
+        return false;
+    }
+
+    /// <summary>The recording has an `input` flag on at least one prompt (made by a recorder that writes it).</summary>
+    public static bool HasInputFlags(IEnumerable<JsonElement> events) => events.Any(x => Str(x, "type") == "prompt" && x.TryGetProperty("input", out _));
+
+    /// <summary>A `prompt` event that is a person's answer: `input: true`; in a recording without any `input` flag every prompt may be one. The one predicate of <see cref="ScriptChain"/>, <see cref="Build"/> and the engine's planner.</summary>
+    public static bool IsPersonPrompt(JsonElement e, bool hasInputFlags) => Str(e, "type") == "prompt" && (hasInputFlags ? Bool(e, "input") == true : true);
+
+    static readonly string[] CmdEnds = { "cmd_end", "cmd_cancel", "cmd_fail" };
+    static readonly string[] LispEnds = { "lisp_end", "lisp_cancel" };
+
+    /// <summary>Finds what a step that runs a SCRIPT file starts without a person, and returns event index -> the event index of the event that owns it. Two kinds of owner: a ribbon click whose LISP
+    /// runs SCRIPT (the click owns the LISP events) and a ribbon click whose macro is itself <c>SCRIPT</c>. (A typed SCRIPT, a palette button and a typed LISP plan as before: TODO.md.) The owner event itself is not in the result; what follows it is: the LISP events up to the end of the SCRIPT command, and then every command or LISP form that the script runs
+    /// (the chain), with their prompts. Which command belongs to the script is decided by <see cref="ContinuesChain"/> alone: the recorder's <c>script</c> flag (CMDACTIVE bit 4, "a script is active"),
+    /// and for a recording without it the timing guess (<c>typed/other</c>, started at most <see cref="ScriptGapMs"/> after the previous end). A <c>prompt</c> flagged <c>input: true</c> (a recording without
+    /// any <c>input</c> flag: any prompt) is a person's answer: it ends the chain after its command, and one before the first dialog opened leaves the whole step split (the replay could not give it).</summary>
+    public static Dictionary<int, int> ScriptChain(IReadOnlyList<JsonElement> list, ISet<long>? startup = null)
+    {
+        var owned = new Dictionary<int, int>();
+        bool hasInputFlags = HasInputFlags(list);
+        bool hasScriptFlags = list.Any(x => x.TryGetProperty("script", out _));
+        bool Person(JsonElement x) => IsPersonPrompt(x, hasInputFlags);
+        bool IsScript(JsonElement x) => Str(x, "type") == "cmd_start" && string.Equals(Str(x, "command"), "SCRIPT", StringComparison.OrdinalIgnoreCase);
+        bool IsStartup(JsonElement x) => Bool(x, "startup") == true || (startup?.Contains(Num(x, "n")) ?? false);
+        // the index of the event that closes the command / LISP opened at k (depth counted), -1 when the recording ends inside it; foreign: a person's event inside
+        int EndOf(int k, string open, string[] closers, out bool foreign)
+        {
+            foreign = false;
+            int depth = 0;
+            bool scriptCmd = open == "cmd_start" && Bool(list[k], "script") == true;   // a command the script runs (OPEN, NEW): the drawings it opens and closes are the script's, not a person's
+            for (int q = k; q < list.Count; q++)
+            {
+                var t2 = Str(list[q], "type");
+                if (t2 == open) depth++;
+                else if (closers.Contains(t2)) { if (--depth == 0) return q; }
+                else if (scriptCmd && t2 is "doc_created" or "doc_active" or "doc_closing") { }
+                else if (!InChain(list[q])) { foreign = true; return -1; }
+            }
+            return -1;
+        }
+
+        for (int r = 0; r < list.Count; r++)
+        {
+            var ty0 = Str(list[r], "type");
+            int first = -1;          // first owned event of the core (the LISP of a ribbon click or of a typed LISP), -1 = the core is not owned
+            int coreEnd = -1;        // the last event of the core
+            int coreStart = -1;      // a macro that is SCRIPT: its cmd_start (the click's own prompts before it are not SCRIPT's)
+            if (ty0 == "ribbon" && !IsOwnRibbon(Str(list[r], "id"), Str(list[r], "tabId")))
+            {
+                long rt = Num(list[r], "t");
+                int j = r + 1;
+                while (j < list.Count && (Str(list[j], "type") is "prompt" or "shot" or "view_stale")) j++;
+                if (j >= list.Count || Num(list[j], "t") - rt > 1000) continue;
+                if (Str(list[j], "type") == "lisp_start" && !IsStartup(list[j]))
+                {
+                    first = j;
+                    int lispDepthHere = 0; bool script = false, bail = false;
+                    for (int k = j; k < list.Count; k++)
+                    {
+                        var ty = Str(list[k], "type");
+                        if (ty == "lisp_start") lispDepthHere++;
+                        else if (ty is "lisp_end" or "lisp_cancel") { if (--lispDepthHere == 0) { coreEnd = k; break; } }
+                        else if (IsScript(list[k])) script = true;
+                        else if (!InChain(list[k])) { bail = true; break; }
+                    }
+                    if (bail || !script || coreEnd < 0) continue;
+                }
+                else if (IsScript(list[j]) && Str(list[j], "origin") == "ribbon")
+                {
+                    // a macro that is SCRIPT itself (^C^C_SCRIPT file): the click's command is the core; the ribbon step keeps it
+                    coreStart = j; coreEnd = EndOf(j, "cmd_start", CmdEnds, out var fo);
+                    if (fo || coreEnd < 0) continue;
+                }
+                else continue;
+            }
+            else continue;
+
+            int last = coreEnd;                       // the newest event of the chain
+            long lastEndT = Num(list[coreEnd], "t");
+            int k2 = coreEnd + 1;
+            var members = new List<int>();            // events the owner takes
+            if (first >= 0) for (int k = first; k <= coreEnd; k++) members.Add(k);
+            while (k2 < list.Count)
+            {
+                var el = list[k2];
+                var ty = Str(el, "type");
+                if (IsNeutral(el)) { k2++; continue; }
+                if (ty == "prompt" && !Person(el)) { members.Add(k2); k2++; continue; }   // noise between two commands
+                // the end of the SCRIPT command or of the LISP that ran it can be recorded after the LISP's own end
+                if (((ty is "cmd_end" or "cmd_cancel" or "cmd_fail") && string.Equals(Str(el, "command"), "SCRIPT", StringComparison.OrdinalIgnoreCase)) || ty is "lisp_end" or "lisp_cancel")
+                {
+                    // an end is never a person's action: in a recording with the flag it is a member whenever it comes (a script that waits can end long after); without it the timing guess decides
+                    if (!hasScriptFlags && !ContinuesChain("typed/other", null, Num(el, "t"), lastEndT)) break;
+                    members.Add(k2); last = k2; lastEndT = Num(el, "t"); k2++; continue;
+                }
+                // AutoCAD reports some commands as unknown a moment before it runs them (UNITS): the pair is one command of the script
+                if (ty == "cmd_unknown")
+                {
+                    int u = k2 + 1;
+                    while (u < list.Count && IsNeutral(list[u])) u++;
+                    if (u < list.Count && Str(list[u], "type") == "cmd_start" && CommandName.Same(Str(list[k2], "command"), Str(list[u], "command"))
+                        && ContinuesChain("typed/other", Bool(list[u], "script") ?? Bool(el, "script"), Num(el, "t"), lastEndT))
+                    {
+                        members.Add(k2); lastEndT = Num(el, "t"); k2++;   // the cmd_start that follows is judged against the report's time
+                        continue;
+                    }
+                    break;
+                }
+                string open; string[] closers;
+                if (ty == "cmd_start") { open = "cmd_start"; closers = CmdEnds; }
+                else if (ty == "lisp_start" && !IsStartup(el)) { open = "lisp_start"; closers = LispEnds; }
+                else break;
+                if (!ContinuesChain(Str(el, "origin") ?? "typed/other", Bool(el, "script"), Num(el, "t"), lastEndT)) break;
+                int end = EndOf(k2, open, closers, out var foreign);
+                if (foreign) break;   // something a person did inside this command: the chain ends before it and the command stays its own step
+                if (end < 0) end = list.Count - 1;   // the recording ended inside the command
+                bool personInput = false;
+                for (int k = k2; k <= end; k++) { members.Add(k); if (Person(list[k])) personInput = true; }
+                last = end; lastEndT = Num(list[end], "t"); k2 = end + 1;
+                if (personInput) break;   // a person answered inside this command: whatever starts after it is theirs, however soon
+            }
+            // an answer a person gave before any dialog opened cannot be replayed from a click
+            bool bad = false;
+            int firstModal = -1;
+            for (int k = r; k <= last; k++) if (Str(list[k], "type") == "modal_enter" && !IsSecurityModal(list, k)) { firstModal = k; break; }
+            foreach (var m in members)
+                if (Person(list[m]) && (firstModal < 0 || m < firstModal)) bad = true;
+            // the core's own prompts too: a macro that is SCRIPT asks for the file name (FILEDIA 0), and a person who typed it gave an answer before any dialog
+            if (first < 0) for (int k = coreStart; k <= coreEnd; k++) if (Person(list[k])) bad = true;
+            if (bad) continue;
+            foreach (var m in members)
+                if (ChainCore.Contains(Str(list[m], "type") ?? "") || Str(list[m], "type") is "doc_created" or "doc_active" or "doc_closing") owned[m] = r;
+            r = last;
+        }
+        return owned;
+    }
+
+    /// <summary>The answer a `prompt` event records. <paramref name="input"/> is the event's `input` flag.</summary>
+    static Answer AnswerOf(JsonElement e, ISet<long> staleViews, bool? input) =>
+        new(Str(e, "kind") ?? "?", Str(e, "status") ?? "?", e.TryGetProperty("value", out var v) ? (staleViews.Contains(Num(e, "n")) ? ViewSpec.WithoutView(v) : v.Clone()) : null, Str(e, "keyword"), Str(e, "message"), input,
+            e.TryGetProperty("seq", out var sq) && sq.ValueKind == JsonValueKind.Number ? sq.GetInt64() : null, Num(e, "t"));
+
+    /// <summary>Adds the answer of a `prompt` event to <paramref name="step"/> unless it only re-asks the previous one: free input at a prompt that also takes keywords (CIRCLE's "radius or [Diameter]" given 10)
+    /// comes back as a Keyword result; AutoCAD then re-asks the same message as a different kind, and the typed text already answers it.</summary>
+    static void AddAnswer(Step step, JsonElement e, ISet<long> staleViews)
+    {
+        var prev = step.Answers.Count > 0 ? step.Answers[^1] : null;
+        if (prev is { Status: "Keyword" } && prev.Message == Str(e, "message") && prev.Kind != Str(e, "kind")) return;
+        step.Answers.Add(AnswerOf(e, staleViews, Bool(e, "input")));
+    }
+
     public static List<Step> Build(IEnumerable<JsonElement> events)
     {
         var steps = new List<Step>();
@@ -184,11 +391,27 @@ public static class Plan
         foreach (var x in list)
             if (Str(x, "type") == "view_stale" && x.TryGetProperty("for", out var sf) && sf.ValueKind == JsonValueKind.Number && sf.TryGetInt64(out var sn)) staleViews.Add(sn);
         var startup = DrawingOpen.StartupEvents(list);   // LISP AutoCAD ran by itself while a drawing opened: not steps
+        bool hasInputFlags = HasInputFlags(list);
+        var chains = ScriptChain(list as IReadOnlyList<JsonElement> ?? list.ToList(), startup);   // event index -> the event index of the ribbon click that owns it
+        Step? lispStep = null;   // the LISP step still running (its end time)
+        var ribbonAt = new Dictionary<int, Step>();   // event index of a step's first event (a click, a command, a LISP) -> the step; the owner of a script chain is found here
+        int idx = -1;
         foreach (var e in list)
         {
+            idx++;
             var type = Str(e, "type");
             var t = Num(e, "t");
             if (startup.Contains(Num(e, "n"))) continue;
+            if (chains.TryGetValue(idx, out var chainRibbon) && ribbonAt.TryGetValue(chainRibbon, out var ownerStep))
+            {
+                // an event of a click's script chain: the ribbon step owns it. Only an answer a person gave is kept; the script gives the rest again.
+                if (!ownerStep.ChainClick) { ownerStep.ChainClick = true; ownerStep.ChainFromT = t; }
+                if (type == "lisp_start" && ownerStep.Kind == "ribbon" && ownerStep.Lisp == null) ownerStep.Lisp = Str(e, "firstLine");   // the click's own LISP: typed when the click starts nothing and the button has no macro
+                if (type is "lisp_end" or "lisp_cancel") inLisp = false;
+                if (IsPersonPrompt(e, hasInputFlags)) AddAnswer(ownerStep, e, staleViews);
+                cur = ownerStep;
+                continue;
+            }
             switch (type)
             {
                 case "doc_created":
@@ -221,6 +444,7 @@ public static class Plan
                         Title = "Click " + string.Join(" > ", new[] { Str(e, "tab"), Str(e, "panel"), text }.Where(s => !string.IsNullOrEmpty(s))),
                     };
                     steps.Add(cur);
+                    ribbonAt[idx] = cur;
                     break;
                 }
                 case "cmd_start":
@@ -235,20 +459,21 @@ public static class Plan
                         break;
                     }
                     // older recorders tagged commands of macro-less (built-in) buttons "typed/other": a command within 1 s is the click's
-                    if (cur is { Kind: "ribbon", Command: null } && (Str(e, "origin") == "ribbon" || (cur.Macro == null && t - cur.T <= 1000))) { cur.Command = cmd; break; }
-                    cur = new Step { Kind = "command", T = t, Command = cmd, Title = $"Type command {cmd}" };
+                    if (cur is { Kind: "ribbon", Command: null, ChainClick: false } && (Str(e, "origin") == "ribbon" || (cur.Macro == null && t - cur.T <= 1000))) { cur.Command = cmd; break; }
+                    cur = new Step { Kind = "command", T = t, Command = cmd, Origin = Str(e, "origin"), Script = Bool(e, "script"), Title = $"Type command {cmd}" };
                     steps.Add(cur);
                     break;
                 }
                 case "cmd_end" or "cmd_cancel" or "cmd_fail":
-                    if (depth > 0) depth--;
+                    if (depth > 0 && --depth == 0 && cur is { Kind: "command" or "ribbon" }) cur.EndT = t;
                     break;
                 case "lisp_end" or "lisp_cancel":
                     inLisp = false;
+                    if (lispStep != null) { lispStep.EndT = t; lispStep = null; }
                     break;
                 case "lisp_start":
                     inLisp = true;
-                    cur = new Step { Kind = "lisp", T = t, Lisp = Str(e, "firstLine"), Title = $"Run LISP {Str(e, "firstLine")}" };
+                    cur = lispStep = new Step { Kind = "lisp", T = t, Lisp = Str(e, "firstLine"), Origin = "typed/other", Script = Bool(e, "script"), Title = $"Run LISP {Str(e, "firstLine")}" };
                     steps.Add(cur);
                     break;
                 case "prompt":
@@ -257,9 +482,7 @@ public static class Plan
                     if (cur == null || (depth == 0 && !inLisp)) break;
                     // Free input at a prompt that also takes keywords (CIRCLE's "radius or [Diameter]" given 10) comes back as a
                     // Keyword result; AutoCAD then re-asks the same message as a different kind. The typed text already answers it.
-                    var prev = cur.Answers.Count > 0 ? cur.Answers[^1] : null;
-                    if (prev is { Status: "Keyword" } && prev.Message == Str(e, "message") && prev.Kind != Str(e, "kind")) break;
-                    cur.Answers.Add(new Answer(Str(e, "kind") ?? "?", Str(e, "status") ?? "?", e.TryGetProperty("value", out var v) ? (staleViews.Contains(Num(e, "n")) ? ViewSpec.WithoutView(v) : v.Clone()) : null, Str(e, "keyword"), Str(e, "message"), Bool(e, "input"), e.TryGetProperty("seq", out var sq) && sq.ValueKind == JsonValueKind.Number ? sq.GetInt64() : null, t));
+                    AddAnswer(cur, e, staleViews);
                     break;
                 }
                 case "modal_enter":
@@ -275,6 +498,7 @@ public static class Plan
                         if (afterNative) nativeDialogs.Add(modalStep);
                     }
                     else if (modalStep != null && !string.IsNullOrEmpty(Str(e, "title"))) modalStep.DialogTitle = Str(e, "title");
+                    if (modalStep != null && !string.IsNullOrEmpty(Str(e, "windowClass")) && (type == "modal_title" || string.IsNullOrEmpty(modalStep.DialogClass))) modalStep.DialogClass = Str(e, "windowClass");
                     // AutoCAD's security prompt (loading an untrusted dll or LISP file) is a person's decision, not a step of the test: drop it.
                     // A replay that meets it stops with what to do (Replayer); a file that is trusted by now never shows it again.
                     if (modalStep != null && SecurityPrompt.IsRecorded(modalStep.DialogTitle, Str(e, "windowClass")))
@@ -399,7 +623,7 @@ public static class Plan
                         palette.Values ??= new List<FieldChange>();
                         if (e.TryGetProperty("fields", out var pfa) && pfa.ValueKind == JsonValueKind.Array)
                             foreach (var f in pfa.EnumerateArray())
-                                palette.Values.Add(new FieldChange(Str(f, "key") ?? "", Str(f, "label") ?? "", Str(f, "kind") ?? "", Str(f, "before") ?? "", Str(f, "after") ?? "", Str(f, "tab") ?? ""));
+                                palette.Values.Add(new FieldChange(Str(f, "key") ?? "", Str(f, "label") ?? "", Str(f, "kind") ?? "", Str(f, "before") ?? "", Str(f, "after") ?? "", Str(f, "tab") ?? "", ListSelection.ItemsFromJson(f)));
                     }
                     var changes = palette.Values?.Count ?? 0;
                     palette.Title = $"Palette \"{name}\": " + (changes > 0 ? $"{changes} value(s)" : "") + (changes > 0 && palette.Button != null ? ", then " : "")
@@ -497,6 +721,7 @@ public static class Plan
         {
             var m = MacroToInput(s.Macro);
             if (m == null && s.Command != null) m = "_" + s.Command;
+            if (m == null && s.ChainClick && !string.IsNullOrWhiteSpace(s.Lisp)) m = s.Lisp;   // a click whose LISP was absorbed: the form the old separate lisp step typed
             return m == null ? null : m + "\n";
         }
         if (s.Kind == "command") return "_" + s.Command + "\n";
@@ -613,11 +838,7 @@ public static class Plan
     /// confirmed; sent up front it would wait in AutoCAD's input queue and run as a command if the dialog is cancelled.</summary>
     public static (string? First, string? After) InputAroundDialog(Step s, long dialogT, Func<string, string?, bool>? handleExists = null, PickReplay? pick = null)
     {
-        Step With(IEnumerable<Answer> answers) => new()
-        {
-            Kind = s.Kind, Title = s.Title, ItemId = s.ItemId, Macro = s.Macro, Tab = s.Tab, Panel = s.Panel, Path = s.Path,
-            Command = s.Command, Lisp = s.Lisp, T = s.T, HadDialog = s.HadDialog, Answers = answers.ToList(),
-        };
+        Step With(IEnumerable<Answer> answers) => s.WithAnswers(answers);
         var after = With(s.Answers.Where(a => a.T >= dialogT));
         // the answers before the dialog are built first, with the same pick replay; whatever the dialog did may have changed the drawing, so every pick after it uses handles
         var first = InputText(With(s.Answers.Where(a => a.T < dialogT)), handleExists: handleExists, pick: pick);

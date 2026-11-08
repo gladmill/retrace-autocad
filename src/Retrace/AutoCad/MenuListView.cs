@@ -161,6 +161,92 @@ static class MenuListView
         catch (Exception ex) { Log.Error("menu target (list view)", ex); return Unknown; }
     }
 
+    // ---- a list view as a dialog field (kind `listview`, see Core/ListSelection) ----------------------------------------
+
+    /// <summary>What the last read of one list view found: the item count, the selected rows with their texts, and the items made from them.</summary>
+    sealed class SelRead
+    {
+        public int Count; public List<int> Rows = new(); public List<string> Texts = new(); public string Sample = ""; public List<ListItem> Items = new(); public long LastUsed;
+    }
+    const int SampleRows = 64, CacheSize = 16;
+    static readonly Dictionary<IntPtr, SelRead> SelCache = new();
+
+    /// <summary>The selected items of a list view. The selection is read with <c>LVM_GETNEXTITEM</c> and the texts with <c>LVM_GETITEMTEXT</c>: neither depends on the view mode (icons, small icons, list, details,
+    /// tile). Only a list of this thread (the LVITEM buffer is ours: a list of another process cannot be asked). Each poll reads the selected rows' texts only (at most <see cref="ListSelection.MaxItems"/>
+    /// messages); the occurrence of an item needs the rows above it, which are read once per change: while the item count, the selected rows and their texts are as in the last read, that read is returned (a
+    /// 4000-row list costs one pass per selection, not one per poll). Null when the list cannot be read (never an empty selection): more than <see cref="ListSelection.MaxItems"/> items selected, a row past the
+    /// first <see cref="MaxItems"/> rows, an error.</summary>
+    public static List<ListItem>? ReadSelection(IntPtr list)
+    {
+        try
+        {
+            if (!Native.OwnedByThisThread(list)) return null;
+            var selected = new List<int>();
+            for (int i = (int)Ask(list, LVM_GETNEXTITEM, (IntPtr)(-1), (IntPtr)LVNI_SELECTED); i >= 0 && selected.Count <= ListSelection.MaxItems; i = (int)Ask(list, LVM_GETNEXTITEM, (IntPtr)i, (IntPtr)LVNI_SELECTED))
+                selected.Add(i);
+            if (selected.Count == 0) { SelCache.Remove(list); return new List<ListItem>(); }
+            if (selected.Count > ListSelection.MaxItems || selected[^1] >= MaxItems) return null;
+            int count = Count(list);
+            using var reader = new Texts(list);
+            var texts = selected.Select(reader.Of).ToList();
+            // the rows above the last selected one decide the occurrences: a sample of them (at most SampleRows, spread over the rows) is compared too, so a list that was re-filled or re-sorted with the
+            // same count and selection is read again. A rename of one unsampled row above, with nothing else changed, is picked up at the next change of the selection or the count: reading every row
+            // above on every poll (150 ms) would cost 5000 messages for a long list, which is what the cache is for.
+            var sample = Sample(reader, selected[^1]);
+            var now = Environment.TickCount64;
+            if (SelCache.TryGetValue(list, out var last) && last.Count == count && last.Rows.SequenceEqual(selected) && last.Texts.SequenceEqual(texts) && last.Sample == sample) { last.LastUsed = now; return last.Items; }
+            var items = ListSelection.FromRows(reader.All(selected[^1] + 1), selected);
+            if (!SelCache.ContainsKey(list) && SelCache.Count >= CacheSize) SelCache.Remove(SelCache.MinBy(kv => kv.Value.LastUsed).Key);   // least recently used goes
+            SelCache[list] = new SelRead { Count = count, Rows = selected, Texts = texts, Sample = sample, Items = items, LastUsed = now };
+            return items;
+        }
+        catch (Exception ex) { Log.Error("dialog field (list view)", ex); return null; }
+    }
+
+    static string Sample(Texts reader, int lastRow)
+    {
+        if (lastRow <= 0) return "";
+        int step = Math.Max(1, lastRow / SampleRows);
+        var sb = new System.Text.StringBuilder();
+        for (int r = 0; r < lastRow; r += step) sb.Append(reader.Of(r)).Append('\u001f');
+        return sb.ToString();
+    }
+
+    /// <summary>Selects the recorded items the way a click does and says why not (null = done). Every item is looked up first; when one is missing the selection is left as it is. Rows already in the right
+    /// state are not touched; the others get <c>LVM_SETITEMSTATE</c> (the control sends <c>LVN_ITEMCHANGED</c> to its parent from inside the call, as for a click), the last item gets the focus and is
+    /// scrolled into view (<c>LVM_ENSUREVISIBLE</c>), and, in a modal dialog (<paramref name="takeFocus"/>), the window takes the keyboard focus. A list of another process cannot be set (the LVITEM buffer would be ours): a reason, so a person does it.</summary>
+    public static string? SelectItems(IntPtr list, IReadOnlyList<ListItem> items, bool takeFocus = false)
+    {
+        try
+        {
+            if (!Native.OwnedByThisThread(list)) return "the list belongs to another thread or process";
+            int count = Count(list);
+            List<string> texts;
+            using (var reader = new Texts(list)) texts = reader.All(count);
+            var warnings = new List<string>();
+            var rows = ListSelection.Plan(texts, items, out var problem, warnings);
+            foreach (var w in warnings) Log.Info("list view: " + w);
+            if (rows == null) return problem ?? "an item is not in the list";
+            var now = new List<int>();
+            for (int i = (int)Ask(list, LVM_GETNEXTITEM, (IntPtr)(-1), (IntPtr)LVNI_SELECTED); i >= 0 && now.Count <= count; i = (int)Ask(list, LVM_GETNEXTITEM, (IntPtr)i, (IntPtr)LVNI_SELECTED))
+                now.Add(i);
+            var (deselect, select) = ListSelection.Changes(now, rows);
+            foreach (var r in deselect) SetState(list, r, 0, LVIS_SELECTED);
+            foreach (var r in select) SetState(list, r, LVIS_SELECTED, LVIS_SELECTED);
+            if (rows.Count > 0)
+            {
+                SetState(list, rows[^1], LVIS_FOCUSED, LVIS_FOCUSED);
+                Ask(list, LVM_ENSUREVISIBLE, (IntPtr)rows[^1], IntPtr.Zero);
+                if (takeFocus) SetFocus(list);   // only in a modal dialog: a palette keeps the keyboard where the person has it
+            }
+            else SetState(list, -1, 0, LVIS_FOCUSED);
+            return null;
+        }
+        catch (Exception ex) { Log.Error("dialog fill (list view)", ex); return "the list view could not be set: " + ex.Message; }
+    }
+
+    [DllImport("user32.dll")] static extern IntPtr SetFocus(IntPtr h);
+
     /// <summary>The list view of <paramref name="container"/> that a recorded key names (`name:X`, `id:N`), or zero. <paramref name="hidden"/>: the container is an auto-hidden palette, so a control counts when
     /// it and every window up to the container have their own WS_VISIBLE (as a scan of a hidden window does).</summary>
     public static IntPtr Find(IntPtr container, string key, bool hidden)
