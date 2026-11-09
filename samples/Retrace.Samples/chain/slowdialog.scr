@@ -1,0 +1,2 @@
+(setvar "CMDECHO" 0)
+DRAWSLOWDIALOG

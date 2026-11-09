@@ -21,6 +21,8 @@ static class Native
     }
 
     [DllImport("user32.dll")] static extern bool IsWindow(IntPtr hWnd);
+    /// <summary>The foreground window of any program (zero when none).</summary>
+    public static IntPtr ForegroundWindow() => GetForegroundWindow();
     [DllImport("user32.dll")] static extern short GetKeyState(int vk);
 
     /// <summary>The character a WM_KEYDOWN types (what <see cref="Retrace.Core.TypedInput"/> keeps of the command line); null for keys that
@@ -238,4 +240,50 @@ static class Native
         }
         catch { return null; }
     }
+
+    [DllImport("user32.dll")] static extern bool GetLayeredWindowAttributes(IntPtr h, out uint key, out byte alpha, out uint flags);
+
+    /// <summary>The top-level windows of the UI thread (AutoCAD's), front first, as <see cref="Retrace.Core.WindowFacts"/>. UI thread only. Includes the windows an owner owns (EnumThreadWindows lists every top-level window).</summary>
+    public static List<Retrace.Core.WindowFacts> WindowsOfThisThread() => WindowsOfThread(GetCurrentThreadId());
+
+    /// <summary>The visible top-level windows of <paramref name="thread"/>, front first (the one enumeration the dialog-window rules share, see <see cref="ModalAbove.Find"/>).</summary>
+    public static List<Retrace.Core.WindowFacts> WindowsOfThread(uint thread)
+    {
+        var list = new List<Retrace.Core.WindowFacts>();
+        try
+        {
+            EnumThreadWindows(thread, (h, _) =>
+            {
+                try { if (IsWindowVisible(h)) list.Add(FactsOf(h)); }   // cheap exit: most top-level windows of AutoCAD are hidden
+                catch (Exception) { }
+                return true;
+            }, IntPtr.Zero);
+        }
+        catch (Exception ex) { Log.Error("windows of the UI thread", ex); }
+        return list;
+    }
+
+    /// <summary>What <see cref="Retrace.Core.ModalWindows"/> needs to know about one window.</summary>
+    public static Retrace.Core.WindowFacts FactsOf(IntPtr h)
+    {
+        long ex = Win32.GetWindowLongPtr(h, Win32.GWL_EXSTYLE).ToInt64();
+        bool transparent = (ex & 0x80000) != 0 && GetLayeredWindowAttributes(h, out var colorKey, out var alpha, out var fl) && (fl & 2) != 0 && alpha == 0;   // WS_EX_LAYERED with LWA_ALPHA 0
+        GetWindowRect(h, out var r);
+        return new Retrace.Core.WindowFacts(h.ToInt64(), IsWindowVisible(h), IsWindowEnabled(h), HasCaption(h), (ex & 0x80) != 0, transparent, r.Right - r.Left, r.Bottom - r.Top, ClassOf(h), ModalAbove.IsRetraceWindow(h));
+    }
+
+    /// <summary>The foreground window when it is one of this process's, is no AutoCAD main window or <paramref name="replayWindow"/>, and is really shown (visible, not fully transparent, not empty: an add-in's form that is never seen is in front yet no window). Else zero.</summary>
+    public static IntPtr ShownForegroundOfThisProcess(IntPtr mainWindow, IntPtr replayWindow = default)
+    {
+        var h = ForegroundOfThisProcess();
+        if (h == IntPtr.Zero || h == mainWindow || h == replayWindow) return IntPtr.Zero;
+        try { return Retrace.Core.ModalWindows.IsShown(FactsOf(h)) ? h : IntPtr.Zero; } catch (Exception) { return IntPtr.Zero; }
+    }
+
+    /// <summary>The new dialog window in front among this process's windows (not AutoCAD's main window, not <paramref name="replayWindow"/>, not one of <paramref name="before"/>), zero when there is none. Never looks at the foreground window: another program may be in front.</summary>
+    public static IntPtr DialogWindow(IntPtr mainWindow, IntPtr replayWindow = default, IReadOnlyCollection<long>? before = null) =>
+        (IntPtr)Retrace.Core.ModalWindows.Topmost(WindowsOfThisThread(), mainWindow.ToInt64(), replayWindow.ToInt64(), before);
+
+    /// <summary>The handles of the visible windows now: the modal state that starts now has a dialog only among the windows that are not in it.</summary>
+    public static HashSet<long> VisibleHandles() => WindowsOfThisThread().Select(w => w.Handle).ToHashSet();
 }

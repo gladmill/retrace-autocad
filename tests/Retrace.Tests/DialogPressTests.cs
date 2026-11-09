@@ -444,8 +444,8 @@ public class DialogPressTests
         var dlg = steps.Single(s => s.Kind == "dialog");        // not a second step for the announcement (its title was the main window's)
         Assert.Equal("Draw items", dlg.DialogTitle);
         Assert.Equal("Item options", dlg.Clicks.Single().Nested.Single().DialogTitle);
-        // without the alias, the announcement is a step of its own
-        Assert.Equal(2, Build(AliasSession.Where(l => !l.Contains("modal_alias")).ToArray()).Count(s => s.Kind == "dialog"));
+        // without the alias, the announcement (the main window's title, no window of its own) is dropped by MainWindowModal: still one dialog step each, not a phantom third
+        Assert.Equal(1, Build(AliasSession.Where(l => !l.Contains("modal_alias")).ToArray()).Count(s => s.Kind == "dialog"));
     }
 
     [Fact]

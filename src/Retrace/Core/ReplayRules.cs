@@ -93,6 +93,17 @@ public static class ReplayRules
         return answers.Where(a => a.T >= from && a.T < to).ToList();
     }
 
+    /// <summary>The answers of a chain click that the click's own delivery types, as its script asks for them: with no dialog step after the click (its only modal state had no dialog window) all of them; with a dialog step
+    /// after it, those a person gave before that dialog opened (a windowless modal state, then the jig, then the dialog). The ones after the dialog are <see cref="ChainAnswersAfter"/>'s. Empty when the step is no chain click.</summary>
+    public static List<Answer> ChainAnswersAfterClick(IReadOnlyList<Step> steps, int clickIndex)
+    {
+        if (clickIndex < 0 || clickIndex >= steps.Count) return new();
+        var s = steps[clickIndex];
+        if (!s.ChainClick || s.Kind != "ribbon") return new();
+        long to = NextDialogT(steps, clickIndex);
+        return s.ChainAnswers.Where(a => a.Input != false && a.T < to).ToList();
+    }
+
     /// <summary>When the dialog step after step <paramref name="i"/> opened, <c>long.MaxValue</c> when step i + 1 is no dialog step.</summary>
     public static long NextDialogT(IReadOnlyList<Step> steps, int i) => i + 1 < steps.Count && steps[i + 1].Kind == "dialog" ? steps[i + 1].T : long.MaxValue;
 
@@ -125,12 +136,15 @@ public static class ReplayRules
     public static int NewScriptBits(int? bitsNow, int baseline) => (bitsNow ?? 0) & ScriptOrLispBits & ~baseline;
 
     /// <summary>What a non-interactive replay (RETRACEREPLAY Step / Auto) says about a <see cref="Step.ChainClick"/> step with answers: it cannot type them after the dialogs (a dialog there is a person's),
-    /// so it stops before the click. Null when the step has no answers to lose.</summary>
-    public static string? ChainAnswersNeedPerson(Step s)
+    /// so it stops before the click. With no dialog step after the click (<paramref name="dialogFollows"/> false: a chain whose modal state had no dialog window) the replay types the answers itself
+    /// (<see cref="ChainAnswersAfterClick"/>) and stops only for answers it cannot type (<see cref="ChainDelivery.Unsafe"/>). Null when the step has no answers to lose.</summary>
+    public static string? ChainAnswersNeedPerson(Step s, bool dialogFollows = true)
     {
         var answers = s.ChainAnswers.Where(a => a.Input != false).ToList();
         if (!s.ChainClick || answers.Count == 0) return null;
         var list = string.Join("; ", answers.Select(AnswerText));
+        if (!dialogFollows)
+            return ChainDelivery.Unsafe(answers) is { } why ? $"\"{s.Title}\" runs a script that asks for input a person gave while recording ({list}), and RETRACEREPLAY cannot type it: {why}. Give it by hand, or record it again" : null;
         return $"\"{s.Title}\" runs a script that opens dialogs, and the person gave {answers.Count} answer(s) after the first one ({list}); RETRACEREPLAY cannot type them after a dialog. Replay this test with RETRACERUN, or give the answers by hand";
     }
 
