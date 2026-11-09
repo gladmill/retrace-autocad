@@ -316,9 +316,9 @@ static class SdiDocs
     }
 
     /// <summary>A copy of the drawing template in Retrace's SDI temp folder (<c>retrace-sdi</c>), which opens as a plain drawing. SDI has no <c>Documents.Add</c>.</summary>
-    public static string NewTemplateCopy()
+    public static string NewTemplateCopy(string? chosen = null)
     {
-        var template = Commands.FindTemplate();
+        var template = !string.IsNullOrEmpty(chosen) ? chosen : Commands.FindTemplate();
         if (string.IsNullOrEmpty(template) || !File.Exists(template)) throw new InvalidOperationException("SDI is on and no drawing template (acad.dwt) was found to open a drawing from");
         return CopyInto(Path.Combine(Path.GetTempPath(), Retrace.Core.SdiGuard.OwnFolder), template, "Test-" + Guid.NewGuid().ToString("N")[..6] + ".dwg");
     }
