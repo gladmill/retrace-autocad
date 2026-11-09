@@ -288,7 +288,7 @@ public sealed class Recorder
         CheckpointKey.Reload();
         var settings = RetraceSettings.Load();
         var enabled = settings.Screenshots;
-        _dlg.Clear(); _modals.Clear();
+        _dlg.Clear(); _modals.Clear(); _episodes.Clear();
         _dlg.Enabled = settings.DialogValues;
         _pal.Clear(); NativePalette.Clear();
         _pal.Enabled = settings.DialogValues;
@@ -400,7 +400,7 @@ public sealed class Recorder
             _modalTimer = null;
             _shotTimer?.Stop();
             _shotTimer = null;
-            _dlg.Clear(); _modals.Clear();   // also removes the dialog message hook
+            _dlg.Clear(); _modals.Clear(); _episodes.Clear();   // also removes the dialog message hook
             _menu.Stop();
             _pal.Clear(); NativePalette.Clear();
         });
@@ -655,47 +655,58 @@ public sealed class Recorder
 
     // ---- modal dialogs -----------------------------------------------------------------------
 
+    readonly List<ModalEpisode> _episodes = new();   // the modal states open now (EnterModal order): did a window other than the main window ever show in each?
+
     void OnEnterModal(object? s, EventArgs e) => Log.Safe("EnterModal", () =>
     {
         _modalOpen++;
         if (_inOwnCmd || _ownModal > 0) { _ownModal++; return; }
         var token = _modals.Enter();
         var fg = Native.Foreground();
-        var nEnter = Emit("modal_enter", CurDoc(), ("title", fg?.Title), ("windowClass", fg?.Class));
+        var main = MainWindowHandle();
+        bool mainInFront = main != IntPtr.Zero && Native.ForegroundWindow() == main;
+        // `main`: the window in front IS AutoCAD's main window (readers tell a modal state with no dialog window of its own from a dialog by it, not by the title)
+        var before = Native.VisibleHandles();   // a dialog of this modal state is a window that is not among these (a floating palette or a modeless form was there already)
+        var nEnter = Emit("modal_enter", CurDoc(), ("title", fg?.Title), ("windowClass", fg?.Class), ("main", mainInFront));
         var watch = nEnter > 0 ? _dlg.Push(nEnter) : null;
-        // the dialog is often not foreground yet at this instant: look again shortly after
+        foreach (var older in _episodes) if (!older.WindowSeen) older.Abandon();   // the timer below replaces theirs: nothing more is known about them
+        var episode = new ModalEpisode(nEnter, before);
+        _episodes.Add(episode);
+        // the dialog is often not foreground yet at this instant: look again shortly after, and then every 250 ms while the modal state is open (a slow dialog shows after a second or more)
         _modalTimer?.Stop();
         var disp = System.Windows.Threading.Dispatcher.CurrentDispatcher;
         var timer = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Background, disp) { Interval = TimeSpan.FromMilliseconds(300) };
         _modalTimer = timer;
         timer.Tick += (_, _) =>
         {
-            timer.Stop();
+            timer.Interval = TimeSpan.FromMilliseconds(250);
             Log.Safe("ModalTitle", () =>
             {
+                if (!_episodes.Contains(episode)) { timer.Stop(); return; }   // left already
                 // announced late: the dialog is one a button of another dialog opened, found by its window before AutoCAD said so. It is that dialog, not a second one: an alias tells the readers,
                 // and there is no title or picture for the announcement. (Only when the announced window IS that dialog: another dialog that opens over it is a dialog of its own.)
-                var announced = Native.ForegroundOfThisProcess();
-                if (watch != null && announced != IntPtr.Zero && announced != MainWindowHandle() && _dlg.MergeInto(watch, announced) is { } into)
+                var announced = Native.ShownForegroundOfThisProcess(main);   // a form that is never seen (fully transparent, empty) is no window
+                if (watch != null && announced != IntPtr.Zero && _dlg.MergeInto(watch, announced) is { } into)
                 {
+                    timer.Stop(); episode.WindowFound();
                     _modals.Adopt(token);
                     Emit("modal_alias", CurDoc(), ("for", nEnter), ("of", into));
                     return;
                 }
-                var f2 = Native.Foreground();
+                // the dialog: the foreground window of this process that is not the main window, else (another program is in front) the front dialog window among this process's own windows
+                var dlgWnd = announced != IntPtr.Zero ? announced : Native.DialogWindow(main, default, episode.Before);
+                if (dlgWnd == IntPtr.Zero) return;   // none yet: look again (it is written as `modal_nowindow` at the leave if none ever shows)
+                timer.Stop(); episode.WindowFound();
                 var shotFor = nEnter;   // the dialog picture belongs to modal_title when a title arrives, else to modal_enter
                 var title = fg?.Title;
-                if (f2 != null && (f2.Value.Title != fg?.Title || f2.Value.Class != fg?.Class))
+                var shown = dlgWnd == announced ? (Native.Foreground() ?? (Title: Native.TitleOf(dlgWnd), Class: Native.ClassOf(dlgWnd))) : (Title: Native.TitleOf(dlgWnd), Class: Native.ClassOf(dlgWnd));
+                if (shown.Title != fg?.Title || shown.Class != fg?.Class)
                 {
-                    var nTitle = Emit("modal_title", CurDoc(), ("title", f2.Value.Title), ("windowClass", f2.Value.Class));
-                    if (nTitle > 0) { shotFor = nTitle; title = f2.Value.Title; }
+                    var nTitle = Emit("modal_title", CurDoc(), ("title", shown.Title), ("windowClass", shown.Class), ("main", false));
+                    if (nTitle > 0) { shotFor = nTitle; title = shown.Title; }
                 }
-                if (watch != null && _w != null)
-                {
-                    var dlgWnd = Native.ForegroundOfThisProcess();   // the dialog: the foreground window of this process that is not the main window
-                    if (dlgWnd != IntPtr.Zero && dlgWnd != MainWindowHandle()) _dlg.Resolve(watch, dlgWnd, shotFor, title, _w.ElapsedMs);
-                }
-                if (shotFor > 0 && _w != null) _shots.Request(ShotRules.Dialog(shotFor, _w.ElapsedMs));
+                if (watch != null && _w != null) _dlg.Resolve(watch, dlgWnd, shotFor, title, _w.ElapsedMs);
+                if (shotFor > 0 && _w != null) _shots.Request(ShotRules.Dialog(shotFor, _w.ElapsedMs));   // a picture only of a real dialog window
             });
         };
         timer.Start();
@@ -705,6 +716,9 @@ public sealed class Recorder
     {
         if (_modalOpen > 0) _modalOpen--;
         if (_ownModal > 0) { _ownModal--; return; }
+        ModalEpisode? episode = null;
+        if (_episodes.Count > 0) { episode = _episodes[^1]; _episodes.RemoveAt(_episodes.Count - 1); }
+        if (_episodes.Count == 0) _modalTimer?.Stop();
         if (_modals.Leave())
         {
             if (_w != null && _dlg.LeaveAdopted(_w.ElapsedMs) is { } adopted) { EmitDialogValues(adopted); Emit("modal_leave", CurDoc()); }
@@ -716,6 +730,8 @@ public sealed class Recorder
             if (r == null) return;
             EmitDialogValues(r);
         });
+        // no window other than the main window showed while this modal state was open: say so, just before its leave (a dialog that shows late is written as any dialog is, and no marker)
+        if (episode is { WindowlessAtLeave: true, N: > 0 }) Emit("modal_nowindow", CurDoc(), ("for", episode.N));
         Emit("modal_leave", CurDoc());
     });
 

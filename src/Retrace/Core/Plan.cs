@@ -38,6 +38,8 @@ public sealed class Step
     /// <summary>dialog: when it closed (the time of its `dialog_values`), -1 = not known. A nested dialog of the same click opens within a window after it.</summary>
     public long ClosedT = -1;
     public bool HadDialog;
+    /// <summary>dialog: the recording's `modal_enter` carries `main`, so the recorder told a modal state with no dialog window (`modal_nowindow`) from a dialog; false in older recordings, where a short modal state may have been a dialog.</summary>
+    public bool WindowMarked;
     /// <summary>ribbon: the click starts a LISP that runs a SCRIPT file, and the commands the script runs are part of this step (<see cref="Plan.ScriptChain"/>): not typed, not steps of their own.
     /// The replay clicks the button; <see cref="Answers"/> then hold only the answers a person gave after the first dialog opened.</summary>
     public bool ChainClick;
@@ -202,7 +204,7 @@ public static class Plan
     static bool IsNeutral(JsonElement e)
     {
         var ty = Str(e, "type");
-        if (ty is "shot" or "view_stale" or "state" or "mark" or "doc_active" or "modal_enter" or "modal_title" or "modal_leave" or "modal_alias" or "dialog_values" or "dialog_click" or DragRuns.DroppedType) return true;
+        if (ty is "shot" or "view_stale" or "state" or "mark" or "doc_active" or "modal_enter" or "modal_title" or "modal_leave" or "modal_alias" or "modal_nowindow" or "dialog_values" or "dialog_click" or DragRuns.DroppedType) return true;
         return ty == "context_menu" && e.TryGetProperty("for", out var f) && f.ValueKind == JsonValueKind.Number;
     }
 
@@ -343,6 +345,7 @@ public static class Plan
             // an answer a person gave before any dialog opened cannot be replayed from a click
             bool bad = false;
             int firstModal = -1;
+            // (a modal state with no dialog window counts: it is the command's hidden interaction, and the click still owns the chain with the answers a person gave in it)
             for (int k = r; k <= last; k++) if (Str(list[k], "type") == "modal_enter" && !IsSecurityModal(list, k)) { firstModal = k; break; }
             foreach (var m in members)
                 if (Person(list[m]) && (firstModal < 0 || m < firstModal)) bad = true;
@@ -392,6 +395,7 @@ public static class Plan
             if (Str(x, "type") == "view_stale" && x.TryGetProperty("for", out var sf) && sf.ValueKind == JsonValueKind.Number && sf.TryGetInt64(out var sn)) staleViews.Add(sn);
         var startup = DrawingOpen.StartupEvents(list);   // LISP AutoCAD ran by itself while a drawing opened: not steps
         bool hasInputFlags = HasInputFlags(list);
+        var windowless = MainWindowModal.Windowless(list);
         var chains = ScriptChain(list as IReadOnlyList<JsonElement> ?? list.ToList(), startup);   // event index -> the event index of the ribbon click that owns it
         Step? lispStep = null;   // the LISP step still running (its end time)
         var ribbonAt = new Dictionary<int, Step>();   // event index of a step's first event (a click, a command, a LISP) -> the step; the owner of a script chain is found here
@@ -402,6 +406,7 @@ public static class Plan
             var type = Str(e, "type");
             var t = Num(e, "t");
             if (startup.Contains(Num(e, "n"))) continue;
+            if (windowless.Contains(idx)) continue;   // a modal state with no dialog window (AutoCAD's main window in front): not a dialog step, the prompts around it stay the command's
             if (chains.TryGetValue(idx, out var chainRibbon) && ribbonAt.TryGetValue(chainRibbon, out var ownerStep))
             {
                 // an event of a click's script chain: the ribbon step owns it. Only an answer a person gave is kept; the script gives the rest again.
@@ -491,7 +496,7 @@ public static class Plan
                     bool afterNative = type == "modal_enter" && palette is { Native: not null } && steps.Count > 0 && ReferenceEquals(steps[^1], palette) && t - palette.T <= NativeAction.ModalMs;
                     if (type == "modal_enter")
                     {
-                        modalStep = new Step { Kind = "dialog", T = t, DialogTitle = Str(e, "title"), Title = "" };
+                        modalStep = new Step { Kind = "dialog", T = t, DialogTitle = Str(e, "title"), Title = "", WindowMarked = e.TryGetProperty("main", out _) };
                         steps.Add(modalStep);
                         modalInfo[modalStep] = (cur, cur?.HadDialog ?? false);
                         if (cur != null) cur.HadDialog = true;

@@ -70,6 +70,10 @@ sealed class Replayer
     PaletteReveal.POINT? _cursorHome, _cursorSet;   // where the mouse was before; where Retrace last put it
     bool _paletteCommandStarted;
     int _modalDepth;
+    readonly ModalState _modal = new();   // which modal states are dialogs (a dialog window showed) and which are a command's hidden interaction (Core/ModalWindows)
+    bool _dlgWindowNow;                  // a dialog window of this process is open (looked at once per tick, while a modal state is open)
+    int _modalsCountedAtStepStart;
+    ChainDelivery? _clickDelivery; Step? _clickDeliveryStep; bool _clickDeliveryPausing; string? _clickUnsafe;   // a chain click with no dialog step after it: its answers are typed as the script asks
     int _modalsSeen;
     int _modalsAtStepStart;
     bool _pendingStart;
@@ -559,8 +563,29 @@ sealed class Replayer
     }
 
     // handlers: plain field writes, no AutoCAD calls
-    void OnEnterModal(object? s, EventArgs e) { _modalDepth++; _modalEnteredAt = DateTime.Now; _modalsSeen++; _dialog.ModalEntered(); Log.Info($"replay: modal entered, depth {_modalDepth}"); }
-    void OnLeaveModal(object? s, EventArgs e) { if (_modalDepth > 0) _modalDepth--; _dialog.ModalLeft(_modalDepth); Log.Info($"replay: modal left, depth {_modalDepth}"); }
+    // A modal state feeds the dialog wait only once a dialog window showed in it (Tick: LookAtModalWindows) or, in a recording from before windowless states were marked, it was over before a window could be told apart (ModalState.QuickMs): a command's hidden modal state is no dialog.
+    void OnEnterModal(object? s, EventArgs e) { _modalDepth++; _modal.Entered(DateTime.Now, _modal.Depth == 0 ? Native.VisibleHandles() : null); _modalEnteredAt = DateTime.Now; _modalsSeen++; Log.Info($"replay: modal entered, depth {_modalDepth}"); }
+    void OnLeaveModal(object? s, EventArgs e)
+    {
+        if (_modalDepth > 0) _modalDepth--;
+        // a recording from before the recorder told windowless states apart: a short modal state may have been the dialog, over between two ticks
+        var quick = _steps.Skip(Math.Max(0, _i)).FirstOrDefault(x => x.Kind == "dialog") is { WindowMarked: false };
+        var (countedNow, wasDialog) = _modal.Left(DateTime.Now, quick);
+        if (countedNow) _dialog.ModalEntered();
+        if (wasDialog || _modalDepth > 0) _dialog.ModalLeft(_modalDepth);
+        Log.Info($"replay: modal left, depth {_modalDepth}{(wasDialog || _modalDepth > 0 ? "" : " (no dialog window showed in it)")}");
+    }
+
+    /// <summary>Once per tick while a modal state is open: is a dialog window of this process open (enumerated, never from the foreground window), and the first time one is, the state counts as a dialog.</summary>
+    void LookAtModalWindows()
+    {
+        _dlgWindowNow = false;
+        if (_modalDepth <= 0) return;
+        var main = AcApp.MainWindow.Handle;
+        // a new window (not one that was open when the modal state started: a floating palette is no dialog), or the window in front when it is really shown: the safe side is the old wait
+        _dlgWindowNow = Native.ShownForegroundOfThisProcess(main, _win.Handle) != IntPtr.Zero || Native.DialogWindow(main, _win.Handle, _modal.Before) != IntPtr.Zero;
+        if (_modal.Observe(_dlgWindowNow, DateTime.Now)) _dialog.ModalEntered();
+    }
     void OnCmdEnded(object? s, CommandEventArgs e) { if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) _dialog.CommandEnded(false, DateTime.Now); }
     void OnCmdCancelled(object? s, CommandEventArgs e) { if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) _dialog.CommandEnded(true, DateTime.Now); }
     void OnCmdFailed(object? s, CommandEventArgs e) { if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) _eventError ??= $"command {e.GlobalCommandName} failed"; }
@@ -610,7 +635,7 @@ sealed class Replayer
     {
         _sends.RemoveAll(x => !x.Pending);
         if (_sends.Count > 0) return false;   // SDI: text this replay typed is not delivered yet (_pendingStart stays armed)
-        if (_modalDepth > 0) return false;
+        if (_modalDepth > 0 && !ModalWithoutWindow()) return false;   // a command's hidden modal state is not a dialog: its command still running keeps the step from starting
         if (DateTime.Now < _notBefore) return false;
         if (_pendingStart && (DateTime.Now - _sentAt).TotalSeconds < 2) return false; // wait for the command to actually start
         if (_pendingStart && _clicked is { } clicked) { _clicked = null; if (TypeAfterSilentClick(clicked)) return false; }
@@ -637,6 +662,7 @@ sealed class Replayer
     void Tick()
     {
         if (!_running) return;
+        LookAtModalWindows();
         if (_docRecreated) { _docRecreated = false; if (!TickRecreated()) return; }   // SDI, before anything that reads the document
         // (a palette open that is still pending decides the drawing itself: TickAwaitOpen, bounded by its own timeout)
         if (_docGone && (_suite == null || _awaitOpen == null))
@@ -681,11 +707,11 @@ sealed class Replayer
         if (_interactive && !_dialog.Active && _i < _steps.Count && _steps[_i].Kind == "dialog") 
         {
             _clock?.Begin(_i + 1, DateTime.Now);
-            _dialog.Begin(DateTime.Now, _modalDepth > 0, _steps[_i].ClosedWith == "cancel");
+            _dialog.Begin(DateTime.Now, _modalDepth > 0 && _modal.WindowSeen, _steps[_i].ClosedWith == "cancel");   // a modal state with no dialog window in it is not the dialog
             _announced = false; _cancelSent = false;
             _fill?.Cancel(); _fill = null; _fillTried = false; _fillAnnounced = false;
             // the dialog came and went between two ticks: count it as handled
-            if (_modalDepth == 0 && _modalsSeen > _modalsAtStepStart) { _dialog.ModalEntered(); _dialog.ModalLeft(0); }
+            if (_modalDepth == 0 && _modal.Counted > _modalsCountedAtStepStart) { _dialog.ModalEntered(); _dialog.ModalLeft(0); }
         }
         if (DateTime.Now >= _cursorBackAt) CursorBack();
         if (_modalDepth > 0 && Native.ForegroundOfThisProcess() is var dlg && dlg != IntPtr.Zero && dlg != AcApp.MainWindow.Handle && dlg != _win.Handle)
@@ -695,8 +721,11 @@ sealed class Replayer
         }
         if (PaletteFill.TakePressFailure() is { } pressFailed) { Finish(false, true, pressFailed); return; }
         if (_paletteCommand != null) { TickPaletteCommand(); return; }
+        bool dialogWindowOpen = _modalDepth > 0 && !ModalWithoutWindow();
+        // the answers a person gave between the click and the chain's first dialog are the click's: typed as the script asks, whether a dialog step follows or not
+        if ((_clickDelivery != null || _clickDeliveryPausing || _clickUnsafe != null) && !dialogWindowOpen && TickClickDelivery()) return;
         if (_dialog.Active) { TickDialog(); return; }
-        if (_modalDepth > 0)
+        if (dialogWindowOpen)
         {
             if (_mode == ReplayMode.Auto && Unattended)
             {
@@ -736,7 +765,7 @@ sealed class Replayer
         _clock?.Begin(_i + 1, DateTime.Now);   // suite: this step runs from now (it is sent next) until the next one starts
         if (!_shown)
         {
-            _shown = true; _stepShownAt = DateTime.Now; _modalsAtStepStart = _modalsSeen; _userNext = false;
+            _shown = true; _stepShownAt = DateTime.Now; _modalsAtStepStart = _modalsSeen; _modalsCountedAtStepStart = _modal.Counted; _userNext = false;
             _win.Show($"Step {_i + 1}/{_steps.Count}", Describe(s), _mode == ReplayMode.Step);
             Say($"\n[replay {_i + 1}/{_steps.Count}] {s.Title}\n");
         }
@@ -869,7 +898,7 @@ sealed class Replayer
         // Done: the person confirmed the dialog; now type the answers the command asks for after it (once)
         // (a WinForms dialog's Cancel usually ends its command normally: give it a moment, then type only if the command still runs)
         // a chain: where the recording has input a person gave (after this dialog opened, until the next one opened), the script the click started asks for it now
-        if (d.Phase == DialogWaitPhase.Done && _chainStep != null && _modalDepth == 0 && _chainPausedFor != _i)
+        if (d.Phase == DialogWaitPhase.Done && _chainStep != null && (_modalDepth == 0 || ModalWithoutWindow()) && _chainPausedFor != _i)
         {
             var due = ReplayRules.ChainAnswersAfter(_chainStep.Answers, _steps, _i);
             if (_deliveryFor != _i)
@@ -956,7 +985,7 @@ sealed class Replayer
         // Waiting here for the command to finish would wait for that dialog, which no step handles.
         // Only when the open dialog is the one recorded next (its title): an unexpected warning keeps the old wait.
         bool chained = d.Phase == DialogWaitPhase.Done && _deferred == null && NextDialogOpen();
-        if (!chained && (_modalDepth > 0 || !Settled())) { NoteChainWait(); return; }   // Done: wait until the command that owned the dialog has finished (a cancel arrives as an event first)
+        if (!chained && ((_modalDepth > 0 && !ModalWithoutWindow()) || !Settled())) { NoteChainWait(); return; }   // Done: wait until the command that owned the dialog has finished (a cancel arrives as an event first)
         // the next dialog opened before the answers recorded after this one could be typed (a person closed this one while the command went on to the next): say so, do not drop them silently
         string? droppedNote = null;
         if (chained && _chainStep != null && _chainPausedFor != _i && ReplayRules.ChainAnswersAfter(_chainStep.Answers, _steps, _i).Count > 0)
@@ -988,6 +1017,10 @@ sealed class Replayer
         _announced = false; _cancelSent = false; _shown = false;
         _notBefore = DateTime.Now.AddMilliseconds(chained ? 0 : 400);
     }
+
+    /// <summary>AutoCAD is in a modal state in which no dialog window showed or is open (<see cref="ModalState.Windowless"/>: none for <see cref="ModalState.GraceMs"/> ms, so a slow dialog is not mistaken for it): a command's hidden
+    /// interaction. It is no dialog: nothing waits for a person, and the script's prompts can be answered. Decided from the process's windows, not from which window is in front.</summary>
+    bool ModalWithoutWindow() => _modal.Windowless(DateTime.Now, _dlgWindowNow);
 
     /// <summary>The next recorded step is a dialog and it is the modal in front now (<see cref="DialogChain.IsNext"/>; AutoCAD's own window and the replay window are no dialog).</summary>
     bool NextDialogOpen()
@@ -1383,9 +1416,19 @@ sealed class Replayer
         _clicked = null;
         // a script-chain click with a person's answers: the same per-dialog delivery whether the live button is clicked or its macro / LISP is typed (below)
         _chainStep = s.ChainClick && _interactive && s.ChainAnswers.Any() && _i + 1 < _steps.Count && _steps[_i + 1].Kind == "dialog" ? s : null;
+        _clickDelivery = null; _clickDeliveryStep = null; _clickDeliveryPausing = false; _clickUnsafe = null;
+        // a chain click with a person's answers and no dialog step after it (its modal state had no dialog window): the answers are typed as its script asks for them, after the click (TickClickDelivery)
+        var afterClick = ReplayRules.ChainAnswersAfterClick(_steps, _i);
+        if (afterClick.Count > 0)
+        {
+            _clickDeliveryStep = s;
+            if (ChainDelivery.Unsafe(afterClick) is { } clickWhy)   // the replay cannot type them: a person gives them (as after a dialog)
+                _clickUnsafe = $"the script \"{ReplayRules.ButtonName(s)}\" started asks for input a person gave while recording ({string.Join("; ", afterClick.Select(ReplayRules.AnswerText))}), which Retrace cannot type ({clickWhy}); give it, then press Next step";
+            else _clickDelivery = new ChainDelivery(afterClick, DateTime.Now);
+        }
         _chainPausedFor = _chainWaitFor = -1; _chainPausing = false; _delivery = null; _deliveryFor = -1;
         // RETRACEREPLAY (Step / Auto) has no person confirming dialogs, so answers given after a chain's dialog cannot be typed: stop before the click and name them (as it does for a dialog step)
-        if (!_interactive && ReplayRules.ChainAnswersNeedPerson(s) is { } lost)
+        if (!_interactive && ReplayRules.ChainAnswersNeedPerson(s, _i + 1 < _steps.Count && _steps[_i + 1].Kind == "dialog") is { } lost)
         {
             Say($"\n  WARNING: {lost}\n");
             _deferred = null;
@@ -1412,6 +1455,53 @@ sealed class Replayer
         else { text = WithPick(pick => Plan.InputText(s, handleExists: HandleExists, pick: pick), r => !string.IsNullOrEmpty(r)); _deferred = null; }
         if (string.IsNullOrEmpty(text)) { Say("\n  (nothing replayable in this step)\n"); return true; }
         Type(s, text);
+        return true;
+    }
+
+    /// <summary>The answers of a chain click with no dialog step after it, typed as the click's commands ask for them (<see cref="ChainDelivery"/>). True when this tick is used up.</summary>
+    bool TickClickDelivery()
+    {
+        var step = _clickDeliveryStep;
+        if (step == null) { _clickDelivery = null; _clickDeliveryPausing = false; _clickUnsafe = null; return false; }
+        if (_clickUnsafe != null) { var m = _clickUnsafe; _clickUnsafe = null; return PauseClickDelivery(step, m); }
+        if (_clickDeliveryPausing)
+        {
+            if (!_userNext) return true;
+            _clickDeliveryPausing = false; _userNext = false; _clickDeliveryStep = null;
+            _notBefore = DateTime.Now.AddMilliseconds(400);
+            return false;
+        }
+        var delivery = _clickDelivery!;
+        var tick = delivery.Tick(DateTime.Now, _watch, !string.IsNullOrEmpty(_doc.CommandInProgress));
+        switch (tick.Kind)
+        {
+            case DeliveryKind.Type:
+                Log.Info($"replay: the script's command waits at \"{tick.Answer!.Message}\" ({tick.Answer.Kind}): typing {ReplayRules.AnswerText(tick.Answer)}");
+                Say($"\n  typing {ReplayRules.AnswerText(tick.Answer)}\n");
+                SendTracked(tick.Text!);
+                _win.Show($"Step {_i}/{_steps.Count}: typing the script's input", ReplayRules.AnswerText(tick.Answer), false);
+                return true;
+            case DeliveryKind.Wait:
+                if (!Settled()) { _win.Show($"Step {_i}/{_steps.Count}: waiting for the script's prompt", $"the command should ask for {ReplayRules.AnswerText(tick.Answer!)} (waits up to {(int)ChainDelivery.WaitSeconds} s).", false); return true; }
+                // everything the click started is over and the prompt never came
+                _clickDelivery = null;
+                return PauseClickDelivery(step, $"the script \"{ReplayRules.ButtonName(step)}\" started ended without asking for {ReplayRules.AnswerText(tick.Answer!)}; give it, then press Next step");
+            case DeliveryKind.TimedOut:
+                _clickDelivery = null;
+                return PauseClickDelivery(step, delivery.TimedOutMessage(step));
+            default:   // Done
+                _clickDelivery = null; _clickDeliveryStep = null; _notBefore = DateTime.Now.AddMilliseconds(400);
+                return false;
+        }
+    }
+
+    bool PauseClickDelivery(Step step, string message)
+    {
+        if (_suite != null || (_mode == ReplayMode.Auto && Unattended)) { StopForPerson("ribbon", step.Title, message); return true; }   // nobody to press Next
+        Say($"\n  {message}\n");
+        Log.Info("replay: " + message);
+        _win.Show($"Step {_i}/{_steps.Count}: input needed", message, true);
+        _userNext = false; _clickDeliveryPausing = true;
         return true;
     }
 

@@ -373,6 +373,7 @@ public static class RecordingReader
         // the same rule as the replay's plan (Core/Plan.ScriptChain): a ribbon click whose LISP runs a SCRIPT file owns the commands the script types, so steps.md and the replay number the steps alike
         bool hasInputFlags = Retrace.Core.Plan.HasInputFlags(s.Events.Select(x => x.Raw));
         var collapsed = Retrace.Core.DragRuns.Collapse(s.Events.Select(x => x.Raw).ToList());   // a drag (jig) is one answer, not one per sample: the plan's rule
+        var windowless = Retrace.Core.MainWindowModal.Windowless(collapsed);   // modal states with no dialog window (the main window in front): not dialog steps
         var chains = Retrace.Core.Plan.ScriptChain(collapsed, startup);
         var ribbonAt = new Dictionary<int, RecordingStep>();
         int idx = -1;
@@ -383,6 +384,7 @@ public static class RecordingReader
             ownedEvent = false;
             if (e.N is { } en && startup.Contains(en)) continue;
             if (collapsed[idx].TryGetProperty("type", out var collapsedType) && collapsedType.GetString() == Retrace.Core.DragRuns.DroppedType) continue;   // a drag sample that is not the answer
+            if (windowless.Contains(idx)) continue;   // a modal state with no dialog window: not a dialog step
             if (chains.TryGetValue(idx, out var chainOwner) && ribbonAt.TryGetValue(chainOwner, out var chainStep))
             {
                 // an event of the click's chain: the ribbon step owns it; only an answer a person gave is kept (the script gives the rest again)

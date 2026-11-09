@@ -10,14 +10,12 @@ namespace Retrace.AutoCad;
 /// </summary>
 static class ModalAbove
 {
-    delegate bool EnumProc(IntPtr h, IntPtr lp);
-    [DllImport("user32.dll")] static extern bool EnumThreadWindows(uint thread, EnumProc cb, IntPtr lp);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
     const uint GW_OWNER = 4;
 
     /// <summary>Is <paramref name="h"/> a window of Retrace's own (its replay window, a prompt or settings window, any WPF window whose root is a class of this assembly)? Never a dialog under test.</summary>
-    static bool IsRetraceWindow(IntPtr h)
+    internal static bool IsRetraceWindow(IntPtr h)
     {
         try { return System.Windows.Interop.HwndSource.FromHwnd(h)?.RootVisual?.GetType().Assembly == typeof(ModalAbove).Assembly; }
         catch (Exception) { return false; }
@@ -33,15 +31,15 @@ static class ModalAbove
         var front = Native.ForegroundOfThisProcess();
         IntPtr owned = IntPtr.Zero, shown = IntPtr.Zero;
         var candidates = new List<IntPtr>();
-        EnumThreadWindows(GetWindowThreadProcessId(dialog, out _), (h, _) =>
+        foreach (var w in Native.WindowsOfThread(GetWindowThreadProcessId(dialog, out _)))
         {
-            if (h == dialog || h == main || h == ignore || !Native.IsVisible(h) || !Native.IsEnabled(h) || !Native.HasCaption(h)) return true;
-            if ((skip != null && skip(h)) || IsRetraceWindow(h)) return true;
+            var h = (IntPtr)w.Handle;
+            if (h == dialog || h == main || h == ignore || !w.Visible || !w.Enabled || !w.Captioned || w.Retrace) continue;
+            if (skip != null && skip(h)) continue;
             candidates.Add(h);
             if (owned == IntPtr.Zero && GetWindow(h, GW_OWNER) == dialog) owned = h;
             if (h == front) shown = h;
-            return true;
-        }, IntPtr.Zero);
+        }
         return owned != IntPtr.Zero ? owned : shown != IntPtr.Zero ? shown : onlyCandidate && candidates.Count == 1 ? candidates[0] : IntPtr.Zero;
     }
 }

@@ -14,3 +14,16 @@
   (command "_.SCRIPT" "C:/temp/retrace-chain/dragplace.scr")
   (princ)
 )
+
+;; HIDDENADD: its script (hiddenmodal.scr) types DRAWHIDDENMODAL: a modal form nobody sees for 2 s, then the DRAWDRAGPLACE jig.
+;; SLOWADD: its script (slowdialog.scr) types DRAWSLOWDIALOG: a real dialog that shows 0.8 s after AutoCAD entered its modal state.
+(defun C:HIDDENADD ()
+  (command "_.UCS" "_W")
+  (command "_.SCRIPT" "C:/temp/retrace-chain/hiddenmodal.scr")
+  (princ)
+)
+(defun C:SLOWADD ()
+  (command "_.UCS" "_W")
+  (command "_.SCRIPT" "C:/temp/retrace-chain/slowdialog.scr")
+  (princ)
+)

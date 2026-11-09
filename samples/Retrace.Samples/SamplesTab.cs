@@ -104,6 +104,8 @@ namespace Retrace.Samples
             only.Items.Add(ChainButton());
             only.Items.Add(ScriptButton());
             only.Items.Add(DragButton());
+            only.Items.Add(LispButton("HIDDENADD", "Hidden modal...", "Runs a LISP that runs a script file: a modal form nobody sees for 2 s, then the drag-place jig. Copy samples/Retrace.Samples/chain/ to C:/temp/retrace-chain/ first."));
+            only.Items.Add(LispButton("SLOWADD", "Slow dialog...", "Runs a LISP that runs a script file: a real dialog that shows 0.8 s after AutoCAD entered its modal state. Copy samples/Retrace.Samples/chain/ to C:/temp/retrace-chain/ first."));
 
             var src = new RibbonPanelSource();
             src.Title = "Dialogs";
@@ -125,6 +127,14 @@ namespace Retrace.Samples
         static RibbonButton DragButton()
         {
             var b = Button("DRAGADD", "Drag place...", "Runs a LISP that runs a script file: the items dialog, then a jig for an insertion point and a rotation. Copy samples/Retrace.Samples/chain/ (chain.lsp, dragplace.scr) to C:/temp/retrace-chain/ first.");
+            b.CommandHandler = new LispCommandHandler();
+            return b;
+        }
+
+        /// <summary>A button whose click runs the LISP (C:&lt;id&gt;) from chain.lsp.</summary>
+        static RibbonButton LispButton(string id, string label, string tip)
+        {
+            var b = Button(id, label, tip);
             b.CommandHandler = new LispCommandHandler();
             return b;
         }
