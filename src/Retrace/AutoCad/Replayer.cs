@@ -186,17 +186,20 @@ sealed class Replayer
     /// <param name="tdoc">a Tdoc run's pictures for this test (RETRACETDOC); null for a plain replay</param>
     /// <param name="finished">called once at the end of the run with its result (a Tdoc run starts the next test from it)</param>
     public static bool Start(List<Step> steps, ReplayMode mode, string sessionPath, DrawingDigest? initial, out string message, bool alert = false, bool interactive = false,
-        TdocCapture? tdoc = null, Action<ReplayResult>? finished = null, SuiteHook? suite = null, bool? single = null)
+        TdocCapture? tdoc = null, Action<ReplayResult>? finished = null, SuiteHook? suite = null, bool? single = null, bool ownStart = false)
     {
         if (Current != null) { message = "A replay is already running (close its window or press Stop)."; return false; }
         var doc = AcApp.DocumentManager.MdiActiveDocument;
         if (doc == null) { message = "No active drawing."; return false; }
-        var r = new Replayer(steps, mode, doc, sessionPath, interactive, single ?? SdiDocs.IsSingleNow()) { _alert = alert, _tdoc = tdoc, _finished = finished, _suite = suite };
+        var r = new Replayer(steps, mode, doc, sessionPath, interactive, single ?? SdiDocs.IsSingleNow()) { _alert = alert, _tdoc = tdoc, _finished = finished, _suite = suite, _ownStart = ownStart };
         Current = r;
         r.Begin(initial);
         message = $"Replaying {steps.Count} steps ({mode}).";
         return true;
     }
+
+    /// <summary>The start drawing is one Retrace made for this test (RETRACERUN / suite / Tdoc): it may get the recording's start layers. Never true for RETRACEREPLAY / RETRACESTEP.</summary>
+    bool _ownStart;
 
     void Begin(DrawingDigest? initial)
     {
@@ -210,12 +213,13 @@ sealed class Replayer
         _result.StepsTotal = _steps.Count;
         _result.Interactive = _interactive;
         // a test folder keeps its history; only results/latest.json is replaced, when this run ends
+        // read before the start setup below: Retrace's own start-layer changes are not a person's unsaved changes
+        var modified = _sdi && SdiDocs.IsModified(_doc);
         CompareStart(initial);
         _running = true; _runBits = Ask.ScriptOrLispBits();   // set when the replay started: a replay run under a script or LISP wrapper has them for the whole run
         if (_sdi)
         {
             // an own test drawing that already holds unsaved changes holds a person's (from an earlier run): it stops counting as Retrace's own
-            var modified = SdiDocs.IsModified(_doc);
             string? beginName; try { beginName = _doc.Name; } catch (Exception) { beginName = null; }
             SdiGuard.Own.BeginRun(beginName, modified); _beganRun = true;   // the unsaved changes in the test's drawing are the run's until it ends (Finish: EndRunLater)
         }
@@ -474,10 +478,32 @@ sealed class Replayer
         NextPaletteStep();
     }
 
+    /// <summary>Creates the start layers the template copy lacks, only in a drawing that is the test's own: a new unnamed drawing (SDI 0) or Retrace's own temp copy (SDI 1).</summary>
+    void SetUpStartLayers(DrawingDigest initial)
+    {
+        bool own;
+        try { own = _sdi ? SdiGuard.IsOwnTestDrawing(_doc.Name) : !_doc.IsNamedDrawing; } catch (Exception) { own = false; }
+        if (!own) { Log.Info("start layers: the drawing is not Retrace's own test drawing; not touched"); return; }
+        var res = StartSetup.Apply(_doc, initial, _sessionPath);
+        foreach (var w in res.Warnings) { _warnings.Add("start layers: " + w); _doc.Editor.WriteMessage($"\nNote: start layers: {w}.\n"); }
+        if (res.Created.Count > 0 || res.Removed.Count > 0)
+        {
+            var parts = new List<string>();
+            if (res.Created.Count > 0) parts.Add(StartLayers.Describe(res.Created));
+            if (res.Removed.Count > 0) parts.Add($"removed {res.Removed.Count} unused layer{(res.Removed.Count == 1 ? "" : "s")} the recording's start drawing did not have ({string.Join(", ", res.Removed.Take(8))}{(res.Removed.Count > 8 ? ", ..." : "")})");
+            var text = "start drawing set up: " + string.Join("; ", parts);
+            _warnings.Add(text);
+            _doc.Editor.WriteMessage($"\n{text}.\n");
+            if (res.Created.Count > 0) _result.StartLayersCreated = res.Created.Count;
+            if (res.Removed.Count > 0) _result.StartLayersRemoved = res.Removed.Count;
+        }
+    }
+
     /// <summary>Compares the drawing now with the session's initial state (command context: RETRACEREPLAY is running).</summary>
     void CompareStart(DrawingDigest? initial)
     {
         var ed = _doc.Editor;
+        if (initial != null && _ownStart) SetUpStartLayers(initial);
         if (initial == null) { ed.WriteMessage("\nNote: the session has no recorded start state (older recording); the start drawing is not checked.\n"); return; }
         var now = DrawingState.Read(_doc, withLayerState: initial.LayerState != null);   // a schema 2 recording keeps its start layer compare
         if (now == null) { _result.StartStateMatches = false; _warnings.Add("start state could not be read"); ed.WriteMessage("\nWARNING: could not read the drawing to compare with the start state.\n"); return; }

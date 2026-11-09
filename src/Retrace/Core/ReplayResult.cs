@@ -100,6 +100,9 @@ public sealed class ReplayResult
     [JsonPropertyName("stepsRun")] public int StepsRun { get; set; }
     /// <summary>Did the drawing at the start match the session's initial state? Left out when the session has none.</summary>
     [JsonPropertyName("startStateMatches")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public bool? StartStateMatches { get; set; }
+    /// <summary>Layers the replay created in its own start drawing because the recording's start drawing held them (RETRACERUN, suite, Tdoc). Left out when none.</summary>
+    [JsonPropertyName("startLayersRemoved")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public int? StartLayersRemoved { get; set; }
+    [JsonPropertyName("startLayersCreated")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public int? StartLayersCreated { get; set; }
     /// <summary>true for RETRACERUN (waits for a person at dialogs), false for RETRACEREPLAY (stops with INCOMPLETE there).</summary>
     [JsonPropertyName("interactive")] public bool Interactive { get; set; }
     [JsonPropertyName("steps")] public List<StepResult> Steps { get; set; } = new();

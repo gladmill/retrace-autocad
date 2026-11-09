@@ -74,6 +74,7 @@ Nothing in the plugin rejects a schema value; readers ignore fields they do not 
 | `locale` | `LOCALE` system variable |
 | `workspace` | `WSCURRENT` system variable |
 | `plugin` | `Retrace` and its informational version |
+| `template` | the QNEW template of the profile (Options > Files > Template Settings), only when the recording started in a new, unsaved drawing. A hint, not a promise: it is the QNEW setting of the recording machine, not necessarily the template the drawing really came from. RETRACERUN takes it, this machine's QNEW template and `acad.dwt` as candidates (a file that exists) and starts from the one whose layer names best match the recording's start state (`Core/TemplateChoice.Pick`). Absent in older recordings |
 
 ## Events (all other lines)
 
@@ -724,6 +725,8 @@ If the results folder cannot be written the error goes to `retrace.log`.
 | `verdict` | `PASS`: the run completed and every checkpoint matched (at least one). `FAIL`: a checkpoint differed. `INCOMPLETE`: the run stopped before the end (a dialog needs a person, the user pressed Stop, the plugin was shut down), or a checkpoint has no recorded state, or the session has no checkpoints. `ERROR`: a command failed, or was unknown and did not start within 2 s of AutoCAD saying so (AutoCAD reports some commands as unknown a moment before it runs them; the replay waits for the command it sent), or the replay threw. Precedence: `ERROR`, `FAIL`, `INCOMPLETE`, `PASS` |
 | `stepsTotal`, `stepsRun` | steps in the plan, steps started before the run ended |
 | `startStateMatches` | the drawing at the start against the session's initial `state`; left out when the session has none. A mismatch only warns, the replay goes on |
+| `startLayersCreated` | RETRACERUN, suite and Tdoc runs only: how many layers the replay created in its own test drawing because the recording's start drawing held them and the template lacked them (names, flags, color, linetype, lineweight, transparency, description from `snapshots/start.json`; name only for older recordings; the layer table of the digest's schema 2 when start.json lacks a layer; the start current layer is made current whenever it differs). Left out when none. `startStateMatches` is read after this |
+| `startLayersRemoved` | RETRACERUN, suite and Tdoc runs only: how many layers the chosen template held that the recording's start state did not, removed from the test drawing because nothing used them (a purge decides; layers in use are kept and a warning names them). Left out when none |
 | `checkpoints[]` | one per `mark` step reached: `index` (1-based), `note`, `pass` (`true`, `false`, or `null` = no recorded state, not verified), `differences`, `expected` (recorded digest), `actual` (digest at replay time); with behavior checks also `checkMode` (`auto` / `manual`), `checkedBehaviors` (ids) and `checkDifferences` (lines as in "Behavior checks", empty = matched); a difference there makes `pass` false. These three are left out for a checkpoint without checks. |
 | `message` | why the run ended early, plus warnings (start state differs, unverified checkpoints, failed steps) |
 | `interactive` | `true` for `RETRACERUN`: at a dialog step the replay waits for a person (below). `false` for `RETRACEREPLAY` and Step mode: a dialog ends an Auto run with `INCOMPLETE` |

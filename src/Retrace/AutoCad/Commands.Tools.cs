@@ -23,7 +23,8 @@ public sealed partial class Commands
         public required DrawingDigest? Initial;
         public DateTime Created = DateTime.UtcNow;
         public bool Single;            // the document mode this test was started in (read once)
-        public string? ExpectedPath;   // SDI: the copy RETRACERUN opened (null: the drawing was added, SDI is off)
+        public string? TemplateNote;   // where the test drawing's template came from; printed when the test starts
+        public string? ExpectedPath;  // SDI: the copy RETRACERUN opened (null: the drawing was added, SDI is off)
         public TdocCapture? Tdoc;   // set by a Tdoc run (RETRACETDOC) for the test it sent here
         public SuiteHook? Suite;    // set by a suite run (RETRACESUITE) for the test it sent here
     }
@@ -89,10 +90,11 @@ public sealed partial class Commands
             var dm = AcApp.DocumentManager;
             // the document mode, read once for this run (a suite or Tdoc run that started this test reads it once for all of them)
             var single = SuiteRun.Current?.Single ?? TdocRun.Current?.Single ?? SdiDocs.IsSingleNow();
-            var (doc, copyPath) = NewTestDocument(ed, single);
+            var recordedTemplate = TemplateChoice.FromHeader(events);
+            var (doc, copyPath, templateNote) = NewTestDocument(ed, single, recordedTemplate, initial);
             if (doc == null) return;
             dm.MdiActiveDocument = doc;
-            _pending = new PendingTest { Doc = doc, Steps = steps, Path = path, Initial = initial, Tdoc = TdocRun.CaptureFor(path, steps), Suite = SuiteRun.HookFor(path), ExpectedPath = copyPath, Single = single };
+            _pending = new PendingTest { TemplateNote = templateNote, Doc = doc, Steps = steps, Path = path, Initial = initial, Tdoc = TdocRun.CaptureFor(path, steps), Suite = SuiteRun.HookFor(path), ExpectedPath = copyPath, Single = single };
             if (!_testIdleHooked) { AcApp.Idle += OnTestIdle; _testIdleHooked = true; }
             // the new drawing is active now: the old one's editor rejects messages (eNotApplicable)
             doc.Editor.WriteMessage($"\nRETRACERUN: new drawing opened; the test starts when it is ready ({steps.Count} steps, Auto).\n");
@@ -109,19 +111,23 @@ public sealed partial class Commands
     /// (SDI = 1) <c>Add</c> is not available ("Method not available in SDI mode") and opening a drawing replaces the one that is open: then a copy of the
     /// template is opened instead, after checking that nothing with unsaved changes would be replaced (<see cref="SdiGuard"/>). Null when the test must not
     /// start; the reason is printed and given to a waiting suite or Tdoc run.</summary>
-    internal static (Document? Doc, string? CopyPath) NewTestDocument(Editor ed, bool single)
+    internal static (Document? Doc, string? CopyPath, string? TemplateNote) NewTestDocument(Editor ed, bool single, string? recordedTemplate, DrawingDigest? initial)
     {
         var dm = AcApp.DocumentManager;
-        if (!single) return (dm.Add(FindTemplate()), null);
-        if (SdiDocs.PrepareForOpen(true) is { } refusal)
+        if (single && SdiDocs.PrepareForOpen(true) is { } refusal)
         {
             ed.WriteMessage("\n" + refusal + "\n");
             TestQueue.StartFailed(refusal);
-            return (null, null);
+            return (null, null, null);
         }
-        var copy = SdiDocs.NewTemplateCopy();   // a template is a drawing file: its copy opens as a plain drawing
+        var chosen = ChooseTemplate(recordedTemplate, initial, out var acadDwt);   // FindTemplate once per test
+        // acad.dwt chosen = the old lookup exactly (under SDI 0 it may be "": Add("") then makes the drawing from AutoCAD's own default, which differs from the acad.dwt file in the profile, e.g. its text style fonts)
+        var template = chosen is { Template.Source: TemplateChoice.Default } || chosen == null ? acadDwt : chosen.Template.Path;
+        var note = chosen is { } c ? TemplateChoice.Describe(c, recordedTemplate) : null;
+        if (!single) return (dm.Add(template), null, note);
+        var copy = SdiDocs.NewTemplateCopy(template);   // a template is a drawing file: its copy opens as a plain drawing
         Log.Info($"RETRACERUN: SDI is on: opening a copy of the template ({copy}) instead of adding a drawing");
-        return (SdiDocs.Open(copy, true), copy);
+        return (SdiDocs.Open(copy, true), copy, note);
     }
 
     /// <summary>The system variable SDI (0 = several drawings, 1 = one, 2 = one because an application needs it); 0 when it cannot be read.</summary>
@@ -129,6 +135,47 @@ public sealed partial class Commands
     {
         try { return Convert.ToInt32(AcApp.GetSystemVariable("SDI")); }
         catch (Exception) { return 0; }
+    }
+
+    /// <summary>The template a test's drawing starts from. The header's template, the QNEW template of this profile and acad.dwt are candidates; the one whose layers best match the recording's
+    /// start state wins (<see cref="TemplateChoice.Pick"/>; the layers are read from the files with a side database). <paramref name="acadDwt"/> is what <see cref="FindTemplate"/> found
+    /// (called once). Null when no candidate exists (the old lookup then decides).</summary>
+    internal static TemplateChoice.Picked? ChooseTemplate(string? recorded, DrawingDigest? initial, out string acadDwt)
+    {
+        try { acadDwt = FindTemplate(); } catch (Exception) { acadDwt = ""; }
+        // FindTemplate stays "" under SDI 0 when FindFile finds nothing (seen on the VM); acad.dwt must still be a candidate, or a QNEW template would always win
+        var acadCandidate = acadDwt;
+        if (string.IsNullOrEmpty(acadCandidate))
+        {
+            try
+            {
+                var local = Convert.ToString(AcApp.GetSystemVariable("LOCALROOTPREFIX")) ?? "";
+                var f = local.Length == 0 ? "" : Path.Combine(local, "Template", "acad.dwt");
+                if (f.Length > 0 && File.Exists(f)) acadCandidate = f;
+            }
+            catch (Exception) { }
+        }
+        var candidates = TemplateChoice.Candidates(recorded, QnewTemplate(), acadCandidate, ExistsQuickly);
+        return TemplateChoice.Pick(candidates, initial?.Layers, TemplateLayers.Read);
+    }
+
+    /// <summary>File.Exists, but a UNC path (a server that is down can block for a long time) is asked on a pool thread and given 2 s.</summary>
+    static bool ExistsQuickly(string path)
+    {
+        try
+        {
+            if (!TemplateChoice.IsUnc(path)) return File.Exists(path);
+            var t = Task.Run(() => File.Exists(path));
+            return t.Wait(TimeSpan.FromSeconds(2)) && t.Result;
+        }
+        catch (Exception) { return false; }
+    }
+
+    /// <summary>The QNEW template setting (Options > Files > Template Settings > Default Template File Name for QNEW), or null when it is empty or cannot be read.</summary>
+    internal static string? QnewTemplate()
+    {
+        try { var t = ((dynamic)Autodesk.AutoCAD.ApplicationServices.Application.AcadApplication).Preferences.Files.QNewTemplateFile as string; return string.IsNullOrWhiteSpace(t) ? null : t; }
+        catch (Exception) { return null; }
     }
 
     static string _lastTemplate = "";
@@ -181,13 +228,17 @@ public sealed partial class Commands
             // a Tdoc run shows no verdict box between its tests and hears when the test is over
             var tdoc = p.Tdoc; var suite = p.Suite;
             Action<ReplayResult>? finished = tdoc != null ? r => TdocRun.Finished(tdoc, r) : suite != null ? r => SuiteRun.Finished(suite, p.Path, r) : null;
-            if (!Replayer.Start(p.Steps, ReplayMode.Auto, p.Path, p.Initial, out var msg, alert: tdoc == null && suite == null, interactive: true, tdoc: tdoc, finished: finished, suite: suite, single: p.Single))
+            if (!Replayer.Start(p.Steps, ReplayMode.Auto, p.Path, p.Initial, out var msg, alert: tdoc == null && suite == null, interactive: true, tdoc: tdoc, finished: finished, suite: suite, single: p.Single, ownStart: true))
             {
                 SdiDocs.AbandonCopy(p.ExpectedPath, p.Tdoc != null || p.Suite != null);
                 Print("RETRACERUN: " + msg);
                 if (tdoc != null || suite != null) TestQueue.StartFailed(msg);
             }
-            else Print("RETRACERUN: " + msg);
+            else
+            {
+                if (p.TemplateNote != null) { Log.Info("RETRACERUN: test drawing from " + p.TemplateNote); Print("RETRACERUN: test drawing from " + p.TemplateNote); }
+                Print("RETRACERUN: " + msg);
+            }
         }
         catch (Exception ex)
         {

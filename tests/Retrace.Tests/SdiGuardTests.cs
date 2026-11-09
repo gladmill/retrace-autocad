@@ -72,6 +72,24 @@ public class SdiGuardTests
     }
 
     [Fact]
+    public void Retraces_own_start_setup_is_not_a_persons_change_when_the_modified_flag_was_read_before_it()
+    {
+        // RETRACERUN under SDI: the copy is fresh and unmodified when the run begins (the flag is read before the start layers are set up), so it stays the test's own
+        var own = Fresh();
+        own.Created(OwnDwg);
+        own.BeginRun(OwnDwg, modified: false);
+        Assert.True(own.IsOwn(OwnDwg));
+        Assert.Null(SdiGuard.Refusal(true, new[] { (OwnDwg, true) }));
+        // an earlier run's leftover that is modified when a later run begins is a person's (the rule the flag read afterwards would have broken)
+        var later = Fresh();
+        later.Created(OwnDwg);
+        later.BeginRun(OwnDwg, modified: false, nowUtc: DateTime.UtcNow.AddMinutes(10));
+        later.EndRun(OwnDwg, saved: true);
+        later.BeginRun(OwnDwg, modified: true);
+        Assert.False(later.IsOwn(OwnDwg));
+    }
+
+    [Fact]
     public void When_the_end_of_run_save_fails_the_drawing_stops_counting_as_the_tests_own()
     {
         var own = Fresh();

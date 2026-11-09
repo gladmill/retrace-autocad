@@ -132,6 +132,12 @@ public sealed class Recorder
             ["workspace"] = Try(() => AcApp.GetSystemVariable("WSCURRENT")?.ToString()),
             ["plugin"] = "Retrace " + (typeof(Recorder).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false).OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion ?? "?"),
         };
+        // a recording made in a new drawing: the template new drawings start from here, so RETRACERUN can start its drawing from the same one (it holds the layers etc.)
+        Log.Safe("header template", () =>
+        {
+            var d = AcApp.DocumentManager.MdiActiveDocument;
+            if (d != null && !d.IsNamedDrawing && Commands.QnewTemplate() is { } t) header["template"] = t;
+        });
         _w = new SessionWriter(string.IsNullOrWhiteSpace(name) ? "test" : name!, header);
         BeginShots();
         _promptMsg.Clear();
