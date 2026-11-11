@@ -277,7 +277,7 @@ static class PaletteFill
     }
 
     /// <summary>true if <paramref name="h"/> is a palette window of the set titled <paramref name="set"/> (palette, set, control bar).</summary>
-    static bool IsPage(IntPtr h, string? set)
+    internal static bool IsPage(IntPtr h, string? set)
     {
         var p = DialogReader.GetParent(h);
         return Native.TitleOf(p) == set && DialogReader.ClassOf(p).StartsWith("AfxWnd", StringComparison.Ordinal)

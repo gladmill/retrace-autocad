@@ -51,7 +51,7 @@ sealed class MenuReplay
     [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr lp);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
-    [DllImport("user32.dll", EntryPoint = "PostMessageW")] static extern bool Post(IntPtr h, uint msg, IntPtr w, IntPtr l);
+    static bool Post(IntPtr h, uint msg, IntPtr w, IntPtr l) => Native.Post(h, msg, w, l);
     [DllImport("user32.dll")] static extern bool EndMenu();
     [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
     [DllImport("user32.dll")] static extern int GetMenuItemCount(IntPtr menu);

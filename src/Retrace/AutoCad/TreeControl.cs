@@ -241,7 +241,7 @@ static class TreeControl
 
     static void ClickAt(IntPtr tree, int x, int y)
     {
-        var lp = (IntPtr)((y << 16) | (x & 0xFFFF));
+        var lp = Native.MakeLParam(x, y);
         Native.SendNum(tree, WM_LBUTTONDOWN, (IntPtr)1, lp, SMTO_ABORTIFHUNG, TimeoutMs, out _);
         Native.SendNum(tree, WM_LBUTTONUP, IntPtr.Zero, lp, SMTO_ABORTIFHUNG, TimeoutMs, out _);
     }

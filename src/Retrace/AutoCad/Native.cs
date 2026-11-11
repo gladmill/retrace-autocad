@@ -47,6 +47,27 @@ static class Native
     [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW")]
     internal static extern IntPtr SendNum(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
     [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
+    [DllImport("user32.dll", EntryPoint = "PostMessageW")] internal static extern bool Post(IntPtr h, uint msg, IntPtr w, IntPtr l);
+
+    /// <summary>The lParam of a mouse message: the client point packed as the system does.</summary>
+    public static IntPtr MakeLParam(int x, int y) => (IntPtr)((y << 16) | (x & 0xFFFF));
+
+    /// <summary>A left click at a client point of <paramref name="h"/>, posted (a move, the button down, the button up): the mouse does not move.</summary>
+    public static void PostClick(IntPtr h, int x, int y)
+    {
+        var lp = MakeLParam(x, y);
+        Post(h, 0x0200, IntPtr.Zero, lp);       // WM_MOUSEMOVE
+        Post(h, 0x0201, (IntPtr)1, lp);         // WM_LBUTTONDOWN, MK_LBUTTON
+        Post(h, 0x0202, IntPtr.Zero, lp);       // WM_LBUTTONUP
+    }
+
+    /// <summary>The windows whose parent is <paramref name="parent"/> (not their children).</summary>
+    public static List<IntPtr> ChildrenOf(IntPtr parent)
+    {
+        var list = new List<IntPtr>();
+        EnumChildWindows(parent, (h, _) => { if (GetParent(h) == parent) list.Add(h); return true; }, IntPtr.Zero);
+        return list;
+    }
 
     public const uint SMTO_ABORTIFHUNG = 2, WM_NOTIFY = 0x004E, SendTimeoutMs = 2000;
 

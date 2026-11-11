@@ -52,6 +52,99 @@ static class PaletteReveal
         return Inside(Rect(set), Rect(GetAncestor(set, GA_ROOT)));
     }
 
+    [DllImport("user32.dll")] static extern bool ScreenToClient(IntPtr h, ref POINT p);
+
+    /// <summary>Bringing a palette that is not the front tab of its (open) set to the front, by clicking its tab (see <see cref="Retrace.Core.PaletteTabs"/>,
+    /// <see cref="Retrace.Core.TabSearch"/>). Made only when another page of the same set is in front, with the pages' order known. Only the set window's rectangle and the
+    /// front page's rectangle are used (the page being looked for may have none), read again for each click: the set can move, re-dock or reopen. When the search fails,
+    /// the tab that was in front is put back by the same kind of search.</summary>
+    public sealed class TabSession
+    {
+        readonly IntPtr _set;
+        readonly List<IntPtr> _pages;   // the palettes that have a tab, in the order they were added
+        readonly Retrace.Core.TabSearch _search;
+        readonly int _start;
+        bool _restoring;
+        (int Offset, POINT Screen)? _last;   // the click made and not yet looked at
+
+        TabSession(IntPtr set, List<IntPtr> pages, int target, int front)
+        {
+            _set = set; _pages = pages; _start = front;
+            _search = new Retrace.Core.TabSearch(pages.Count, target, front);
+        }
+
+        /// <summary>Clicks made so far, in both searches.</summary>
+        public int Clicks { get; private set; }
+
+        /// <summary>The session, or null when there is no positive evidence that <paramref name="page"/> is a back tab of an open set: some other page of the same set is
+        /// in front, and the pages' order is known.</summary>
+        public static TabSession? Begin(IntPtr page)
+        {
+            var set = DialogReader.GetParent(page);
+            if (set == IntPtr.Zero || !SetIsOpen(page)) return null;
+            var setTitle = Native.TitleOf(set);
+            var ids = new List<(IntPtr H, int Id)>();
+            foreach (var h in Native.ChildrenOf(set))
+                if (DialogReader.ClassOf(h).StartsWith("AfxWnd", StringComparison.Ordinal) && Native.TitleOf(h).Length > 0 && PaletteFill.IsPage(h, setTitle)) ids.Add((h, DialogReader.GetDlgCtrlID(h)));
+            int target = Retrace.Core.PaletteTabs.IndexOf(DialogReader.GetDlgCtrlID(page), ids.Select(p => p.Id).ToList());
+            if (target < 0) return null;
+            var pages = ids.OrderBy(p => p.Id).Select(p => p.H).ToList();
+            var front = pages.Select((h, i) => (h, i)).Where(p => p.i != target && IsShown(p.h)).ToList();
+            if (front.Count != 1) return null;
+            return new TabSession(set, pages, target, front[0].i);
+        }
+
+        /// <summary>The page in front now (its index in the set), -1 when none or more than one shows.</summary>
+        int Shown()
+        {
+            var shown = _pages.Select((h, i) => (h, i)).Where(p => IsShown(p.h)).ToList();
+            return shown.Count == 1 ? shown[0].i : -1;
+        }
+
+        /// <summary>Where the mouse may rest to keep a rolled-up set open: on the page in front (never on the page looked for, which may have no rectangle).</summary>
+        public POINT? CursorSpot() => _pages.FirstOrDefault(IsShown) is var h && h != IntPtr.Zero ? Inside(h) : null;
+
+        /// <summary>Where the click was, on the screen; null before any click.</summary>
+        public POINT? LastClick => _last?.Screen;
+
+        /// <summary>Looks at what the last click did, then makes the next one: for the palette, and once the clicks for it are used up, for the tab that was in front. false when
+        /// there is nothing more to try: then the palette did not come to the front and the original tab is back, or could not be put back (logged).</summary>
+        public bool Click()
+        {
+            if (_last is { } l) _search.Observe(l.Offset, Shown());
+            _last = null;
+            if (!_restoring)
+            {
+                if (Post(_search.Next)) return true;
+                _restoring = true;
+                if (Shown() != _start) _search.Retarget(_start);
+            }
+            if (Shown() == _start) return false;
+            if (Post(_search.Next)) return true;
+            Log.Info("replay: could not put the tab that was in front back");
+            return false;
+        }
+
+        /// <summary>Makes the click <paramref name="next"/> gives for the strip as it is now; false when there is none, or no strip. The tab strip lies in the set window's
+        /// non-client part (its client area is only the pages), so the strip and the offsets are measured in the set window's own rectangle; the click is posted in client
+        /// coordinates and never outside that rectangle.</summary>
+        bool Post(Func<int, int?> next)
+        {
+            var front = _pages.FirstOrDefault(IsShown);
+            if (front == IntPtr.Zero) return false;
+            RECT w = Rect(_set), f = Rect(front);
+            if (Retrace.Core.PaletteTabs.StripX(w.Width, f.Left - w.Left, f.Right - w.Left, (int)Win32.GetDpiForWindow(_set)) is not { } x) return false;
+            if (next(w.Height) is not { } off || x < 0 || x >= w.Width || off < 0 || off >= w.Height) return false;
+            var screen = new POINT { X = w.Left + x, Y = w.Top + off };
+            var client = screen;
+            if (!ScreenToClient(_set, ref client)) return false;
+            Native.PostClick(_set, client.X, client.Y);
+            _last = (off, screen);
+            Clicks++;
+            return true;
+        }
+    }
+
     /// <summary>What a picture of the palette should cover while it is shown: its control bar (title, tabs and page), else the page.</summary>
     public static RECT? PictureRect(IntPtr page)
     {
