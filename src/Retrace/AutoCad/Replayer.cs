@@ -68,8 +68,10 @@ sealed class Replayer
     // the basic check's expected counts, worked out at the start from the recording's events (null: setting off)
     (BasicCheckRules.Counts Counts, string Source, string? Note)? _expectedEnd;
     bool _revealDone;
-    int _revealTry = -1;
-    DateTime _revealAt, _cursorBackAt = DateTime.MaxValue;
+    Attempts _hover = new(), _tabClick = new();   // the tries at resting the mouse on a palette to open it; at clicking its tab to bring it to the front
+    PaletteReveal.TabSession? _tabSession;
+    readonly HashSet<(string?, string?)> _tabFailed = new();   // (set, palette) whose tab the replay could not bring to the front: later steps drive it hidden at once
+    DateTime _cursorBackAt = DateTime.MaxValue;
     PaletteReveal.POINT? _cursorHome, _cursorSet;   // where the mouse was before; where Retrace last put it
     bool _paletteCommandStarted;
     int _modalDepth;
@@ -596,7 +598,7 @@ sealed class Replayer
         }
         if (_result.Checkpoints.Count == 0) sb.AppendLine("  (no checkpoints)");
         if (_result.BasicCheck is { } basic) sb.AppendLine("  " + basic.Line() + (basic.Pass == false ? " : FAIL" : ""));
-        if (!string.IsNullOrEmpty(_result.Message)) sb.AppendLine(_result.Message);
+        if (!string.IsNullOrEmpty(_result.ShownMessage)) sb.AppendLine(_result.ShownMessage);
         sb.AppendLine(written != null ? "Result file: " + written : "Result file could not be written.");
         Autodesk.AutoCAD.ApplicationServices.Application.ShowAlertDialog(sb.ToString());
     }
@@ -1208,22 +1210,46 @@ sealed class Replayer
         var page = PaletteFill.FindPage(s);
         if (page == IntPtr.Zero) { _revealDone = true; return true; }   // not open yet: PaletteFill says so and retries
         _cursorBackAt = DateTime.MaxValue;   // the restore of the previous palette waits: this one may need the mouse
-        if (!PaletteReveal.IsShown(page) && PaletteReveal.SetIsOpen(page)) { _revealDone = true; return true; }   // another tab of an open set: hovering changes nothing
         if (PaletteReveal.IsShown(page))
         {
+            // shown (the tab that was clicked, when there was one: the arrow points at the click that worked)
+            if (_tabSession?.LastClick is { } clicked) ClickArrows.At(clicked.X, clicked.Y);
+            _tabSession = null;
             if (_cursorHome != null) { var inside = PaletteReveal.Inside(page); MoveCursor(inside); }
             var r = PaletteReveal.Screen(page);
             _win.Avoid(r.Left, r.Top, r.Right, r.Bottom);
             _revealDone = true;
             return true;
         }
-        if (_revealTry < 0 || now - _revealAt > TimeSpan.FromMilliseconds(1200))
+        if (PaletteReveal.SetIsOpen(page))
+        {
+            // the set is open and this palette is not shown: when another page of the set is in front, this palette's tab is clicked, guided by what each click shows;
+            // otherwise nothing is known about it and the step goes on as it always did. A palette whose tab could not be brought to the front is not searched for again.
+            if (_tabFailed.Contains((s.Panel, s.DialogTitle))) { _revealDone = true; return true; }
+            _tabSession ??= PaletteReveal.TabSession.Begin(page);
+            if (_tabSession == null) { _revealDone = true; return true; }
+            if (_tabClick.Due(now, TimeSpan.FromMilliseconds(450)))
+            {
+                _tabClick.Next(now);
+                // the mouse rests on the set only when the set had to be opened by hovering (it rolls up when the mouse leaves); an open set is left alone
+                if (_hover.Index >= 0 && _cursorHome != null && _tabSession.CursorSpot() is { } rest) MoveCursor(rest);
+                if (!_tabSession.Click())
+                {
+                    Log.Info($"replay: could not bring the {s.DialogTitle} palette to the front of {s.Panel} (tried {_tabSession.Clicks} clicks); driving it hidden");
+                    _tabFailed.Add((s.Panel, s.DialogTitle));
+                    _tabSession = null;
+                    _revealDone = true;
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (_hover.Due(now, TimeSpan.FromMilliseconds(1200)))
         {
             var points = PaletteReveal.HoverPoints(page);
-            if (++_revealTry >= points.Count) { Log.Info($"replay: could not open the {s.DialogTitle} palette; driving it hidden"); _revealDone = true; return true; }
+            if (_hover.Next(now) >= points.Count) { Log.Info($"replay: could not open the {s.DialogTitle} palette; driving it hidden"); _revealDone = true; return true; }
             if (_cursorHome == null && PaletteReveal.GetCursorPos(out var home)) _cursorHome = home;
-            MoveCursor(points[_revealTry]);
-            _revealAt = now;
+            MoveCursor(points[_hover.Index]);
         }
         return false;
     }
@@ -1246,7 +1272,7 @@ sealed class Replayer
         var cur = _steps[_i];
         if (_cursorHome != null && !(next is { Kind: "palette" } && next.DialogTitle == cur.DialogTitle && next.Panel == cur.Panel))
             _cursorBackAt = DateTime.Now.AddMilliseconds(900);
-        _revealDone = false; _revealTry = -1;
+        _revealDone = false; _hover.Reset(); _tabClick.Reset(); _tabSession = null;
         _i++;
         _shown = false;
         _paletteForPerson = false;

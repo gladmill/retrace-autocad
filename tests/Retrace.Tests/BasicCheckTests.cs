@@ -121,6 +121,34 @@ public class BasicCheckTests
         Assert.Null(unread.Pass);
     }
 
+    // ---- the result message ----
+
+    static ReplayResult Result(string message, BasicCheckResult? bc) => new() { Message = message, BasicCheck = bc };
+
+    [Fact]
+    public void The_shown_message_leaves_the_basic_check_line_to_the_list_and_the_file_message_keeps_it()
+    {
+        var fail = BasicCheckRules.Evaluate(BasicCheckRules.AllItems, new(12, 5, 2), new(12, 3, 2), BasicCheckRules.FromEndCounts);
+        var r = Result("step 2 failed: x; " + fail.Line() + "; step 1: note", fail);
+        Assert.Equal("step 2 failed: x; step 1: note", r.ShownMessage);
+        Assert.Contains(fail.Line(), r.Message);
+        Assert.Equal("step 2 failed: x", Result("step 2 failed: x; " + fail.Line(), fail).ShownMessage);
+        Assert.Equal("step 1: note", Result(fail.Line() + "; step 1: note", fail).ShownMessage);
+        Assert.Equal("", Result(fail.Line(), fail).ShownMessage);
+    }
+
+    [Fact]
+    public void The_shown_message_keeps_the_unverified_remark_and_works_on_a_result_read_back_from_a_file()
+    {
+        var none = BasicCheckRules.Evaluate(BasicCheckRules.AllItems, new(null, null, null), new(1, 1, 1), BasicCheckRules.FromNothing);
+        var r = Result(none.Line() + "; the basic check verified nothing", none);
+        Assert.Equal("the basic check verified nothing", r.ShownMessage);
+        var back = JsonSerializer.Deserialize<ReplayResult>(r.ToJson())!;
+        Assert.Equal("the basic check verified nothing", back.ShownMessage);
+        Assert.Equal("a; b", Result("a; b", null).ShownMessage);
+        Assert.Equal("a; b", Result("a; b", none).ShownMessage);
+    }
+
     // ---- the expected counts of a recording ----
 
     static List<JsonElement> Events(params string[] lines) => lines.Select(l => JsonDocument.Parse(l).RootElement.Clone()).ToList();

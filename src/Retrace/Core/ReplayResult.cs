@@ -115,6 +115,21 @@ public sealed class ReplayResult
     [JsonPropertyName("steps")] public List<StepResult> Steps { get; set; } = new();
     [JsonPropertyName("checkpoints")] public List<CheckpointResult> Checkpoints { get; set; } = new();
     [JsonPropertyName("message")] public string Message { get; set; } = "";
+    /// <summary>The message as the verdict box shows it (its list of the checks already shows the basic check): <see cref="Message"/> without the basic-check line, which they show themselves
+    /// (the console summary and the result file keep the whole message). Worked out here, so it also works on a result read back from a file; the file's message keeps the line.</summary>
+    [JsonIgnore] public string ShownMessage => BasicCheck == null ? Message : WithoutLine(Message, BasicCheck.Line());
+
+    /// <summary>Takes <paramref name="line"/> and one of its "; " separators out of <paramref name="message"/>; the message unchanged when it does not hold the line.</summary>
+    public static string WithoutLine(string message, string line)
+    {
+        var at = message.IndexOf(line, StringComparison.Ordinal);
+        if (at < 0) return message;
+        int start = at, end = at + line.Length;
+        if (string.CompareOrdinal(message, end, "; ", 0, 2) == 0) end += 2;
+        else if (start >= 2 && string.CompareOrdinal(message, start - 2, "; ", 0, 2) == 0) start -= 2;
+        return message.Remove(start, end - start);
+    }
+
     /// <summary>The history file <see cref="Write"/> made (not stored in the file); a suite summary links to it.</summary>
     [JsonIgnore] public string? WrittenTo { get; set; }
 
