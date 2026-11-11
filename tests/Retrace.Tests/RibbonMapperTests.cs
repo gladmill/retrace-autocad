@@ -677,7 +677,7 @@ public class RibbonMapperTests : IDisposable
     {
         // real code, not a fixture: the plugin's source folder holds its ribbon (RetraceTab.cs) and its commands (RetraceApp.cs)
         var r = RibbonMapper.Build(new RibbonMapOptions { Folders = [LayerRulesTests.SourceRoot()] });
-        var buttons = r.Rows.Where(x => x.Tab == "Retrace" && x.Origin == "code").ToList();
+        var buttons = r.Rows.Where(x => x.Tab == "Retrace" && x.Origin == "code" && x.Kind != "toggle").ToList();   // the Prompts toggle runs no command
         Assert.True(buttons.Count >= 17);
         Assert.All(buttons, b =>
         {

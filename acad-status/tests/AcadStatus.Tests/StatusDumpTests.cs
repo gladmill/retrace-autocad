@@ -25,7 +25,7 @@ public class StatusDumpTests
         Assert.Equal(Tone.Blue, b.Tone);
         Assert.Equal("retrace-4812  running  2s ago", b.Header);
         Assert.Equal("Suite 3/7: smoke040", b.Lines[0]);
-        Assert.Equal("owner COM, Retrace 0.6.6, pid 4812, ttl 15s", b.Lines[1]);
+        Assert.Equal("owner COM, Retrace 0.6.7, pid 4812, ttl 15s", b.Lines[1]);
     }
 
     [Fact]

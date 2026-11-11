@@ -11,7 +11,30 @@ namespace Retrace.AutoCad;
 sealed class ShotService
 {
     /// <summary>Pixels of a capture: 32-bit BGRA, top-down.</summary>
-    public sealed record Picture(byte[] Pixels, int Width, int Height);
+    public sealed record Picture(byte[] Pixels, int Width, int Height)
+    {
+        /// <summary>The screen point of the picture's top-left corner, when it is a capture of a screen rectangle (<see cref="HasOrigin"/>).</summary>
+        public int Left { get; init; }
+        public int Top { get; init; }
+        public bool HasOrigin { get; init; }
+    }
+
+    // ---- click arrows in step pictures (setting showClickArrows) ------------------------------------------------------------
+    readonly Dictionary<int, (int X, int Y)> _clicks = new();
+    bool _arrows;
+
+    /// <summary>Step pictures get the green click arrow (setting <c>showClickArrows</c>): drawn into the saved image, never captured from the live overlay.</summary>
+    public bool Arrows { get => _arrows; set { _arrows = value; _clicks.Clear(); } }
+
+    /// <summary>The screen point where the person clicked for event <paramref name="n"/>: its picture points at it.</summary>
+    public void NoteClick(int n, int x, int y) { if (_arrows && n > 0) _clicks[n] = (x, y); }
+
+    /// <summary>The arrow for event <paramref name="n"/>'s picture of the screen rectangle (<paramref name="src"/>) saved at <paramref name="w"/> x <paramref name="h"/>, or null.</summary>
+    ArrowLine? ArrowFor(int n, Core.PxRect src, int w, int h) =>
+        _arrows && _clicks.TryGetValue(n, out var c) && src.Contains(c.X, c.Y) ? ClickArrow.ForImage(c.X, c.Y, src, w, h) : null;   // a click outside what the picture shows has no place in it
+
+    /// <summary>The closing input of event <paramref name="n"/> was not a mouse click: an earlier click's point is no longer its.</summary>
+    public void ForgetClick(int n) => _clicks.Remove(n);
 
     readonly ShotScheduler _sched = new();
     readonly List<Task> _tasks = new();
@@ -31,6 +54,7 @@ sealed class ShotService
         _sched.Clear();
         _tasks.Clear();
         _afterTaken.Clear();
+        _clicks.Clear();
         _sessionPath = sessionPath;
         _folder = Path.Combine(Path.GetDirectoryName(sessionPath) ?? "", ShotNaming.FolderFor(sessionPath));
         _enabled = enabled;
@@ -97,7 +121,7 @@ sealed class ShotService
     {
         var r = new Win.RECT { Left = left, Top = top, Right = right, Bottom = bottom };
         if (r.Width <= 0 || r.Height <= 0) return null;
-        try { return new Picture(Win.CopyScreen(r), r.Width, r.Height); }
+        try { return new Picture(Win.CopyScreen(r), r.Width, r.Height) { Left = left, Top = top, HasOrigin = true }; }
         catch (Exception ex) { Log.Error("capture rect", ex); return null; }
     }
 
@@ -117,7 +141,7 @@ sealed class ShotService
         catch (Exception ex) { Log.Error("capture window", ex); return null; }
     }
 
-    static Picture? Capture(Win.RECT r) => r.Width <= 0 || r.Height <= 0 ? null : new Picture(Win.CopyScreen(r), r.Width, r.Height);
+    static Picture? Capture(Win.RECT r) => r.Width <= 0 || r.Height <= 0 ? null : new Picture(Win.CopyScreen(r), r.Width, r.Height) { Left = r.Left, Top = r.Top, HasOrigin = true };
 
     /// <summary>Writes a picture taken earlier as the `shot` of event <paramref name="n"/> (what: "palette").</summary>
     public void Write(int n, string kind, Picture p, string what)
@@ -126,9 +150,16 @@ sealed class ShotService
         var path = Path.Combine(_folder, ShotNaming.FileName(n, kind));
         var rel = ShotNaming.RelativePathFor(_sessionPath, n, kind);
         var onShot = _onShot;
+        var arrow = p.HasOrigin ? ArrowFor(n, new Core.PxRect(p.Left, p.Top, p.Left + p.Width, p.Top + p.Height), p.Width, p.Height) : null;
         var t = Task.Run(() =>
         {
-            try { Directory.CreateDirectory(Path.GetDirectoryName(path)!); Png.Write(path, p.Width, p.Height, p.Pixels); onShot(n, rel, what); }
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                var data = p.Pixels;
+                if (arrow is { } a) { data = (byte[])data.Clone(); Annotate.DrawArrow(data, p.Width, p.Height, a); }
+                Png.Write(path, p.Width, p.Height, data); onShot(n, rel, what);
+            }
             catch (Exception ex) { Log.Error($"shot {n} write", ex); }
         });
         lock (_tasks) { _tasks.RemoveAll(x => x.IsCompleted); _tasks.Add(t); }
@@ -143,13 +174,15 @@ sealed class ShotService
         var rel = ShotNaming.RelativePathFor(_sessionPath, n, kind);
         int w = b.Width, h = b.Height;
         var onShot = _onShot;
+        var (nw, nh) = what == "window" ? ShotImage.FitSize(w, h) : (w, h);
+        var arrow = ArrowFor(n, new Core.PxRect(b.Left, b.Top, b.Right, b.Bottom), nw, nh);
         var t = Task.Run(() =>
         {
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-                var (nw, nh) = what == "window" ? ShotImage.FitSize(w, h) : (w, h);
                 var data = nw == w && nh == h ? px : ShotImage.Scale(px, w, h, nw, nh);
+                if (arrow is { } a) Annotate.DrawArrow(data, nw, nh, a);
                 Png.Write(path, nw, nh, data);
                 if (announce) onShot(n, rel, what);
             }
@@ -168,6 +201,7 @@ sealed class ShotService
 
     public void End()
     {
+        _clicks.Clear();
         _sched.Clear();
         _enabled = false;
         _onShot = (_, _, _) => { };
@@ -220,6 +254,7 @@ sealed class ShotService
         public static byte[] CopyScreen(RECT r)
         {
             int w = r.Width, h = r.Height;
+            ClickArrows.HideNow();   // the live arrow is never in a picture: step pictures get their own arrow drawn into the image
             var screen = GetDC(IntPtr.Zero);
             var mem = CreateCompatibleDC(screen);
             var bmi = new BITMAPINFOHEADER { biSize = (uint)Marshal.SizeOf<BITMAPINFOHEADER>(), biWidth = w, biHeight = -h, biPlanes = 1, biBitCount = 32 };

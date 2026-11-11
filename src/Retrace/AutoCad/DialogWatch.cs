@@ -111,7 +111,7 @@ sealed partial class DialogWatch
 
     /// <summary>OK, or Enter / Space / a mnemonic that presses it, in a tracked dialog, before the dialog handles it: (n of its modal_title/modal_enter, dialog window). The recorder
     /// takes the "after" picture here.</summary>
-    public Action<int, IntPtr>? Confirmed { get; set; }
+    public Action<int, IntPtr, (int X, int Y)?>? Confirmed { get; set; }
 
     /// <summary>A dialog opened over the innermost tracked one, right after a button click, without <c>EnterModal</c> (see <see cref="ModalAbove"/>): the recorder writes its
     /// <c>modal_enter</c> and returns its event number (the <c>for</c> of its <c>dialog_values</c>); 0 = not recorded, and the window is left alone.
@@ -355,7 +355,7 @@ sealed partial class DialogWatch
         }
         Touch(e);
         ReadAtInput(e, now);
-        if (role == "ok") Confirmed?.Invoke(e.ForN, e.Hwnd);
+        if (role == "ok") Confirmed?.Invoke(e.ForN, e.Hwnd, m.message == WM_LBUTTONDOWN ? (m.x, m.y) : null);   // the point of the mouse click that confirms; the dialog's picture points at it
     }
 
     /// <summary>The mouse button came up: the click is complete when it is on the button the press went down on and inside it; released elsewhere, it is dropped.</summary>
@@ -431,7 +431,7 @@ sealed partial class DialogWatch
             SettleIfPending(e, null);
             e.ClosedWith = "ok";
             ReadAtInput(e, now);
-            Confirmed?.Invoke(e.ForN, e.Hwnd);
+            Confirmed?.Invoke(e.ForN, e.Hwnd, null);
             return;
         }
         ButtonPressed(e, button, now);
@@ -448,7 +448,7 @@ sealed partial class DialogWatch
         if (role == null && !Retrace.Core.DialogButtons.IsHelp(text)) { e.Press = new Pending(focus, text, DialogReader.GetDlgCtrlID(focus), true); return; }
         SettleIfPending(e, null);
         ReadAtInput(e, now);
-        if (role == "ok") Confirmed?.Invoke(e.ForN, e.Hwnd);
+        if (role == "ok") Confirmed?.Invoke(e.ForN, e.Hwnd, null);
     }
 
     void SpaceUp(Entry e, Native.Msg m, long now)
@@ -481,7 +481,7 @@ sealed partial class DialogWatch
         }
         SettleIfPending(e, null);
         ReadAtInput(e, now);
-        if (role == "ok") Confirmed?.Invoke(e.ForN, e.Hwnd);
+        if (role == "ok") Confirmed?.Invoke(e.ForN, e.Hwnd, null);
     }
 
     /// <summary>The press is a click: the dialog is read (fields and buttons in one pass, then the static texts), the click goes out, and the baseline moves to the values read, so the dialog's

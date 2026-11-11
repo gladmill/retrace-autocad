@@ -21,7 +21,75 @@ static class PaletteFill
     /// <summary>A button's text as recorded: an icon-only button (no text) is "(button)".</summary>
     public static string ButtonLabel(string? text) { var t = DialogFieldsCore.CleanLabel(text); return t.Length > 0 ? t : "(button)"; }
 
-    static string? _pressFailure;
+    static string? _pressFailure, _note;
+
+    /// <summary>How long a button recorded under a name that is not there is looked for by name, before it is taken by position (a little less than <see cref="Replayer.PaletteWait"/>, so the retries that follow can still press it).</summary>
+    static readonly TimeSpan PositionAfter = TimeSpan.FromSeconds(10);
+
+    /// <summary>The button a palette step presses: a WinForms window or a WPF button, its screen rectangle, and a note when it was taken by position.</summary>
+    sealed record ButtonTarget(IntPtr H, System.Windows.Controls.Primitives.ButtonBase? Wpf, ScreenRect? Rect, string? Note);
+
+    /// <summary>The one finder of the step's button, for the press and for Tdoc: by name (<see cref="ButtonNames.Matches{T}"/>), else, when <paramref name="allowPosition"/> and the palette has as many buttons without text as
+    /// when it was recorded, the `legacyIndex`-th of them with a note naming what it is called now. null when there is none.</summary>
+    static ButtonTarget? FindButtonTarget(Retrace.Core.Step s, IntPtr page, bool hidden, bool wpf, bool allowPosition)
+    {
+        int want = Math.Max(1, s.ButtonIndex);
+        if (wpf)
+        {
+            var wb = WpfPalette.ScanPage(page, hidden);
+            int at = WpfPalette.FindButton(wb, s.Button!, want, s.ButtonFrom);
+            string? note = null;
+            if (at < 0 && allowPosition && ButtonNames.IsFallback(s.ButtonFrom) && ButtonNames.PositionAllowed(s.ButtonLegacyIndex, s.ButtonNoTextCount, WpfPalette.NoTextCount(wb)))
+            {
+                at = WpfPalette.FindButtonByPosition(wb, s.ButtonLegacyIndex);
+                if (at >= 0)
+                {
+                    var now = ButtonNames.Pick(null, () => wb.Fallback(at, ButtonNames.FromTooltip), null, () => wb.Fallback(at, ButtonNames.FromAutomation), () => wb.Fallback(at, ButtonNames.FromName)).Name;
+                    note = ButtonNames.PositionNote(s.Button!, now, s.ButtonLegacyIndex);
+                }
+            }
+            if (at < 0) return null;
+            var b = wb.Buttons[at].Button;
+            var r = WpfPalette.ScreenRect(b);
+            return new ButtonTarget(IntPtr.Zero, b, r is { } rr ? new ScreenRect((int)rr.Left, (int)rr.Top, (int)rr.Right, (int)rr.Bottom) : null, note);
+        }
+        var live = DialogReader.Scan(page, hidden, readTicks: false);
+        int found = DialogReader.FindButton(live, s.Button!, want, s.ButtonFrom);
+        string? note32 = null;
+        if (found < 0 && allowPosition && ButtonNames.IsFallback(s.ButtonFrom) && ButtonNames.PositionAllowed(s.ButtonLegacyIndex, s.ButtonNoTextCount, DialogReader.NoTextCount(live)))
+        {
+            found = DialogReader.FindButtonByPosition(live, s.ButtonLegacyIndex);
+            if (found >= 0)
+            {
+                var f = found;
+                note32 = ButtonNames.PositionNote(s.Button!, ButtonNames.Pick(null, () => live.Fallback(f, ButtonNames.FromTooltip), () => live.Fallback(f, ButtonNames.FromAccessible), null, () => live.Fallback(f, ButtonNames.FromName)).Name, s.ButtonLegacyIndex);
+            }
+        }
+        if (found < 0) return null;
+        var h = live.Buttons[found].H;
+        return new ButtonTarget(h, null, GetWindowRect(h, out var wr) ? new ScreenRect(wr.L, wr.T, wr.R, wr.B) : null, note32);
+    }
+
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out WinRect r);
+    [StructLayout(LayoutKind.Sequential)] struct WinRect { public int L, T, R, B; }
+
+    /// <summary>Tdoc: the screen rectangle of the button the step presses (found as the replay will find it, a WPF button too, a button recorded under a name that changed by position); null when the step has no button or it is not there.</summary>
+    public static ScreenRect? TdocButtonRect(Retrace.Core.Step s)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(s.Button) || s.Native != null) return null;
+            var page = FindPage(s);
+            if (page == IntPtr.Zero) return null;
+            var hidden = !IsWindowVisible(page);
+            bool wpf = DialogReader.Scan(page, hidden, readTicks: false) is { Fields.Count: 0, Buttons.Count: 0 } && WpfPalette.Host(page) != IntPtr.Zero;
+            return FindButtonTarget(s, page, hidden, wpf, allowPosition: true)?.Rect;
+        }
+        catch (Exception ex) { Log.Error("tdoc palette button", ex); return null; }
+    }
+
+    /// <summary>A note the last palette step left (a button found by position, because its name changed), once; the replay adds it to the result's warnings.</summary>
+    public static string? TakeNote() { var n = _note; _note = null; return n; }
 
     /// <summary>A queued press that could not be done (the button got disabled meanwhile, an exception), once; the replay stops with it.</summary>
     public static string? TakePressFailure()
@@ -82,30 +150,25 @@ static class PaletteFill
             if (at < 0 || win32.Handles[at].Count == 0) return $"no tree \"{s.ClickTreeLabel}\" in the {s.DialogTitle} palette (yet)";
             return TreeControl.DoubleClick(win32.Handles[at][0], s.ClickPath, a => DialogFill.Later("palette tree double-click", a)) is { } why ? $"could not double-click {s.ClickPath}: {why}" : null;
         }
-        int want = Math.Max(1, s.ButtonIndex), seen = 0;
-        if (wpf)
+        run.Since ??= DateTime.Now;
+        // by name first; by position only when the name has found nothing for as long as the replay waits for a button, and the palette still has the buttons without text it had
+        bool late = DateTime.Now - run.Since.Value >= PositionAfter;
+        var target = FindButtonTarget(s, page, hidden, wpf, late);
+        if (target != null)
         {
-            // the one finder of a recorded WPF button (a recording from before the access-key underscore was dropped compares equal)
-            var wb = WpfPalette.ScanPage(page, hidden).Buttons;
-            int at = Retrace.Core.WpfPresses.Find(wb.Select(x => x.Text).ToList(), s.Button, want);
-            if (at >= 0) { var wbtn = wb[at].Button; Later(s.Button, () => WpfPalette.Press(wbtn)); return null; }
-        }
-        else
-        {
-            foreach (var (h, _, text) in DialogReader.Scan(page, hidden, readTicks: false).Buttons)
-                if (string.Equals(ButtonLabel(text), s.Button, StringComparison.OrdinalIgnoreCase) && ++seen == want)
-                {
-                    if (!hidden) return DialogFill.PostClick(h) ? null : $"could not press {s.Button}";
-                    if (WinFormsControls.KindOf(h) != "button") return $"could not press {s.Button} (the palette is hidden)";
-                    Later(s.Button, () => WinFormsControls.TryClick(h));
-                    return null;
-                }
+            if (target.Note != null) _note = target.Note;
+            if (target.Wpf != null) { var wbtn = target.Wpf; Later(s.Button, () => WpfPalette.Press(wbtn)); return null; }
+            var h = target.H;
+            if (!hidden) return DialogFill.PostClick(h) ? null : $"could not press {s.Button}";
+            if (WinFormsControls.KindOf(h) != "button") return $"could not press {s.Button} (the palette is hidden)";
+            Later(s.Button, () => WinFormsControls.TryClick(h));
+            return null;
         }
         return $"no button \"{s.Button}\" in the {s.DialogTitle} palette (yet)";
     }
 
     /// <summary>What one palette step has done so far, kept by the replay for the step's retries (a value leaves the screen with its tab, so the values already set and read back are remembered here).</summary>
-    public sealed class FillRun { internal readonly HashSet<int> Done = new(); internal DialogFill.TickSession? Ticks; internal MenuReplay? Menu; }
+    public sealed class FillRun { internal DateTime? Since; internal readonly HashSet<int> Done = new(); internal DialogFill.TickSession? Ticks; internal MenuReplay? Menu; }
 
     static string? FillWin32(IntPtr page, bool hidden, DialogReader.Win32Scan scan, List<FieldChange> values, string? title, FillRun run)
     {
@@ -182,13 +245,7 @@ static class PaletteFill
                     boxes.Add(new DialogBox(scan.Handles[map[i]][0], default, TdocPlan.FieldCallout(values[i])));
             if (!string.IsNullOrEmpty(s.Button))
             {
-                int want = Math.Max(1, s.ButtonIndex), seen = 0;
-                foreach (var (h, _, text) in scan.Buttons)
-                    if (string.Equals(ButtonLabel(text), s.Button, StringComparison.OrdinalIgnoreCase) && ++seen == want)
-                    {
-                        boxes.Add(new DialogBox(h, default, "Click " + s.Button));
-                        break;
-                    }
+                if (DialogReader.FindButton(scan, s.Button, s.ButtonIndex, s.ButtonFrom) is var at and >= 0) boxes.Add(new DialogBox(scan.Buttons[at].H, default, "Click " + s.Button));
             }
         }
         catch (Exception ex) { Log.Error("tdoc palette boxes", ex); }

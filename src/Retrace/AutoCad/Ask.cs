@@ -32,7 +32,7 @@ static class Ask
     }
 
     /// <summary>The promptStyle setting, read again only when settings.json changed.</summary>
-    static bool UiSetting()
+    internal static bool UiSetting()
     {
         try
         {

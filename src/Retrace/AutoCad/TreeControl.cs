@@ -310,6 +310,7 @@ static class TreeControl
             var lp = (IntPtr)((y << 16) | (x & 0xFFFF));
             later(() =>
             {
+                ClickArrows.AtClient(tree, x, y);
                 // no button down and up before it: the item is selected already, and a sent button-down makes the tree wait to see whether the mouse is dragged (seconds, as no button is
                 // down for real), which let a sub form open late
                 Native.SendNum(tree, WM_LBUTTONDBLCLK, (IntPtr)1, lp, SMTO_ABORTIFHUNG, 60000, out _);

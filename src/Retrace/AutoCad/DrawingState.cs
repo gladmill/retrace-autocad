@@ -26,6 +26,50 @@ static class DrawingState
         catch (Exception ex) { Log.Error("DrawingState.Read", ex); return null; }
     }
 
+    /// <summary>The basic check's counts of the document (see <see cref="BasicCheckRules"/>): model-space entities, layers (not the xref-dependent ones, "X|Y"),
+    /// paper-space layouts (layout tabs, not Model). A count that cannot be read is null. Same locking rules as <see cref="Read"/>. Null when nothing could be read.</summary>
+    public static BasicCheckRules.Counts? ReadCounts(Document doc)
+    {
+        try
+        {
+            DocumentLock? dl = string.IsNullOrEmpty(doc.CommandInProgress) ? doc.LockDocument() : null;
+            try
+            {
+                var db = doc.Database;
+                int? ms = null, layers = null, layouts = null;
+                using var tr = db.TransactionManager.StartOpenCloseTransaction();
+                try
+                {
+                    var btr = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForRead);
+                    int n = 0;
+                    foreach (ObjectId _ in btr) n++;   // ids only: no object is opened
+                    ms = n;
+                }
+                catch (Exception ex) { Log.Error("DrawingState.ReadCounts model space", ex); }
+                try
+                {
+                    var lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
+                    int n = 0;
+                    foreach (ObjectId id in lt) if (tr.GetObject(id, OpenMode.ForRead) is LayerTableRecord ltr && !ltr.IsDependent && !BasicCheckRules.IsXrefLayer(ltr.Name)) n++;
+                    layers = n;
+                }
+                catch (Exception ex) { Log.Error("DrawingState.ReadCounts layers", ex); }
+                try
+                {
+                    var ld = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
+                    int n = 0;
+                    foreach (DBDictionaryEntry e in ld) if (!string.Equals(e.Key, "Model", StringComparison.OrdinalIgnoreCase)) n++;
+                    layouts = n;
+                }
+                catch (Exception ex) { Log.Error("DrawingState.ReadCounts layouts", ex); }
+                tr.Commit();
+                return ms == null && layers == null && layouts == null ? null : new BasicCheckRules.Counts(ms, layers, layouts);
+            }
+            finally { dl?.Dispose(); }
+        }
+        catch (Exception ex) { Log.Error("DrawingState.ReadCounts", ex); return null; }
+    }
+
     static DrawingDigest ReadLocked(Database db, bool withLayerState)
     {
         var ents = new List<(string, string, string)>();

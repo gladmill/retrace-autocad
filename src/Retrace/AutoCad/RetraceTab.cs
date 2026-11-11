@@ -60,6 +60,7 @@ public static class RetraceTab
         src.Items.Add(Button("RETRACEDOCS", "Build docs", "build", "^C^C_RETRACEDOCS ", "Run the engine on your code, captures and recordings and write the guide, reference and test plans."));
         src.Items.Add(Button("RETRACEMAP", "Map", "map", "^C^C_RETRACEMAP ", "Map each ribbon button to the code it runs (LISP, C++, C#, VB.NET), from the CUI and CUIX files and the code in the folders you pick, and from the ribbon AutoCAD shows now."));
         src.Items.Add(Button("RETRACESETTINGS", "Settings", "sliders", "^C^C_RETRACESETTINGS ", "Set the folders, the editor and the checkpoint shortcut."));
+        src.Items.Add(PromptToggle());
         return Wrap(src);
     }
 
@@ -81,6 +82,28 @@ public static class RetraceTab
         src.Items.Add(Button("RETRACECAPTUREDCL", "Capture DCL dialogs", "camera", "^C^C_RETRACECAPTUREDCL ", "Open each DCL dialog and save a picture of it."));
         src.Items.Add(Button("RETRACECLOSEALL", "Close all drawings", "closeall", "^C^C_RETRACECLOSEALL ", "Close every open drawing without saving (asks once first). Handy between test runs."));
         return Wrap(src);
+    }
+
+    /// <summary>The Id of the Prompts toggle.</summary>
+    public const string PromptToggleId = "RETRACE_PROMPTS";
+
+    /// <summary>The Prompts toggle: checked = windows, unchecked = command line. Its text, tooltip and state follow promptStyle
+    /// (<see cref="RibbonInstaller.RefreshFromSettings"/>). Not made by <see cref="Button"/>: it runs no command, its handler flips the setting.</summary>
+    static RibbonToggleButton PromptToggle()
+    {
+        var b = new RibbonToggleButton();
+        b.Id = PromptToggleId;
+        b.Size = RibbonItemSize.Large;
+        b.Orientation = System.Windows.Controls.Orientation.Vertical;
+        b.Image = RibbonIcons.Make("prompts", 16);
+        b.LargeImage = RibbonIcons.Make("prompts", 32);
+        b.ShowImage = true;
+        b.ShowText = true;
+        b.Text = RibbonPrompts.ToggleText(PromptStyles.CommandLine);   // until settings.json has been read
+        b.ToolTip = RibbonPrompts.ToggleTip(PromptStyles.CommandLine);
+        b.Description = b.ToolTip as string;
+        b.CommandHandler = new PromptToggleHandler();
+        return b;
     }
 
     static RibbonPanel Wrap(RibbonPanelSource src)

@@ -21,7 +21,7 @@ static class NativePalette
     public sealed record Spot(IntPtr Page, string Palette, string Set);
 
     /// <summary>One native action, ready to write: the <c>native_click</c> / <c>native_select</c> fields.</summary>
-    public sealed record Input(Spot Where, string Control, string Action, string[]? Path, int Index, int Id, string? Label, string? Value, int Entry = 0);
+    public sealed record Input(Spot Where, string Control, string Action, string[]? Path, int Index, int Id, string? Label, string? Value, int Entry = 0, string? LabelFrom = null);
 
     const uint WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202, WM_LBUTTONDBLCLK = 0x0203, WM_RBUTTONDOWN = 0x0204, WM_COMMAND = 0x0111;
     const uint TVM_HITTEST = TreeControl.TV_FIRST + 17;   // the other TVM messages and the tree walk are TreeControl's
@@ -148,9 +148,10 @@ static class NativePalette
         {
             if (message != WM_LBUTTONDOWN || !IsWindowEnabled(hwnd)) return null;
             var all = Controls(spot.Page, "Button");
-            var label = Native.TitleOf(hwnd).Replace("&", "").Trim();
-            if (label.Length == 0) label = ToolTip(hwnd) ?? "";
-            return new Input(spot, "button", "click", null, all.IndexOf(hwnd) + 1, GetDlgCtrlID(hwnd), label.Length > 0 ? label : null, null);
+            // the text, else the tool tip, the accessible name, the control's Name (ButtonNames); the replay finds the button by id or position, so the name is for the steps
+            var named = ButtonNaming.Win32Pick(hwnd, Native.TitleOf(hwnd));
+            var label = named.Name == ButtonNames.Unnamed ? "" : named.Name.Replace("&", "").Trim();
+            return new Input(spot, "button", "click", null, all.IndexOf(hwnd) + 1, GetDlgCtrlID(hwnd), label.Length > 0 ? label : null, null, 0, ButtonNames.FromToRecord(label.Length > 0 ? named.From : ""));
         }
         var action = message switch { WM_LBUTTONDOWN => "click", WM_LBUTTONDBLCLK => "dblclick", WM_RBUTTONDOWN => "rclick", _ => null };
         if (action == null) return null;
@@ -224,6 +225,8 @@ static class NativePalette
 
     /// <summary>The tool tip of a button with no text (the Project Manager's icon buttons), from the tool tip controls of this thread: the tool
     /// registered for that window, or for a rectangle of its parent around it. Null when there is none.</summary>
+    internal static string? ToolTipOf(IntPtr button) => ToolTip(button);
+
     static string? ToolTip(IntPtr button)
     {
         string? found = null;
@@ -288,7 +291,7 @@ static class NativePalette
         {
             case "button":
                 if (!IsWindowEnabled(ctl)) return $"the {a.Target} button is disabled";
-                DialogFill.Later("button", () => Send(ctl, BM_CLICK, IntPtr.Zero, IntPtr.Zero));
+                DialogFill.Later("button", () => { ClickArrows.AtWindow(ctl); Send(ctl, BM_CLICK, IntPtr.Zero, IntPtr.Zero); });
                 return null;
             case "combo":
                 return Combo(page, ctl, a);
@@ -318,6 +321,7 @@ static class NativePalette
             var how = "mouse";
             if (TabControl32.ItemRect(tab, i) is { } r)
             {
+                ClickArrows.AtClient(tab, (r.L + r.R) / 2, (r.T + r.B) / 2);
                 var lp = (IntPtr)((((r.T + r.B) / 2) << 16) | (((r.L + r.R) / 2) & 0xFFFF));
                 Send(tab, WM_LBUTTONDOWN, (IntPtr)1, lp);
                 Send(tab, WM_LBUTTONUP, IntPtr.Zero, lp);
@@ -386,6 +390,7 @@ static class NativePalette
         }
         finally { Marshal.FreeHGlobal(buf); }
         var lp = (IntPtr)((((r.T + r.B) / 2) << 16) | (((r.L + r.R) / 2) & 0xFFFF));
+        ClickArrows.AtClient(list, (r.L + r.R) / 2, (r.T + r.B) / 2);
         Send(list, 0x0200 /* WM_MOUSEMOVE */, IntPtr.Zero, lp);
         Send(list, WM_LBUTTONDOWN, (IntPtr)1, lp);
         Send(list, WM_LBUTTONUP, IntPtr.Zero, lp);
@@ -405,6 +410,7 @@ static class NativePalette
         var r = TreeControl.TextRect(tree, item) ?? default;
         var pt = new POINT { X = Math.Min(r.L + 8, (r.L + r.R) / 2), Y = (r.T + r.B) / 2 };
         var screen = pt; ClientToScreen(tree, ref screen);
+        ClickArrows.At(screen.X, screen.Y);
         cursor?.Invoke(screen.X, screen.Y);   // Electrical reads where the mouse is when it handles the click
         var lp = (IntPtr)((pt.Y << 16) | (pt.X & 0xFFFF));
         DialogFill.Later("tree", () =>

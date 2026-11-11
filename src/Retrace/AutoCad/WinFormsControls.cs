@@ -54,7 +54,7 @@ static class WinFormsControls
     /// <summary>The Checked property of a WinForms CheckBox / RadioButton; false if there is none.</summary>
     public static bool IsChecked(IntPtr h) => Control(h) is { } c && c.GetType().GetProperty("Checked")?.GetValue(c) is true;
 
-    static bool IsA(Type? t, string fullName)
+    internal static bool IsA(Type? t, string fullName)
     {
         for (; t != null; t = t.BaseType) if (t.FullName == fullName) return true;
         return false;
@@ -131,6 +131,7 @@ static class WinFormsControls
         if (KindOf(h) != "button" || Control(h) is not { } c) return false;
         try
         {
+            ClickArrows.AtWindow(h);
             c.GetType().GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic, new[] { typeof(EventArgs) })!.Invoke(c, new object[] { EventArgs.Empty });
             return true;
         }

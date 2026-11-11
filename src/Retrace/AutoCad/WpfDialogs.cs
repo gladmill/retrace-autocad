@@ -24,16 +24,16 @@ static class WpfDialogs
     /// <summary>One pass over the window (the same scan a palette gets: <see cref="WpfPalette.ScanHost"/>).</summary>
     internal static WpfPalette.Scan Read(IntPtr hwnd) => WpfPalette.ScanHost(hwnd);
 
-    internal static List<string> Texts(WpfPalette.Scan scan) => scan.Buttons.Select(b => b.Text).ToList();
-
     /// <summary>The text and the index (1 = the first of the enabled buttons with that text) of <paramref name="b"/> in <paramref name="scan"/>; null when it is not in it (a disabled, hidden or non-push button).</summary>
     internal static (string Text, int Index)? Describe(WpfPalette.Scan scan, ButtonBase b)
     {
         int at = scan.Buttons.FindIndex(x => ReferenceEquals(x.Button, b));
-        return at < 0 ? null : (scan.Buttons[at].Text, Retrace.Core.WpfPresses.IndexAmong(Texts(scan), at));
+        return at < 0 ? null : (scan.Buttons[at].Text, WpfPalette.IndexOfButton(scan.Buttons, at));
     }
 
     [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool GetCursorPos(out CursorPoint p);
+    /// <summary>The mouse pointer's screen position (where a mouse click on a WPF button just was); null when it cannot be read.</summary>
+    internal static (int X, int Y)? CursorPos() => GetCursorPos(out var p) ? (p.X, p.Y) : null;
     [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)] struct CursorPoint { public int X, Y; }
     [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
 

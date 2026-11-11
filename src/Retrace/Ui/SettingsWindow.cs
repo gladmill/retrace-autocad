@@ -36,6 +36,7 @@ sealed class SettingsWindow : Window
     readonly CheckBox _docx = new() { Content = "Also write Word (.docx)", Margin = new Thickness(0, 6, 0, 0), ToolTip = "steps.docx next to steps.md, made when a recording is stopped." };
     readonly CheckBox _xlsx = new() { Content = "Also write Excel (.xlsx)", Margin = new Thickness(0, 6, 0, 0), ToolTip = "steps.xlsx next to steps.md: one row per step with a PASS / FAIL column." };
     readonly CheckBox _tdocFront = new() { Content = "Bring the step's windows to the front before each picture", Margin = new Thickness(0, 4, 0, 0), ToolTip = "AutoCAD, the dialog being filled and the palette are put on top (a dialog that is off screen is moved onto it), and Retrace's own replay window stays out of the picture." };
+    readonly CheckBox _showClickArrows = new() { Content = "Draw a green arrow at each click while a test replays", Margin = new Thickness(0, 6, 0, 0), ToolTip = "A green arrow points at the control Retrace clicks or fills (buttons, fields, tabs, tree items). It also appears in step pictures and Tdoc pictures. Off: nothing is drawn." };
     readonly CheckBox _tdocAnnotate = new() { Content = "Draw green numbered boxes where the reader gives input", Margin = new Thickness(0, 4, 0, 0), ToolTip = "On the ribbon button, the command line, each dialog field that is filled and the button that closes the dialog. The legend under the picture says what each number is." };
     readonly TextBox _tdocDelay = new() { Width = 70, Padding = new Thickness(3), Margin = new Thickness(8, 0, 0, 0), ToolTip = "Milliseconds to wait before each picture and between steps, so tool tips are gone and dialogs are drawn. 0 to 10000." };
     readonly TextBox _suiteTimeout = new() { Width = 70, Padding = new Thickness(3), Margin = new Thickness(8, 0, 0, 0), ToolTip = "RETRACESUITE: a test step that runs longer than this many seconds is cancelled and the test is recorded as ERROR. 5 to 3600." };
@@ -46,6 +47,10 @@ sealed class SettingsWindow : Window
     readonly TextBox _key = new() { Width = 180, IsReadOnly = true, IsReadOnlyCaretVisible = false, Padding = new Thickness(3), Margin = new Thickness(8, 0, 0, 0), ToolTip = "Click here, then press the keys. Backspace or Delete turns the shortcut off." };
     readonly TextBlock _keyMsg = new() { Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
     readonly CheckBox _autoDetect = new() { Content = "Auto-detect test behavior", ToolTip = "On: at each checkpoint Retrace works out what changed (layers, layouts, styles...) and verifies exactly that. Off: you pick the behaviors below." };
+    readonly CheckBox _checkModelSpace = new() { Content = BehaviorSettingsModel.ModelSpaceLabel, Margin = new Thickness(0, 2, 0, 0), ToolTip = BehaviorSettingsModel.ModelSpaceDescription };
+    readonly CheckBox _basicCheck = new() { Content = "Basic check at the end of the test", ToolTip = "When a test ends, count what the drawing holds and compare with the counts at the end of the recording. Independent of checkpoints. A difference fails the test." };
+    readonly List<(string Id, CheckBox Box)> _basicItems = new();
+    readonly TextBlock _basicMsg = new() { Foreground = Brushes.Firebrick, Margin = new Thickness(18, 2, 0, 0) };
     readonly TextBlock _behaviorNote = new() { Foreground = Brushes.DimGray, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 4) };
     readonly List<(string Id, CheckBox Box)> _behaviorBoxes = new();
     readonly List<(string Id, CheckBox Box)> _recordBoxes = new();
@@ -104,6 +109,8 @@ sealed class SettingsWindow : Window
         root.Children.Add(_allWorkspaces);
         _statusBoard.IsChecked = current.StatusBoard;
         root.Children.Add(_statusBoard);
+        _showClickArrows.IsChecked = current.ShowClickArrows;
+        root.Children.Add(_showClickArrows);
         _docx.IsChecked = current.ExportDocx;
         root.Children.Add(_docx);
         _xlsx.IsChecked = current.ExportXlsx;
@@ -130,6 +137,7 @@ sealed class SettingsWindow : Window
         root.Children.Add(new GroupBox { Header = "Test suites (RETRACESUITE)", Margin = new Thickness(0, 12, 0, 0), Content = suite });
 
         root.Children.Add(BuildBehaviorGroup(current));
+        root.Children.Add(BuildBasicCheckGroup(current));
 
         var posRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
         posRow.Children.Add(new TextBlock { Text = "Ribbon tab position", VerticalAlignment = VerticalAlignment.Center });
@@ -157,6 +165,30 @@ sealed class SettingsWindow : Window
         MaxHeight = Math.Max(400, SystemParameters.WorkArea.Height - 40);
     }
 
+    GroupBox BuildBasicCheckGroup(RetraceSettings current)
+    {
+        var panel = new StackPanel { Margin = new Thickness(6) };
+        _basicCheck.IsChecked = current.BasicCheck;
+        panel.Children.Add(_basicCheck);
+        var chosen = new HashSet<string>(current.EffectiveBasicCheckItems());
+        foreach (var (id, label, tip) in new[] {
+            (BasicCheckRules.ModelSpace, "Model-space entities", "The number of objects in model space."),
+            (BasicCheckRules.Layers, "Layers", "The number of layers (external-reference layers are not counted)."),
+            (BasicCheckRules.Layouts, "Paper-space tabs", "The number of layout tabs (not Model)."),
+        })
+        {
+            var box = new CheckBox { Content = label, IsChecked = chosen.Contains(id), Margin = new Thickness(18, 2, 0, 0), ToolTip = tip };
+            _basicItems.Add((id, box));
+            panel.Children.Add(box);
+        }
+        panel.Children.Add(_basicMsg);
+        void Refresh() { foreach (var (_, b) in _basicItems) b.IsEnabled = _basicCheck.IsChecked == true; _basicMsg.Text = ""; }
+        _basicCheck.Checked += (_, _) => Refresh();
+        _basicCheck.Unchecked += (_, _) => Refresh();
+        Refresh();
+        return new GroupBox { Header = "Basic check (end of test)", Margin = new Thickness(0, 12, 0, 0), Content = panel };
+    }
+
     GroupBox BuildBehaviorGroup(RetraceSettings current)
     {
         var panel = new StackPanel { Margin = new Thickness(6) };
@@ -164,8 +196,8 @@ sealed class SettingsWindow : Window
         panel.Children.Add(_autoDetect);
         panel.Children.Add(_behaviorNote);
 
-        var fixedRow = new CheckBox { Content = BehaviorSettingsModel.ModelSpaceLabel, IsChecked = true, IsEnabled = false, Margin = new Thickness(0, 2, 0, 0), ToolTip = BehaviorSettingsModel.ModelSpaceDescription };
-        panel.Children.Add(fixedRow);
+        _checkModelSpace.IsChecked = current.CheckModelSpace;
+        panel.Children.Add(_checkModelSpace);
         foreach (var r in BehaviorSettingsModel.Rows(current.AutoDetectBehavior, current.CheckBehaviors, current.RecordBehaviors))
         {
             var box = new CheckBox { Margin = new Thickness(0, 2, 0, 0), IsChecked = r.Ticked, ToolTip = r.Description };
@@ -345,11 +377,15 @@ sealed class SettingsWindow : Window
         _captureRibbon.IsChecked = true;
         _allWorkspaces.IsChecked = false;
         _statusBoard.IsChecked = true;
+        _showClickArrows.IsChecked = false;
         _docx.IsChecked = false;
         _xlsx.IsChecked = false;
         _tabPos.SelectedIndex = 0;
         var dflt = new RetraceSettings();
         _autoDetect.IsChecked = dflt.AutoDetectBehavior;
+        _checkModelSpace.IsChecked = dflt.CheckModelSpace;
+        _basicCheck.IsChecked = dflt.BasicCheck;
+        foreach (var (id, box) in _basicItems) box.IsChecked = dflt.BasicCheckItems.Contains(id);
         var defaults = new HashSet<string>(dflt.CheckBehaviors);
         foreach (var (id, box) in _behaviorBoxes) box.IsChecked = defaults.Contains(id);
         foreach (var (id, box) in _recordBoxes) box.IsChecked = dflt.RecordBehaviors.Contains(id);
@@ -381,6 +417,11 @@ sealed class SettingsWindow : Window
             _suiteTimeout.Focus();
             return;
         }
+        if (_basicCheck.IsChecked == true && !_basicItems.Any(b => b.Box.IsChecked == true))
+        {
+            _basicMsg.Text = "tick at least one thing to count, or turn the basic check off";
+            return;
+        }
         var s = Result;
         s.SourceFolder = _rows[0].Box.Text.Trim().Trim('"');
         s.DocsFolder = RetraceSettings.Normalize(_rows[1].Box.Text, s.DefaultDocs);
@@ -397,12 +438,16 @@ sealed class SettingsWindow : Window
         s.CaptureRibbon = _captureRibbon.IsChecked == true;
         s.CaptureAllWorkspaces = _allWorkspaces.IsChecked == true;
         s.StatusBoard = _statusBoard.IsChecked == true;
+        s.ShowClickArrows = _showClickArrows.IsChecked == true;
         s.ExportDocx = _docx.IsChecked == true;
         s.ExportXlsx = _xlsx.IsChecked == true;
         var pos = _tabPos.SelectedIndex >= 0 ? _tabPosValues[_tabPos.SelectedIndex] : RibbonTabPosition.AfterHome;
         s.RibbonTabPosition = pos == RibbonTabPosition.AfterHome ? "" : pos;
         s.CheckpointKey = _keyValue;
         s.AutoDetectBehavior = _autoDetect.IsChecked == true;
+        s.CheckModelSpace = _checkModelSpace.IsChecked == true;
+        s.BasicCheck = _basicCheck.IsChecked == true;
+        s.BasicCheckItems = BasicCheckRules.Clean(_basicItems.Where(b => b.Box.IsChecked == true).Select(b => b.Id));
         s.CheckBehaviors = BehaviorSettingsModel.FromTicks(_behaviorBoxes.Where(b => b.Box.IsChecked == true).Select(b => b.Id), s.CheckBehaviors);
         s.RecordBehaviors = BehaviorSettingsModel.FromTicks(_recordBoxes.Where(b => b.Box.IsChecked == true).Select(b => b.Id), s.RecordBehaviors);
         s.SysvarsAdd = new List<string>(_sysAdd);

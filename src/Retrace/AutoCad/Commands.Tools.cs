@@ -21,6 +21,7 @@ public sealed partial class Commands
         public required List<Step> Steps;
         public required string Path;
         public required DrawingDigest? Initial;
+        public List<System.Text.Json.JsonElement>? Events;   // the recording's events, for the basic check's expected counts
         public DateTime Created = DateTime.UtcNow;
         public bool Single;            // the document mode this test was started in (read once)
         public string? TemplateNote;   // where the test drawing's template came from; printed when the test starts
@@ -94,7 +95,7 @@ public sealed partial class Commands
             var (doc, copyPath, templateNote) = NewTestDocument(ed, single, recordedTemplate, initial);
             if (doc == null) return;
             dm.MdiActiveDocument = doc;
-            _pending = new PendingTest { TemplateNote = templateNote, Doc = doc, Steps = steps, Path = path, Initial = initial, Tdoc = TdocRun.CaptureFor(path, steps), Suite = SuiteRun.HookFor(path), ExpectedPath = copyPath, Single = single };
+            _pending = new PendingTest { TemplateNote = templateNote, Doc = doc, Steps = steps, Path = path, Initial = initial, Events = events, Tdoc = TdocRun.CaptureFor(path, steps), Suite = SuiteRun.HookFor(path), ExpectedPath = copyPath, Single = single };
             if (!_testIdleHooked) { AcApp.Idle += OnTestIdle; _testIdleHooked = true; }
             // the new drawing is active now: the old one's editor rejects messages (eNotApplicable)
             doc.Editor.WriteMessage($"\nRETRACERUN: new drawing opened; the test starts when it is ready ({steps.Count} steps, Auto).\n");
@@ -228,7 +229,7 @@ public sealed partial class Commands
             // a Tdoc run shows no verdict box between its tests and hears when the test is over
             var tdoc = p.Tdoc; var suite = p.Suite;
             Action<ReplayResult>? finished = tdoc != null ? r => TdocRun.Finished(tdoc, r) : suite != null ? r => SuiteRun.Finished(suite, p.Path, r) : null;
-            if (!Replayer.Start(p.Steps, ReplayMode.Auto, p.Path, p.Initial, out var msg, alert: tdoc == null && suite == null, interactive: true, tdoc: tdoc, finished: finished, suite: suite, single: p.Single, ownStart: true))
+            if (!Replayer.Start(p.Steps, ReplayMode.Auto, p.Path, p.Initial, out var msg, alert: tdoc == null && suite == null, interactive: true, tdoc: tdoc, finished: finished, suite: suite, single: p.Single, ownStart: true, events: p.Events))
             {
                 SdiDocs.AbandonCopy(p.ExpectedPath, p.Tdoc != null || p.Suite != null);
                 Print("RETRACERUN: " + msg);
@@ -260,7 +261,7 @@ public sealed partial class Commands
             var events = Plan.ReadEvents(path);
             var steps = Plan.Build(events);
             if (Recorder.Instance.IsRecording) ed.WriteMessage("\nNote: a recording is running; the replayed actions will be recorded too.\n");
-            if (!Replayer.Start(steps, ReplayMode.Step, path, Plan.InitialState(events), out var msg)) ed.WriteMessage($"\n{msg}\n");
+            if (!Replayer.Start(steps, ReplayMode.Step, path, Plan.InitialState(events), out var msg, events: events)) ed.WriteMessage($"\n{msg}\n");
             else ed.WriteMessage($"\n{msg} Use the Retrace replay panel.\n");
         }
         catch (Exception ex) { Log.Error("RETRACESTEP", ex); ed.WriteMessage($"\nRETRACESTEP failed: {ex.Message}\n"); }
@@ -306,7 +307,7 @@ public sealed partial class Commands
                 var su = Ask.Keywords(ed, new PromptKeywordOptions($"\nRun test opens hidden palettes while it drives them [Yes/No] <{(s.ShowDrivenUi ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
                 if (su.Status == PromptStatus.Cancel) return;
                 n.ShowDrivenUi = su.Status == PromptStatus.OK ? su.StringResult == "Yes" : s.ShowDrivenUi;
-                var xd = Ask.Keywords(ed, new PromptKeywordOptions($"\nAlso write a Word file (steps.docx) [exportDocx] [Yes/No] <{(s.ExportDocx ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
+                var xd = Ask.Keywords(ed, new PromptKeywordOptions($"\nAlso write a Word file (steps.docx, exportDocx) [Yes/No] <{(s.ExportDocx ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
                 if (xd.Status == PromptStatus.Cancel) return;
                 n.ExportDocx = xd.Status == PromptStatus.OK ? xd.StringResult == "Yes" : s.ExportDocx;
                 var xx = Ask.Keywords(ed, new PromptKeywordOptions($"\nAlso write an Excel file (steps.xlsx) [Yes/No] <{(s.ExportXlsx ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
@@ -361,6 +362,26 @@ public sealed partial class Commands
                     if (int.TryParse(stv, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var secs)) n.SuiteStepTimeoutSeconds = secs;
                     else ed.WriteMessage($"\nSuite step timeout not changed: \"{stv}\" is not a number.\n");
                 }
+                // last, so scripts written for the questions before them keep working
+                var cm = Ask.Keywords(ed, new PromptKeywordOptions($"\nCheckpoints verify the model-space entities (checkModelSpace) [Yes/No] <{(s.CheckModelSpace ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
+                if (cm.Status == PromptStatus.Cancel) return;
+                n.CheckModelSpace = cm.Status == PromptStatus.OK ? cm.StringResult == "Yes" : s.CheckModelSpace;
+                var bc = Ask.Keywords(ed, new PromptKeywordOptions($"\nBasic check at the end of the test (basicCheck) [Yes/No] <{(s.BasicCheck ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
+                if (bc.Status == PromptStatus.Cancel) return;
+                n.BasicCheck = bc.Status == PromptStatus.OK ? bc.StringResult == "Yes" : s.BasicCheck;
+                var bi = Ask.String(ed, $"\nBasic check counts: {string.Join(", ", BasicCheckRules.AllItems)} <{string.Join(",", s.EffectiveBasicCheckItems())}> (comma list, Enter keeps, . resets): ");
+                if (bi.Status == PromptStatus.Cancel) return;
+                var biv = (bi.StringResult ?? "").Trim();
+                if (biv == "." || biv.Equals("default", StringComparison.OrdinalIgnoreCase)) n.BasicCheckItems = new(BasicCheckRules.AllItems);
+                else if (biv.Length > 0)
+                {
+                    var chosen = BasicCheckRules.Clean(biv.Split(new[] { ',', ' ', ';' }, StringSplitOptions.RemoveEmptyEntries));
+                    if (chosen.Count > 0) n.BasicCheckItems = chosen;
+                    else ed.WriteMessage($"\nBasic check counts not changed: \"{biv}\" names none of {string.Join(", ", BasicCheckRules.AllItems)}.\n");
+                }
+                var ar = Ask.Keywords(ed, new PromptKeywordOptions($"\nDraw a green arrow at each click of a replay and in step pictures (showClickArrows) [Yes/No] <{(s.ShowClickArrows ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
+                if (ar.Status == PromptStatus.Cancel) return;
+                n.ShowClickArrows = ar.Status == PromptStatus.OK ? ar.StringResult == "Yes" : s.ShowClickArrows;
                 SaveAndReport(ed, n);
                 return;
             }
@@ -416,10 +437,13 @@ public sealed partial class Commands
                $"  Loaded CUIX      : {(s.LoadedCustomization ? "documented too (the main .cuix, partials, enterprise file AutoCAD has loaded)" : "not documented")}\n" +
                $"  Prompts          : {(s.UiPrompts ? "window (on top, Browse and recent places; scripts, LISP and FILEDIA 0 use the command line)" : "command line")}\n" +
                $"  Tdoc front       : {(s.TdocBringToFront ? "on" : "off")} (RETRACETDOC brings AutoCAD, the dialog or the palette to the front before each picture)\n" +
+               $"  Click arrows     : {(s.ShowClickArrows ? "on" : "off")} (a green arrow at each click of a replay, and in step pictures)\n" +
                $"  Tdoc boxes       : {(s.TdocAnnotate ? "on" : "off")} (green numbered boxes on the pictures where the user gives input)\n" +
                $"  Tdoc pause       : {s.TdocStepDelayMs} ms (before each picture, so the screen has repainted)\n" +
                $"  Suite timeout    : {s.SuiteStepTimeoutSeconds} s (RETRACESUITE cancels a step that runs longer and records the test as ERROR)\n" +
                $"  Status board     : {(s.StatusBoard ? "on" : "off")} (Retrace writes what it is doing to retrace-<acad pid>.json in the AutoCAD status board folder; set in the Settings window or settings.json)\n" +
+               $"  Model-space check: {(s.CheckModelSpace ? "on" : "off (checkpoints skip the entity counts and the geometry hash)")}\n" +
+               $"  Basic check      : {(s.BasicCheck ? "on (" + string.Join(", ", s.EffectiveBasicCheckItems()) + ")" : "off")} (counts at the end of the test against the end of the recording)\n" +
                $"  Checkpoint key   : {(s.CheckpointChord(out var warn) is { } kc ? kc.Format() : "off")} (while recording; Ctrl+Shift+K, F8, None = off){(warn.Length > 0 ? "\n  WARNING: " + warn : "")}\n";
     }
 

@@ -57,6 +57,12 @@ static partial class DialogReader
         public List<DialogField> Fields = new();
         public List<List<IntPtr>> Handles = new();
         public List<(IntPtr H, int Id, string Text)> Buttons = new();
+        /// <summary>The fallback names (tool tip, accessible name, control name) of the buttons without text, read when asked and kept for this scan (<see cref="ButtonNaming"/>).</summary>
+        internal readonly ButtonNaming.Cache Names = new();
+        /// <summary>The fallback name of the button at <paramref name="i"/> from one source; null when it has none.</summary>
+        public string? Fallback(int i, string from) => Names.Get(Buttons[i].H, from, () => ButtonNaming.Win32Source(Buttons[i].H, from));
+        /// <summary>Has the button at <paramref name="i"/> text of its own?</summary>
+        public bool HasText(int i) => DialogFieldsCore.CleanLabel(Buttons[i].Text).Length > 0;
         public List<TabInfo> Tabs = new();
         public List<IntPtr> TabHandles = new();
         public string Showing = "";
@@ -327,9 +333,7 @@ static partial class DialogReader
 
     /// <summary>Which of the push buttons of <paramref name="page"/> with the same text <paramref name="button"/> is, counted in window order (1 = the
     /// first); 1 for a WPF button or one not found.</summary>
-    internal static int ButtonIndex(IntPtr page, IntPtr button) => ButtonIndex(Scan(page, readTicks: false), button);
-
-    /// <summary>Like <see cref="ButtonIndex(IntPtr, IntPtr)"/>, for a scan already made.</summary>
+    /// <summary>Which of the buttons of a scan with the same label <paramref name="button"/> is.</summary>
     internal static int ButtonIndex(Win32Scan scan, IntPtr button)
     {
         var all = scan.Buttons;
@@ -338,6 +342,38 @@ static partial class DialogReader
         var text = PaletteFill.ButtonLabel(all[at].Text);
         return all.Take(at + 1).Count(b => PaletteFill.ButtonLabel(b.Text) == text);
     }
+
+    /// <summary>The position in the scan of the <paramref name="index"/>-th (1 = first) button recorded as <paramref name="recorded"/> (<see cref="ButtonNames.Matches{T}"/>: a recording without `buttonFrom` compares the button's text, "(button)" for none;
+    /// one with it only matches buttons without text, by that source); -1 when there is none.</summary>
+    internal static int FindButton(Win32Scan scan, string recorded, int index, string? from = null) =>
+        ButtonNames.Find(Positions(scan), recorded, from, index, i => PaletteFill.ButtonLabel(scan.Buttons[i].Text), scan.HasText, scan.Fallback, SameName);
+
+    /// <summary>What a palette click on <paramref name="button"/> is recorded as: its text (the legacy name), else the first fallback name with its source (`buttonFrom`) and the legacy index; null when the button is not an enabled push button of the page.</summary>
+    internal static ButtonNaming.Recorded? RecordButton(IntPtr page, IntPtr button)
+    {
+        if (PushButtonText(button) == null) return null;   // the cheap class and style check first: a scan only for a push button
+        var scan = Scan(page, readTicks: false);
+        var at = scan.Buttons.FindIndex(b => b.H == button);
+        if (at < 0) return null;
+        var legacy = PaletteFill.ButtonLabel(scan.Buttons[at].Text);
+        string name = legacy; string? from = null;
+        if (!scan.HasText(at))
+        {
+            var (n, f) = ButtonNames.Pick(null, () => scan.Fallback(at, ButtonNames.FromTooltip), () => scan.Fallback(at, ButtonNames.FromAccessible), null, () => scan.Fallback(at, ButtonNames.FromName));
+            if (f.Length > 0) { name = n; from = f; }
+        }
+        int index = ButtonNames.IndexAmong(Positions(scan), at, name, from, i => PaletteFill.ButtonLabel(scan.Buttons[i].Text), scan.HasText, scan.Fallback, SameName);
+        return new ButtonNaming.Recorded(name, from, index, from == null ? 0 : ButtonNames.LegacyIndex(Positions(scan), at, scan.HasText), from == null ? 0 : NoTextCount(scan));
+    }
+
+    /// <summary>The position of the <paramref name="legacyIndex"/>-th button without text of its own (<see cref="ButtonNames.FindByLegacyIndex{T}"/>); -1 when there is none.</summary>
+    internal static int FindButtonByPosition(Win32Scan scan, int legacyIndex) => ButtonNames.FindByLegacyIndex(Positions(scan), legacyIndex, scan.HasText);
+
+    /// <summary>How many buttons of the scan have no text of their own.</summary>
+    internal static int NoTextCount(Win32Scan scan) => Enumerable.Range(0, scan.Buttons.Count).Count(i => !scan.HasText(i));
+
+    static List<int> Positions(Win32Scan scan) => Enumerable.Range(0, scan.Buttons.Count).ToList();
+    static bool SameName(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>The text of <paramref name="h"/> if it is an enabled push button (BUTTON class, push or owner-drawn style), else null.</summary>
     internal static string? PushButtonText(IntPtr h)

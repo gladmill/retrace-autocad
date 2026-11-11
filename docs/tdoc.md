@@ -33,6 +33,7 @@ Before each picture Retrace waits `tdocStepDelayMs`, then hides its own replay w
 |---|---|---|
 | `tdocBringToFront` | `true` | Bring AutoCAD's window (and the dialog being filled) to the front before each picture, move a dialog that is off the screen onto it, and hide the replay window for the picture. |
 | `tdocAnnotate` | `true` | Draw the green numbered boxes and write the legend. Off: plain pictures. |
+| `showClickArrows` | `false` | A green arrow in each picture, pointing at the control the step clicks (the button that closes the dialog, the palette button, the ribbon item) or, without a click, fills. Drawn into the image, never captured from the screen. Off: no arrow. |
 | `tdocStepDelayMs` | `1500` | Pause before each picture, 0 to 10000. Raise it when tool tips or half-drawn dialogs show up in pictures. |
 
 ## Files

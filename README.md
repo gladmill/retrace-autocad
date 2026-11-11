@@ -7,7 +7,7 @@ tells you pass or fail. It can also read your customization folder (`.cuix`, C#,
 write Markdown docs: ribbons, commands, dialogs, a source map, and an editable user guide with how-tos built from your recordings.
 And it maps each ribbon button to the LISP, C++, C# or VB.NET code it runs.
 
-Status: pre-1.0 (0.6.6). AutoCAD 2026 (R25.1), Windows x64. Written against the `AutoCAD.NET` 25.1.0 packages.
+Status: pre-1.0 (0.6.7). AutoCAD 2026 (R25.1), Windows x64. Written against the `AutoCAD.NET` 25.1.0 packages.
 Verified in AutoCAD only in part: see [Limitations](#limitations).
 
 ## Install
@@ -81,7 +81,7 @@ To practise, load `samples/Retrace.Samples` (see its README): a small plugin wit
 
 ## Commands
 
-All are on the Retrace ribbon tab (panels Record, Test, Guide, Open, Tools) except where noted.
+All are on the Retrace ribbon tab (panels Record, Test, Guide, Open, Tools) except where noted. The ribbon also has a Prompts toggle (Guide panel) that is no command: see [Prompts toggle](#prompts-toggle).
 
 | Command | What it does |
 |---|---|
@@ -193,6 +193,21 @@ Retrace does not need AcadStatus, and AcadStatus does not need Retrace. To use b
 
 Details, the pane's colours, what it cannot see and the file format: [acad-status/README.md](acad-status/README.md).
 
+## Prompts toggle
+
+The **Prompts** button on the ribbon (Guide panel, right of Settings) switches `promptStyle` between `ui` (shown as "Prompts: Window", button down) and `commandLine` ("Prompts: Command line"). A click saves `settings.json`. The click is refused (with a line on the command line, and the button stays as it was) while a command is running, or when `settings.json` exists but cannot be read, so the file is never overwritten with defaults. The button follows the setting when it changes elsewhere (Settings window, `-RETRACESETTINGS`, a hand edit; within a second or so) and at start-up.
+
+**In the default mode, "Command line", the ribbon's Settings, Training doc, Map and Stop buttons run their command-line forms** (no window). Switch the toggle to "Window" to get the windows. Four ribbon buttons have a window form and a command-line form, and the ribbon runs the one the style names:
+
+| Ribbon button | Window | Command line |
+|---|---|---|
+| Settings | `RETRACESETTINGS` | `-RETRACESETTINGS` |
+| Training doc | `RETRACETDOC` | `-RETRACETDOC` |
+| Map | `RETRACEMAP` | `-RETRACEMAP` |
+| Stop | `RETRACESTOP` (opens the Checkpoints window after Stop when `reviewCheckpoints` is on) | `-RETRACESTOP` (no window; says everything on the command line) |
+
+Every other button runs the same command in both modes. Those that ask something (Record, Run test, Step, Tests / Captures / Docs, Build docs, Open-test actions) ask on the command line or in the prompt window by the same setting. Open test, Name checkpoints, Guide and Steps have only a window or document form. Commands typed by hand are unchanged (`RETRACESETTINGS` still opens the window), and a script, LISP or `FILEDIA` 0 always uses the command line.
+
 ## Ribbon map
 
 Map (`RETRACEMAP`, ribbon Retrace > Guide > Map) answers "which code runs when I click this ribbon button?". It writes one row per ribbon item: its tab, panel and label, what a click runs (a command, a LISP function, a method, a class), and where your code defines that, in LISP, C++, C# or VB.NET.
@@ -258,18 +273,22 @@ Recordings hold drawing names, typed text, coordinates and object handles. Treat
 | `reviewCheckpoints` | `true` | Open the Checkpoints window after `RETRACESTOP` when the test has checkpoints. `-RETRACESTOP` never does, and neither does `RETRACESTOP` run by a SCRIPT file, LISP or a menu macro (CMDACTIVE bit 4 / 32). A command sent over COM (`SendCommand`, as `tools/vm` does) is NOT detected as a script (CMDACTIVE is 1, checked on the VM, 2026-11-02): from COM or any other automation use `-RETRACESTOP`. |
 | `showDrivenUi` | `true` | Run test opens a rolled-up or auto-hidden palette before it drives it, by resting the mouse on it as a person would (and putting the mouse back after), so the run can be watched. Off: the palette is filled while it stays hidden. Recording never moves the mouse. |
 | `tdocBringToFront` | `true` | Tdoc run (training document): before every picture, bring the UI of the step to the front (AutoCAD's window, the dialog being filled, the palette), move a dialog that is off screen onto it and keep Retrace's own replay window out of the picture. |
+| `showClickArrows` | `false` | Draw a green arrow, coming in from the upper left, at each point Retrace clicks or fills while a test replays (`RETRACERUN`, `RETRACEREPLAY`, `RETRACESTEP`, suites): dialog buttons and fields, palette buttons and fields, tree double-clicks, tabs, native palette clicks. It stays about 1.5 s or until the next arrow. The arrow is a click-through window that never takes the focus; it is hidden before any screenshot. With the setting on, step pictures taken while recording (`screenshots`) and Tdoc pictures also get an arrow drawn into the image, at the click or at the control the step uses. Off: nothing is drawn. Set it in the Settings window or in `settings.json`; `-RETRACESETTINGS` asks for it last. |
 | `tdocAnnotate` | `true` | Tdoc run: draw green numbered boxes on the pictures where the reader gives input (the ribbon button, the command line for typed answers, each dialog field that is filled, the button that closes the dialog, palette controls). The legend under the picture says what each number is. |
 | `suiteStepTimeoutSeconds` | `120` | Suite run (`RETRACESUITE`): a test step that takes longer than this many seconds is cancelled with `^C^C` and the test is recorded as `ERROR`, "step N timed out". 5 to 3600; a value outside that range is clamped when the settings are read. |
 | `statusBoard` | `true` | Write what Retrace is doing to the AutoCAD status board, `retrace-<acad pid>.json` in `%ProgramData%\Gladmill\acad-status` (see [Status board](#status-board)). Off: nothing is written, and a file written earlier in this session is set to `stopped`. Set it in the Settings window or in `settings.json`; the setting is read again when the file changes (a `settings.json` that cannot be parsed keeps the value from before). `-RETRACESETTINGS` shows it but does not ask for it. |
 | `tdocStepDelayMs` | `1500` | Tdoc run: milliseconds to wait before each picture and between steps, so the screen has repainted (tool tips gone, dialogs drawn). 0 to 10000; a value outside that range is clamped when the settings are read. |
 | `autoDetectBehavior` | `true` | Checkpoints verify what changed in the drawing since the previous checkpoint (the first: since recording started), besides the model-space entities. Off: the behaviors in `checkBehaviors` are verified whole. See [recording format](docs/recording-format.md), "Behavior checks". |
+| `checkModelSpace` | `true` | Checkpoints verify the model-space entities (counts per type and per layer, total, geometry). Off: they compare only layer names, layer state and the behavior checks; layer names and layer state are a real check (a match passes); a checkpoint is "not verified" only when it recorded no layer names, no layer state and no behavior checks. The result file says `checkModelSpace: false`. See [recording format](docs/recording-format.md), "Drawing digest". |
+| `basicCheck` | `false` | At the end of every test run, count what the drawing holds and compare with the counts at the end of the recording (written by `RETRACESTOP` as the `end_counts` event). A difference fails the test. Independent of checkpoints. See "Basic check" in the recording format. |
+| `basicCheckItems` | `["modelspace","layers","layouts"]` | What the basic check counts: model-space entities, layers (not xref layers), paper-space layout tabs. A recording made before `end_counts` verifies model space and layers against its last checkpoint; layouts are not verified. |
 | `checkBehaviors` | `["layers","layouts","symbols"]` | Behavior ids verified when `autoDetectBehavior` is off. Ids: `layers`, `appearance`, `layouts`, `paperspace`, `viewports`, `xdata`, `xdicts`, `symbols`, `sysvars`, `views`, `psattributes`. In manual mode `appearance` and `paperspace` listed here are recorded as well. |
 | `recordBehaviors` | `[]` | Opt-in behaviors to store in every checkpoint while recording, in either mode: `appearance`, `paperspace`. Off by default because they hold one item per entity. A settings file without it reads as empty. |
 | `sysvarsAdd`, `sysvarsRemove` | `[]` | System variable names added to / removed from the built-in list the `sysvars` behavior reads (without case). Names AutoCAD does not know are skipped. |
 | `exportDocx` | `false` | Also write `steps.docx` when a recording stops. |
 | `exportXlsx` | `false` | Also write `steps.xlsx` when a recording stops. |
 | `checkpointKey` | `Ctrl+Shift+K` | Shortcut for a checkpoint while recording, e.g. `Ctrl+Shift+J` or `F13`. Ctrl and Shift plus A-Z, 0-9 or F1-F24; a letter or digit needs Ctrl. No Alt (letting it go opens the ribbon's key tips). While recording Retrace takes the key from AutoCAD, so pick one AutoCAD does not use: F1-F12, `Ctrl+1` (Properties) and `Ctrl+C`/`V`/`Z`/`S` are AutoCAD's. Pressed during a command, the checkpoint is taken when that command ends. `None` or empty = off. An invalid value falls back to the default and is logged. While a dialog is open the key goes to the dialog. Set it in Settings (click the box, press the keys) or with `-RETRACESETTINGS`. |
-| `promptStyle` | `commandLine` | How Retrace's commands ask for a test name, a recording, a file or folder, or a choice. `ui`: in a window on top of AutoCAD, with Browse... (the Windows file or folder dialog) and the places recently chosen for that question; choices are buttons. `commandLine`: on the command line. A command run from a script or LISP, or with `FILEDIA` 0, always asks on the command line. Set it in Settings or with `-RETRACESETTINGS`. Recent places are kept in `recent.json` in the root folder. |
+| `promptStyle` | `commandLine` | How Retrace's commands ask for a test name, a recording, a file or folder, or a choice. `ui`: in a window on top of AutoCAD, with Browse... (the Windows file or folder dialog) and the places recently chosen for that question; choices are buttons. `commandLine`: on the command line. A command run from a script or LISP, or with `FILEDIA` 0, always asks on the command line. Set it in Settings, with `-RETRACESETTINGS`, or with the Prompts toggle on the ribbon (Guide panel, next to Settings; see [Prompts toggle](#prompts-toggle)). Recent places are kept in `recent.json` in the root folder. |
 | `loadedCustomization` | `true` | `RETRACEDOCS` also documents the customization files AutoCAD has loaded at that moment: each menu group's file (the main `.cuix` and its partials) and the enterprise file (`ENTERPRISEMENU`), besides the `.cuix` / `.cui` files in the source folder. Partial files that a read file names in its header are read too (relative to that file); one that is missing is a warning. A file is read once; two files with the same name are told apart by their full path. Legacy `.cui` files (one XML file) are read like `.cuix`. |
 | `captureRibbon` | `true` | `RETRACEDOCS` (Build docs) first captures every ribbon tab, as `RETRACECAPTURERIBBON` All does, and then builds, so the docs show the ribbon as AutoCAD draws it, not wireframes. Hidden tabs and contextual tabs (Text Editor, Array...) are shown for a moment each, then the first tab is active again. About 1-2 minutes for AutoCAD Electrical's ~70 tabs; leave AutoCAD alone meanwhile. Tabs AutoCAD cannot show (in no workspace, a workspace this product does not have, or empty) keep their wireframe and are listed under Warnings. Off: the last captures in the captures folder are used. |
 | `captureAllWorkspaces` | `false` | With `captureRibbon`: also switch to each other workspace of the main customization file (WSCURRENT) for the tabs only it loads (3D Modeling's Solid, Mesh...), then back. Off by default because going back reloads your workspace as saved: unsaved palette and toolbar changes are lost. Never done while `WSAUTOSAVE` is on (switching would save into your customization file). Not done while a test is being recorded (no capture then). |
