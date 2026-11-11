@@ -32,9 +32,9 @@ public class StatusBoardTests
     }
 
     [Theory]
-    [InlineData("0.6.6", "Retrace 0.6.6")]
-    [InlineData("0.6.6+abc123def", "Retrace 0.6.6")]
-    [InlineData("0.6.6-beta.1+9f", "Retrace 0.6.6-beta.1")]
+    [InlineData("0.6.7", "Retrace 0.6.7")]
+    [InlineData("0.6.7+abc123def", "Retrace 0.6.7")]
+    [InlineData("0.6.7-beta.1+9f", "Retrace 0.6.7-beta.1")]
     [InlineData("", "Retrace")]
     [InlineData(null, "Retrace")]
     public void Writer_name_is_the_product_and_version_without_build_metadata(string? version, string expected) =>
@@ -325,14 +325,14 @@ public class StatusBoardTests
         Assert.Equal("status board error: InvalidOperationException", e.Summary);   // the type, never the message (it could hold a path or a name)
         Assert.Equal("Board error", e.Short);
         Assert.Equal("idle", e.Mode);
-        var root = Parse(StatusBoard.Build(e, 7, "Retrace 0.6.6", T0, T0));
+        var root = Parse(StatusBoard.Build(e, 7, "Retrace 0.6.7", T0, T0));
         Assert.Equal("error", root.GetProperty("state").GetString());
         Assert.DoesNotContain("secret", root.GetProperty("summary").GetString());
         // and it is an entry like any other for the writer: it is written, and the next good one replaces it
         var dir = Temp();
         try
         {
-            var w = new StatusWriter(dir, 7, "Retrace 0.6.6", utcNow: () => T0);
+            var w = new StatusWriter(dir, 7, "Retrace 0.6.7", utcNow: () => T0);
             Assert.True(w.Publish(e));
             Assert.Equal("error", Parse(File.ReadAllText(w.FilePath)).GetProperty("state").GetString());
             Assert.True(w.Publish(StatusBoard.Compose(new StatusFacts())));
@@ -443,10 +443,10 @@ public class StatusBoardTests
         var e = StatusBoard.Compose(new StatusFacts { Mode = StatusMode.Suite, QueueIndex = 3, QueueCount = 7, Test = "smoke040", Step = 4, Steps = 5, StepText = "BREAK", Owner = "suite" });
         var since = T0.AddSeconds(-23);
         var pidStart = new DateTime(2026, 11, 5, 9, 58, 12, 345, DateTimeKind.Utc);
-        var root = Parse(StatusBoard.Build(e, 4812, "Retrace 0.6.6", T0, since, pidStart: pidStart));
+        var root = Parse(StatusBoard.Build(e, 4812, "Retrace 0.6.7", T0, since, pidStart: pidStart));
         Assert.Equal(1, root.GetProperty("v").GetInt32());
         Assert.Equal("retrace", root.GetProperty("source").GetString());
-        Assert.Equal("Retrace 0.6.6", root.GetProperty("writer").GetString());
+        Assert.Equal("Retrace 0.6.7", root.GetProperty("writer").GetString());
         Assert.Equal(4812, root.GetProperty("pid").GetInt32());
         Assert.Equal(JsonValueKind.String, root.GetProperty("pidStart").ValueKind);
         Assert.Equal("2026-11-05T09:58:12Z", root.GetProperty("pidStart").GetString());   // UTC ISO 8601 with Z, to the second, like `updated`
@@ -471,7 +471,7 @@ public class StatusBoardTests
     [Fact]
     public void Build_leaves_out_what_is_not_known_and_keeps_the_mode()
     {
-        var root = Parse(StatusBoard.Build(StatusBoard.Compose(new StatusFacts()), 7, "Retrace 0.6.6", T0, null));
+        var root = Parse(StatusBoard.Build(StatusBoard.Compose(new StatusFacts()), 7, "Retrace 0.6.7", T0, null));
         Assert.False(root.TryGetProperty("short", out _));
         Assert.False(root.TryGetProperty("owner", out _));
         Assert.False(root.TryGetProperty("since", out _));
@@ -486,7 +486,7 @@ public class StatusBoardTests
     public void Build_writes_the_reason_a_person_is_needed()
     {
         var e = StatusBoard.Compose(new StatusFacts { Mode = StatusMode.Replay, Test = "t", Step = 1, Steps = 2, NeedsPerson = "a dialog Retrace cannot fill: Plot" });
-        var root = Parse(StatusBoard.Build(e, 7, "Retrace 0.6.6", T0, T0));
+        var root = Parse(StatusBoard.Build(e, 7, "Retrace 0.6.7", T0, T0));
         Assert.Equal("needs-person", root.GetProperty("state").GetString());
         Assert.Equal("a dialog Retrace cannot fill: Plot", root.GetProperty("detail").GetProperty("needsPerson").GetString());
     }
@@ -495,7 +495,7 @@ public class StatusBoardTests
     public void Build_keeps_non_ascii_and_escapes_quotes_in_one_line_of_valid_json()
     {
         var e = StatusBoard.Compose(new StatusFacts { Mode = StatusMode.Replay, Test = "Zeichnung \"Ä\" ü", Step = 1, Steps = 1, StepText = "tab\there" });
-        var json = StatusBoard.Build(e, 7, "Retrace 0.6.6", T0, T0);
+        var json = StatusBoard.Build(e, 7, "Retrace 0.6.7", T0, T0);
         Assert.DoesNotContain('\n', json);
         Assert.Equal("Zeichnung \"Ä\" ü", Parse(json).GetProperty("detail").GetProperty("test").GetString());
         Assert.Contains("Ä", json);   // UTF-8, not \u00C4
@@ -551,7 +551,7 @@ public class StatusBoardTests
         try
         {
             var now = T0;
-            var w = new StatusWriter(dir, 4812, "Retrace 0.6.6", utcNow: () => now);
+            var w = new StatusWriter(dir, 4812, "Retrace 0.6.7", utcNow: () => now);
             var idle = StatusBoard.Compose(new StatusFacts());
             Assert.True(w.Publish(idle));
             Assert.Equal(Path.Combine(dir, "retrace-4812.json"), w.FilePath);
@@ -576,14 +576,14 @@ public class StatusBoardTests
         try
         {
             var start = new DateTime(2026, 11, 5, 9, 58, 12, DateTimeKind.Utc);
-            var w = new StatusWriter(dir, 4812, "Retrace 0.6.6", utcNow: () => T0, pidStart: start);
+            var w = new StatusWriter(dir, 4812, "Retrace 0.6.7", utcNow: () => T0, pidStart: start);
             Assert.True(w.Publish(StatusBoard.Compose(new StatusFacts { Mode = StatusMode.Replay, Test = "t", Step = 1, Steps = 2 })));
             Assert.Equal("2026-11-05T09:58:12Z", Parse(File.ReadAllText(w.FilePath)).GetProperty("pidStart").GetString());
             Assert.True(w.Stop());
             var stopped = Parse(File.ReadAllText(w.FilePath));
             Assert.Equal("stopped", stopped.GetProperty("state").GetString());
             Assert.Equal("2026-11-05T09:58:12Z", stopped.GetProperty("pidStart").GetString());
-            var none = new StatusWriter(dir, 4813, "Retrace 0.6.6", utcNow: () => T0);   // start time unknown
+            var none = new StatusWriter(dir, 4813, "Retrace 0.6.7", utcNow: () => T0);   // start time unknown
             Assert.True(none.Publish(StatusBoard.Compose(new StatusFacts())));
             Assert.False(Parse(File.ReadAllText(none.FilePath)).TryGetProperty("pidStart", out _));
         }
@@ -597,7 +597,7 @@ public class StatusBoardTests
         try
         {
             var now = T0;
-            var w = new StatusWriter(dir, 1, "Retrace 0.6.6", utcNow: () => now);
+            var w = new StatusWriter(dir, 1, "Retrace 0.6.7", utcNow: () => now);
             string Since() => Parse(File.ReadAllText(w.FilePath)).GetProperty("since").GetString()!;
             StatusEntry Replay(string test, int step) => StatusBoard.Compose(new StatusFacts { Mode = StatusMode.Replay, Test = test, Step = step, Steps = 9 });
             w.Publish(Replay("a", 1));
@@ -626,7 +626,7 @@ public class StatusBoardTests
         {
             var logged = new List<Exception>();
             var now = T0;
-            var w = new StatusWriter(Path.Combine(blocked, "acad-status"), 1, "Retrace 0.6.6", logged.Add, () => now);
+            var w = new StatusWriter(Path.Combine(blocked, "acad-status"), 1, "Retrace 0.6.7", logged.Add, () => now);
             var e = StatusBoard.Compose(new StatusFacts());
             Assert.False(w.Publish(e));
             for (var i = 0; i < 6; i++)   // a row of failures, each after the wait it asked for
@@ -664,7 +664,7 @@ public class StatusBoardTests
         try
         {
             var now = T0;
-            var w = new StatusWriter(folder, 1, "Retrace 0.6.6", utcNow: () => now);
+            var w = new StatusWriter(folder, 1, "Retrace 0.6.7", utcNow: () => now);
             var e = StatusBoard.Compose(new StatusFacts());
             Assert.True(w.Publish(e));
             File.Delete(w.FilePath);
@@ -698,7 +698,7 @@ public class StatusBoardTests
         try
         {
             var now = T0;
-            var w = new StatusWriter(folder, 1, "Retrace 0.6.6", utcNow: () => now);
+            var w = new StatusWriter(folder, 1, "Retrace 0.6.7", utcNow: () => now);
             var e = StatusBoard.Compose(new StatusFacts());
             Assert.True(w.Publish(e));
             File.Delete(w.FilePath);
@@ -738,7 +738,7 @@ public class StatusBoardTests
         try
         {
             var now = T0;
-            var w = new StatusWriter(folder, 1, "Retrace 0.6.6", utcNow: () => now);
+            var w = new StatusWriter(folder, 1, "Retrace 0.6.7", utcNow: () => now);
             Directory.CreateDirectory(Path.Combine(folder, "retrace-1.json"));
             for (var i = 0; i < 3; i++) Assert.False(w.Publish(StatusBoard.Compose(new StatusFacts { Last = "Last: " + i })));   // three failures: it waits now
             Directory.Delete(Path.Combine(folder, "retrace-1.json"));
@@ -761,7 +761,7 @@ public class StatusBoardTests
         try
         {
             var now = T0;
-            var w = new StatusWriter(folder, 1, "Retrace 0.6.6", utcNow: () => now);
+            var w = new StatusWriter(folder, 1, "Retrace 0.6.7", utcNow: () => now);
             Assert.True(w.Publish(StatusBoard.Compose(new StatusFacts())));
             File.Delete(w.FilePath);
             Directory.CreateDirectory(w.FilePath);   // the replace fails until the folder is removed
@@ -786,7 +786,7 @@ public class StatusBoardTests
         var folder = Path.Combine(root, "board");
         try
         {
-            var w = new StatusWriter(folder, 1, "Retrace 0.6.6", utcNow: () => T0);
+            var w = new StatusWriter(folder, 1, "Retrace 0.6.7", utcNow: () => T0);
             var e = StatusBoard.Compose(new StatusFacts());
             Assert.True(w.Publish(e));   // created
             Directory.Delete(folder, true);
@@ -808,7 +808,7 @@ public class StatusBoardTests
             var logged = new List<Exception>();
             var now = T0;
             Directory.CreateDirectory(Path.Combine(folder, "retrace-1.json"));   // a folder in the file's place: the replace fails
-            var w = new StatusWriter(folder, 1, "Retrace 0.6.6", logged.Add, () => now);
+            var w = new StatusWriter(folder, 1, "Retrace 0.6.7", logged.Add, () => now);
             var e = StatusBoard.Compose(new StatusFacts());
             Assert.False(w.Publish(e));
             Assert.Single(logged);
@@ -834,7 +834,7 @@ public class StatusBoardTests
         File.WriteAllText(blocked, "x");
         try
         {
-            var w = new StatusWriter(Path.Combine(blocked, "b"), 1, "Retrace 0.6.6", _ => throw new InvalidOperationException("log failed"));
+            var w = new StatusWriter(Path.Combine(blocked, "b"), 1, "Retrace 0.6.7", _ => throw new InvalidOperationException("log failed"));
             Assert.False(w.Publish(StatusBoard.Compose(new StatusFacts())));
         }
         finally { Clean(root); }
@@ -846,7 +846,7 @@ public class StatusBoardTests
         var dir = Temp();
         try
         {
-            var w = new StatusWriter(dir, 9, "Retrace 0.6.6");
+            var w = new StatusWriter(dir, 9, "Retrace 0.6.7");
             w.Publish(StatusBoard.Compose(new StatusFacts { Mode = StatusMode.Replay, Test = "t", Step = 1, Steps = 2 }));
             Assert.True(w.Stop());
             var root = Parse(File.ReadAllText(w.FilePath));

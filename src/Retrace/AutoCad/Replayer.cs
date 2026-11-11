@@ -63,7 +63,10 @@ sealed class Replayer
     DateTime _paletteSince = DateTime.MinValue, _paletteRetryAt = DateTime.MinValue, _paletteClickedAt;
     Step? _paletteCommand;
     // showing the palette being driven (setting showDrivenUi): the mouse is rested on it as a person would, and put back after
-    readonly bool _showUi = RetraceSettings.Load().ShowDrivenUi;
+    readonly RetraceSettings _cfg = RetraceSettings.Load();   // the one read of the settings, when the run starts: showDrivenUi, autoFillDialogs, checkModelSpace, basicCheck, behaviors
+    bool _showUi => _cfg.ShowDrivenUi;
+    // the basic check's expected counts, worked out at the start from the recording's events (null: setting off)
+    (BasicCheckRules.Counts Counts, string Source, string? Note)? _expectedEnd;
     bool _revealDone;
     int _revealTry = -1;
     DateTime _revealAt, _cursorBackAt = DateTime.MaxValue;
@@ -117,7 +120,7 @@ sealed class Replayer
     {
         _sdi = single;
         _steps = steps; _mode = mode; _doc = doc; _sessionPath = sessionPath; _interactive = interactive;
-        _autoFillOn = interactive && RetraceSettings.Load().AutoFillDialogs;
+        _autoFillOn = interactive && _cfg.AutoFillDialogs;
         _timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(200) };
         _timer.Tick += (_, _) =>
         {
@@ -186,14 +189,14 @@ sealed class Replayer
     /// <param name="tdoc">a Tdoc run's pictures for this test (RETRACETDOC); null for a plain replay</param>
     /// <param name="finished">called once at the end of the run with its result (a Tdoc run starts the next test from it)</param>
     public static bool Start(List<Step> steps, ReplayMode mode, string sessionPath, DrawingDigest? initial, out string message, bool alert = false, bool interactive = false,
-        TdocCapture? tdoc = null, Action<ReplayResult>? finished = null, SuiteHook? suite = null, bool? single = null, bool ownStart = false)
+        TdocCapture? tdoc = null, Action<ReplayResult>? finished = null, SuiteHook? suite = null, bool? single = null, bool ownStart = false, IReadOnlyList<System.Text.Json.JsonElement>? events = null)
     {
         if (Current != null) { message = "A replay is already running (close its window or press Stop)."; return false; }
         var doc = AcApp.DocumentManager.MdiActiveDocument;
         if (doc == null) { message = "No active drawing."; return false; }
         var r = new Replayer(steps, mode, doc, sessionPath, interactive, single ?? SdiDocs.IsSingleNow()) { _alert = alert, _tdoc = tdoc, _finished = finished, _suite = suite, _ownStart = ownStart };
         Current = r;
-        r.Begin(initial);
+        r.Begin(initial, events);
         message = $"Replaying {steps.Count} steps ({mode}).";
         return true;
     }
@@ -201,8 +204,11 @@ sealed class Replayer
     /// <summary>The start drawing is one Retrace made for this test (RETRACERUN / suite / Tdoc): it may get the recording's start layers. Never true for RETRACEREPLAY / RETRACESTEP.</summary>
     bool _ownStart;
 
-    void Begin(DrawingDigest? initial)
+    void Begin(DrawingDigest? initial, IReadOnlyList<System.Text.Json.JsonElement>? events)
     {
+        Log.Safe("click arrows", () => ClickArrows.Begin(RetraceSettings.Load().ShowClickArrows));
+        ButtonNaming.NewSession();
+        if (_cfg.BasicCheck) _expectedEnd = BasicCheckRules.ExpectedFrom(events ?? Array.Empty<System.Text.Json.JsonElement>());
         PaletteFill.Reset();   // no menu state of an earlier replay
         if (_sdi && SdiGuard.IsOwnTestDrawing(_doc.Name)) { _afterOpen = true; _quietSince = DateTime.MinValue; }   // a drawing just opened is waited for until it has been quiet for a second
         _result.Session = TestFolders.NameOf(_sessionPath);
@@ -212,6 +218,7 @@ sealed class Replayer
             .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion ?? "unknown";
         _result.StepsTotal = _steps.Count;
         _result.Interactive = _interactive;
+        if (!_cfg.CheckModelSpace) _result.CheckModelSpace = false;
         // a test folder keeps its history; only results/latest.json is replaced, when this run ends
         // read before the start setup below: Retrace's own start-layer changes are not a person's unsaved changes
         var modified = _sdi && SdiDocs.IsModified(_doc);
@@ -507,7 +514,7 @@ sealed class Replayer
         if (initial == null) { ed.WriteMessage("\nNote: the session has no recorded start state (older recording); the start drawing is not checked.\n"); return; }
         var now = DrawingState.Read(_doc, withLayerState: initial.LayerState != null);   // a schema 2 recording keeps its start layer compare
         if (now == null) { _result.StartStateMatches = false; _warnings.Add("start state could not be read"); ed.WriteMessage("\nWARNING: could not read the drawing to compare with the start state.\n"); return; }
-        var diffs = DrawingDigest.Compare(initial, now);
+        var diffs = DrawingDigest.Compare(initial, now, checkModelSpace: _cfg.CheckModelSpace);
         _result.StartStateMatches = diffs.Count == 0;
         if (diffs.Count == 0) { ed.WriteMessage("\nStart state matches the recording.\n"); return; }
         var text = "start state differs from the recording (" + string.Join("; ", diffs) + ")";
@@ -521,12 +528,14 @@ sealed class Replayer
     void Finish(bool completed, bool errored, string message, bool needsPerson = false)
     {
         PaletteFill.Abandon();   // never leave a context menu open when the replay ends
+        ClickArrows.End();
         _fill?.Abandon();
         if (!_running) return;
         _running = false;
         _stoppedForPerson = needsPerson;
         CursorBack();
         _timer.Stop();
+        if (completed && !errored) BasicCheck();   // the end of the test: the drawing is counted before anything is put back or closed
         Log.Safe("Replay restore view", () => HandOffView(cancel: _userStopped || errored));
         Log.Safe("Replay SDI end", () =>
         {
@@ -553,12 +562,15 @@ sealed class Replayer
             _result.FinishedUtc = DateTime.UtcNow.ToString("o");
             _result.StepsRun = Math.Min(_i, _steps.Count);
             var failedSteps = _result.Steps.Count(x => x.Status == "failed");
-            _result.Verdict = ReplayResult.ComputeVerdict(completed, errored, _result.Checkpoints, failedSteps);
+            _result.Verdict = ReplayResult.ComputeVerdict(completed, errored, _result.Checkpoints, failedSteps, _result.BasicCheck);
             var notes = new List<string>();
             foreach (var f in _result.Steps.Where(x => x.Status == "failed")) notes.Add($"step {f.Index} failed: {f.Message}");
             if (!completed || errored) notes.Add(message);
-            if (completed && !errored && _result.Checkpoints.Count == 0) notes.Add("the session has no checkpoints (RETRACEMARK), nothing was verified");
-            foreach (var c in _result.Checkpoints.Where(c => c.Pass == null)) notes.Add($"checkpoint {c.Index} has no recorded state (older recording)");
+            if (completed && !errored && _result.Checkpoints.Count == 0)
+                notes.Add(_result.BasicCheck?.Pass == true ? "the session has no checkpoints (RETRACEMARK); the verdict comes from the basic check" : "the session has no checkpoints (RETRACEMARK), nothing was verified");
+            foreach (var c in _result.Checkpoints.Where(c => c.Pass == null))
+                notes.Add(c.ModelSpaceChecked == false ? $"checkpoint {c.Index} verified nothing (the model-space check is off)" : $"checkpoint {c.Index} has no recorded state (older recording)");
+            if (_result.BasicCheck is { } bc) { notes.Add(bc.Line()); if (bc.Pass == null && bc.Items.Count > 0) notes.Add("the basic check verified nothing"); }
             notes.AddRange(_warnings);
             _result.Message = string.Join("; ", notes);
             var written = _result.Write(_sessionPath, ex => Log.Error("write result", ex));
@@ -583,6 +595,7 @@ sealed class Replayer
             sb.AppendLine($"  Checkpoint {c.Index}{label}: {verdict}");
         }
         if (_result.Checkpoints.Count == 0) sb.AppendLine("  (no checkpoints)");
+        if (_result.BasicCheck is { } basic) sb.AppendLine("  " + basic.Line() + (basic.Pass == false ? " : FAIL" : ""));
         if (!string.IsNullOrEmpty(_result.Message)) sb.AppendLine(_result.Message);
         sb.AppendLine(written != null ? "Result file: " + written : "Result file could not be written.");
         Autodesk.AutoCAD.ApplicationServices.Application.ShowAlertDialog(sb.ToString());
@@ -1128,6 +1141,7 @@ sealed class Replayer
         var problem = s.Native != null
             ? NativePalette.Run(s, (x, y) => { if (_cursorHome == null && PaletteReveal.GetCursorPos(out var home)) _cursorHome = home; MoveCursor(new PaletteReveal.POINT { X = x, Y = y }); })
             : PaletteFill.Run(s, _paletteFill);
+        if (PaletteFill.TakeNote() is { } paletteNote) { _warnings.Add($"step {_i + 1}: {paletteNote}"); Say($"\n  Note: {paletteNote}.\n"); }
         if (problem == null)
         {
             Say($"\n  Palette \"{s.DialogTitle}\": done.\n");
@@ -1278,6 +1292,36 @@ sealed class Replayer
         return true;
     }
 
+    /// <summary>The basic check (setting `basicCheck`), once, at the end of the test after the last step: counts the active drawing and compares with the end of the
+    /// recording. The drawing is gone (the test closed it) or cannot be read: the items are "not verified" and the note says why.</summary>
+    void BasicCheck()
+    {
+        if (!_cfg.BasicCheck || _result.BasicCheck != null) return;
+        var items = _cfg.EffectiveBasicCheckItems();
+        try
+        {
+            var (expected, source, expectedNote) = _expectedEnd ?? (new BasicCheckRules.Counts(null, null, null), BasicCheckRules.FromNothing, null);
+            BasicCheckRules.Counts? actual = null;
+            var note = expectedNote;
+            if (_docGone) note = "the test closed its drawing, nothing to count";
+            else
+            {
+                actual = DrawingState.ReadCounts(_doc);
+                if (actual == null) note = "could not read the drawing";
+            }
+            var r = BasicCheckRules.Evaluate(items, expected, actual, source, note);
+            _result.BasicCheck = r;
+            Say($"\n  {r.Line()}\n");
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Basic check", ex);
+            var r = BasicCheckRules.Evaluate(items, new BasicCheckRules.Counts(null, null, null), null, BasicCheckRules.FromNothing, "could not run: " + ex.Message);
+            _result.BasicCheck = r;
+            try { Say($"\n  {r.Line()}\n"); } catch (Exception) { }
+        }
+    }
+
     /// <summary>Compares the drawing with the digest recorded at this checkpoint.</summary>
     void Checkpoint(Step s)
     {
@@ -1298,14 +1342,24 @@ sealed class Replayer
             // an older mark without checks keeps its layer-state compare, so it reads the layer state too
             cp.Actual = DrawingState.Read(_doc, withLayerState: s.Checks == null && s.State.LayerState != null);
             if (cp.Actual == null) { cp.Pass = false; cp.Differences.Add("could not read the drawing"); }
-            else { cp.Differences = DrawingDigest.Compare(s.State, cp.Actual, compareLayerState: s.Checks == null); cp.Pass = cp.Differences.Count == 0; }
+            else
+            {
+                cp.Differences = DrawingDigest.Compare(s.State, cp.Actual, compareLayerState: s.Checks == null, checkModelSpace: _cfg.CheckModelSpace);
+                cp.Pass = cp.Differences.Count == 0;
+                if (!_cfg.CheckModelSpace)
+                {
+                    cp.ModelSpaceChecked = false;
+                    // nothing but the entity part was recorded: nothing is verified here (behavior checks below may still verify it)
+                    if (cp.Pass == true && !DrawingDigest.HasNonEntityPart(s.State, s.Checks == null)) cp.Pass = null;
+                }
+            }
         }
         var checkLines = new List<string>();
         if (s.Checks != null && emptyChecks) cp.ApplyChecks(s.Checks, new BehaviorSnapshot());   // nothing to verify: no capture, cannot fail
         else if (s.Checks != null)
         {
             // only the behaviors the checks name are read
-            var actual = BehaviorCapture.Read(_doc, RetraceSettings.Load(), s.Checks.Behaviors.Keys.ToList());
+            var actual = BehaviorCapture.Read(_doc, _cfg, s.Checks.Behaviors.Keys.ToList());
             if (actual == null)
             {
                 cp.Pass = false;
@@ -1317,9 +1371,10 @@ sealed class Replayer
             checkLines = cp.CheckDifferences ?? checkLines;
         }
         var all = cp.Differences.Concat(checkLines).ToList();
-        var line = cp.Pass == true ? $"CHECK {cp.Index} PASS" : $"CHECK {cp.Index} FAIL: {string.Join("; ", all)}";
+        var modelOff = cp.ModelSpaceChecked == false ? " (model-space check off)" : "";
+        var line = cp.Pass == true ? $"CHECK {cp.Index} PASS{modelOff}" : cp.Pass == null ? $"CHECK {cp.Index} NOT VERIFIED{modelOff}" : $"CHECK {cp.Index} FAIL: {string.Join("; ", all)}";
         Say($"\n  {line}{label}\n");
-        _win.Show("Check " + cp.Index + (cp.Pass == true ? " PASS" : " FAIL"), (cp.Note.Length > 0 ? cp.Note + "\n" : "") + string.Join("\n", all), false);
+        _win.Show("Check " + cp.Index + (cp.Pass == true ? " PASS" : cp.Pass == null ? " NOT VERIFIED" : " FAIL"), (cp.Note.Length > 0 ? cp.Note + "\n" : "") + string.Join("\n", all), false);
     }
 
     // ---- the view of picks and clicks (PickReplay): shown before the step's points are typed, the person's view put back once the step has settled ----

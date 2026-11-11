@@ -39,6 +39,7 @@ sealed class TdocCapture : IDisposable
     DateTime _begin, _hiddenAt;
 
     // the dialog being waited for
+    readonly bool _arrows;   // setting showClickArrows: the picture points at the control the step clicks or fills
     int _dlgStep = -1, _dlgDone = -1;
     DateTime _dlgBegin, _dlgHidden;
     int _dx, _dy;
@@ -57,7 +58,7 @@ sealed class TdocCapture : IDisposable
     {
         Test = test; _steps = steps; _folder = folder; _testNo = testNo;
         Label = $"Tdoc test {testNo}/{testCount}";
-        _front = settings.TdocBringToFront; _annotate = settings.TdocAnnotate;
+        _front = settings.TdocBringToFront; _annotate = settings.TdocAnnotate; _arrows = settings.ShowClickArrows;
         _delay = TimeSpan.FromMilliseconds(settings.TdocStepDelayMs);
         _pictures = new int[steps.Count];
         for (int i = 0; i < steps.Count; i++)
@@ -153,6 +154,8 @@ sealed class TdocCapture : IDisposable
         var w = ShotService.CaptureWindow(_main, workArea: true);
         if (w == null) { Log.Info($"tdoc: no picture of step {i + 1} (AutoCAD's window is hidden or minimized)"); return; }
         var targets = new List<(string Text, ScreenRect? Rect)>();
+        ScreenRect? arrowAt = null;
+        if (_arrows && s.Kind == "ribbon" && !string.IsNullOrEmpty(s.ItemId)) arrowAt = TdocTargets.RibbonItemRect(s.ItemId)?.Rect;
         if (_annotate)
             foreach (var p in TdocPlan.StepCallouts(s))
             {
@@ -164,7 +167,7 @@ sealed class TdocCapture : IDisposable
                 }
                 else targets.Add((p.Text, p.Role == CalloutRole.CommandLine ? TdocTargets.CommandLineRect(_main) : null));
             }
-        Save(i, w.Value.Pic, w.Value.Left, w.Value.Top, targets, TdocPlan.Caption(s));
+        Save(i, w.Value.Pic, w.Value.Left, w.Value.Top, targets, TdocPlan.Caption(s), arrowAt);
     }
 
     void ShootPalette(int i, Step s)
@@ -174,9 +177,15 @@ sealed class TdocCapture : IDisposable
         if (page != IntPtr.Zero && PaletteReveal.PictureRect(page) is { } r && ShotService.CaptureRect(r.Left, r.Top, r.Right, r.Bottom) is { } pic)
         {
             var targets = new List<(string Text, ScreenRect? Rect)>();
-            if (_annotate)
-                foreach (var b in PaletteFill.TdocBoxes(s)) targets.Add((b.Text, TdocTargets.Of(b)));
-            Save(i, pic, r.Left, r.Top, targets, TdocPlan.Caption(s));
+            ScreenRect? arrowAt = null;
+            if (_annotate || _arrows)
+            {
+                var boxes = PaletteFill.TdocBoxes(s);
+                foreach (var b in boxes) if (_annotate) targets.Add((b.Text, TdocTargets.Of(b)));
+                // the button the step presses, found the way the replay finds it (a WPF button, a button taken by position too); a step without a button, the first control it fills; a button that was not found gets no arrow
+                if (_arrows) arrowAt = !string.IsNullOrEmpty(s.Button) ? PaletteFill.TdocButtonRect(s) : boxes.Count > 0 ? TdocTargets.Of(boxes[0]) : null;
+            }
+            Save(i, pic, r.Left, r.Top, targets, TdocPlan.Caption(s), arrowAt);
             return;
         }
         var w = ShotService.CaptureWindow(_main);
@@ -223,7 +232,9 @@ sealed class TdocCapture : IDisposable
                 foreach (var b in shot.Filled) targets.Add((b.Text, TdocTargets.Of(b, _dx, _dy)));
                 if (shot.Close != null) targets.Add((shot.Close.Text, TdocTargets.Of(shot.Close, _dx, _dy)));
             }
-            Save(i, w.Value.Pic, w.Value.Left, w.Value.Top, targets, TdocPlan.Caption(_steps[i]));
+            // the button that closes the dialog, else the last field it fills
+            ScreenRect? arrowAt = !_arrows ? null : shot.Close != null ? TdocTargets.Of(shot.Close, _dx, _dy) : shot.Filled.Count > 0 ? TdocTargets.Of(shot.Filled[^1], _dx, _dy) : null;
+            Save(i, w.Value.Pic, w.Value.Left, w.Value.Top, targets, TdocPlan.Caption(_steps[i]), arrowAt);
             // the instruction names the button as it reads ("Click OK." for a LISP alert, whose only button has Cancel's id)
             if (shot.Close != null && i < Test.Steps.Count && Test.Steps[i].Instructions is { Count: > 0 } ins)
                 ins[^1] = Rx.Replace(ins[^1], @"click (OK|Cancel)\.$", m => (char.IsUpper(m.Value[0]) ? "Click " : "click ") + shot.Close.Text + ".", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
@@ -253,7 +264,7 @@ sealed class TdocCapture : IDisposable
     /// <summary>Adds the picture to the step and writes it on a pool thread. <paramref name="targets"/>: the legend lines in the order they are
     /// numbered, each with its rectangle on the screen (null = not found; the line is left out). The picture shows the screen area at
     /// (<paramref name="sx"/>, <paramref name="sy"/>) the size of <paramref name="pic"/>, scaled down to fit.</summary>
-    void Save(int i, ShotService.Picture pic, int sx, int sy, IReadOnlyList<(string Text, ScreenRect? Rect)> targets, string? caption)
+    void Save(int i, ShotService.Picture pic, int sx, int sy, IReadOnlyList<(string Text, ScreenRect? Rect)> targets, string? caption, ScreenRect? arrowAt = null)
     {
         var (nw, nh) = ShotImage.FitSize(pic.Width, pic.Height);
         var candidates = targets.Select(t => t.Rect is { } r ? Annotate.ToPicture(r.Left, r.Top, r.Right, r.Bottom, sx, sy, pic.Width, pic.Height, nw, nh, 1) : null).ToList();
@@ -268,12 +279,15 @@ sealed class TdocCapture : IDisposable
             Callouts = numbered.Select(n => new TrainingCallout { Number = n.Number, Text = n.Text }).ToList(),
         });
         var px = pic.Pixels; int w = pic.Width, h = pic.Height;
+        // the green click arrow (setting showClickArrows), drawn into the image at the middle of the control, translated to the picture's pixels
+        var arrow = _arrows && arrowAt is { } ar ? ClickArrow.ForImage((ar.Left + ar.Right) / 2, (ar.Top + ar.Bottom) / 2, new PxRect(sx, sy, sx + pic.Width, sy + pic.Height), nw, nh) : null;
         var task = Task.Run(() =>
         {
             try
             {
                 var data = nw == w && nh == h ? px : ShotImage.Scale(px, w, h, nw, nh);
                 Annotate.Draw(data, nw, nh, boxes);
+                if (arrow is { } a) Annotate.DrawArrow(data, nw, nh, a);
                 WritePng(path, nw, nh, data);
             }
             catch (Exception ex) { Log.Error("tdoc picture", ex); }

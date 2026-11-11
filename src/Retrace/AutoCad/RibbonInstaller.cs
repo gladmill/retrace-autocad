@@ -42,11 +42,12 @@ public static class RibbonInstaller
             _lastCheck = now;
             var rc = ComponentManager.Ribbon;
             if (rc == null) return;
-            if (rc.Tabs.Any(t => t.Id == RetraceTab.TabId)) return;
+            if (rc.Tabs.Any(t => t.Id == RetraceTab.TabId)) { RefreshFromSettings(false); return; }   // settings.json changed elsewhere: follow it
             var tab = RetraceTab.Build();
             rc.Tabs.Add(tab);
             ShowCheckpointKey(tab);
             Place(rc, tab, RibbonTabPosition.ReadSettingFromDisk());
+            RefreshFromSettings(true);
         }
         catch (System.Exception ex) { Log.Error("ribbon create", ex); }
     }
@@ -68,13 +69,13 @@ public static class RibbonInstaller
     /// tab is built, so RetraceTab.Build keeps the plain literal shape the code-ribbon scanner reads. Called when the tab is made and when
     /// Settings are saved. Never throws.
     /// </summary>
-    public static void ShowCheckpointKey(RibbonTab? tab = null)
+    public static void ShowCheckpointKey(RibbonTab? tab = null, RetraceSettings? settings = null)
     {
         try
         {
             tab ??= ComponentManager.Ribbon?.Tabs.FirstOrDefault(t => t.Id == RetraceTab.TabId);
             if (tab == null) return;
-            var key = RetraceSettings.Load().CheckpointChord(out _)?.Format();
+            var key = (settings ?? RetraceSettings.Load()).CheckpointChord(out _)?.Format();
             foreach (var panel in tab.Panels)
                 foreach (var item in panel.Source.Items)
                 {
@@ -90,6 +91,52 @@ public static class RibbonInstaller
                 }
         }
         catch (System.Exception ex) { Log.Error("ribbon checkpoint key", ex); }
+    }
+
+    static DateTime _settingsSeen = DateTime.MinValue;
+
+    /// <summary>The promptStyle the Prompts toggle shows now (the default until settings.json has been read).</summary>
+    public static string ShownPromptStyle { get; private set; } = PromptStyles.CommandLine;
+
+    /// <summary>Makes the ribbon show what settings.json says: the Prompts toggle (pressed = window), the checkpoint shortcut on the Checkpoint button and the
+    /// tab's place. With <paramref name="force"/> always, else only when the file was written since the last look (so it follows the Settings window,
+    /// -RETRACESETTINGS and a hand edit). A file that cannot be read changes nothing and is not marked as seen, so the next look tries again. Never throws.</summary>
+    public static void RefreshFromSettings(bool force)
+    {
+        try
+        {
+            var file = Paths.SettingsFile();
+            var written = File.Exists(file) ? File.GetLastWriteTimeUtc(file) : DateTime.MinValue;
+            if (!force && written == _settingsSeen) return;
+            if (!RetraceSettings.TryLoad(out var s)) return;
+            ShowPromptStyle(s.PromptStyle);
+            ShowCheckpointKey(null, s);
+            ApplyPosition(s.RibbonTabPosition);
+            _settingsSeen = written;
+        }
+        catch (System.Exception ex) { Log.Error("ribbon refresh", ex); }
+    }
+
+    /// <summary>Shows <paramref name="style"/> on the Prompts toggle: pressed = window, text and tooltip. Never throws.</summary>
+    public static void ShowPromptStyle(string? style)
+    {
+        try
+        {
+            var tab = ComponentManager.Ribbon?.Tabs.FirstOrDefault(t => t.Id == RetraceTab.TabId);
+            if (tab == null) return;
+            ShownPromptStyle = RibbonPrompts.IsWindow(style) ? PromptStyles.Ui : PromptStyles.CommandLine;
+            foreach (var panel in tab.Panels)
+                foreach (var item in panel.Source.Items)
+                {
+                    if (item is not RibbonToggleButton b || b.Id != RetraceTab.PromptToggleId) continue;
+                    b.IsChecked = RibbonPrompts.IsWindow(style);
+                    b.Text = RibbonPrompts.ToggleText(style);
+                    var tip = RibbonPrompts.ToggleTip(style);
+                    b.ToolTip = tip;
+                    b.Description = tip;
+                }
+        }
+        catch (System.Exception ex) { Log.Error("ribbon prompt style", ex); }
     }
 
     /// <summary>The ribbon tabs the user can anchor to (visible, not contextual, not Retrace): (id, title). Empty if there is no ribbon.</summary>

@@ -194,7 +194,7 @@ public sealed partial class Commands
             var events = Plan.ReadEvents(path);
             var steps = Plan.Build(events).Where(s => s.Kind != "tab" || mode == ReplayMode.Step).ToList();
             if (Recorder.Instance.IsRecording) ed.WriteMessage("\nNote: a recording is running; the replayed actions will be recorded too.\n");
-            if (!Replayer.Start(steps, mode, path, Plan.InitialState(events), out var msg)) ed.WriteMessage($"\n{msg}\n");
+            if (!Replayer.Start(steps, mode, path, Plan.InitialState(events), out var msg, events: events)) ed.WriteMessage($"\n{msg}\n");
             else ed.WriteMessage($"\n{msg} Use the Retrace replay panel.\n");
         }
         catch (Exception ex) { Log.Error("RETRACEREPLAY", ex); ed.WriteMessage($"\nRETRACEREPLAY failed: {ex.Message}\n"); }

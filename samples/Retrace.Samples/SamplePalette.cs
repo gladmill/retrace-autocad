@@ -35,6 +35,7 @@ namespace Retrace.Samples
                 set.Add("Parts", new PartsPage());
                 set.Add("Tabs", new TabsPage());
                 set.Add("Menus", new MenusPage());
+                set.Add("Icons", new IconsPage());
             }
             set.Visible = true;
             set.AutoRollUp = autoHide;   // DRAWPALETTE after DRAWPALETTEHIDE pins it again
@@ -105,6 +106,10 @@ namespace Retrace.Samples
                 Draw((_, _) => new Circle(c, Vector3d.ZAxis, r), (string)layer.SelectedItem);
             };
             panel.Children.Add(draw);
+            // an icon-only WPF button: an Image for content (no text, no automation name) with a ToolTip and an x:Name, so a recording names it by the tool tip
+            var icon = new Wpf.Button { Name = "IconWpf", Content = new Wpf.Image { Width = 16, Height = 16, Source = new System.Windows.Media.Imaging.BitmapImage() }, ToolTip = "Draw wpf mark", Margin = new System.Windows.Thickness(0, 6, 0, 0), Width = 32, HorizontalAlignment = System.Windows.HorizontalAlignment.Left };
+            icon.Click += (_, _) => Draw((_, _) => new Circle(new Point3d(70, 0, 0), Vector3d.ZAxis, 7), "IconWpf");
+            panel.Children.Add(icon);
             return panel;
         }
     }
@@ -148,6 +153,41 @@ namespace Retrace.Samples
             };
             Controls.Add(grid);
         }
+    }
+
+    /// <summary>The WinForms page with icon-only buttons (no text): two with the same ToolTip (a ToolTip component, as the designer keeps it) and different Names, one with only a Name, one with only an AccessibleName. Each draws a circle of its own radius on its own layer.</summary>
+    internal class IconsPage : WinForms.UserControl
+    {
+        private readonly System.ComponentModel.IContainer components = new System.ComponentModel.Container();
+
+        private static System.Drawing.Bitmap Icon(System.Drawing.Color c)
+        {
+            var bmp = new System.Drawing.Bitmap(20, 20);
+            using (var g = System.Drawing.Graphics.FromImage(bmp)) { g.Clear(System.Drawing.Color.White); using var b = new System.Drawing.SolidBrush(c); g.FillEllipse(b, 3, 3, 14, 14); }
+            return bmp;
+        }
+
+        public IconsPage()
+        {
+            var tips = new WinForms.ToolTip(components);
+            var row = new WinForms.FlowLayoutPanel { Dock = WinForms.DockStyle.Top, AutoSize = true, Padding = new WinForms.Padding(8) };
+            WinForms.Button Make(string name, System.Drawing.Color c, double radius, string? tip, string? accessible)
+            {
+                var b = new WinForms.Button { Name = name, Text = "", Image = Icon(c), Width = 36, Height = 36 };
+                if (tip != null) tips.SetToolTip(b, tip);
+                if (accessible != null) b.AccessibleName = accessible;
+                b.Click += (_, _) => SamplePalette.Draw((_, _) => new Circle(new Point3d(radius * 10, 0, 0), Vector3d.ZAxis, radius), "Icon" + name);
+                row.Controls.Add(b);
+                return b;
+            }
+            Make("IconA", System.Drawing.Color.Red, 3, "Draw mark", null);
+            Make("IconB", System.Drawing.Color.Green, 4, "Draw mark", null);
+            Make("DrawRing", System.Drawing.Color.Blue, 5, null, null);
+            Make("IconD", System.Drawing.Color.Orange, 6, null, "Draw disc");
+            Controls.Add(row);
+        }
+
+        protected override void Dispose(bool disposing) { if (disposing) components.Dispose(); base.Dispose(disposing); }
     }
 
     /// <summary>The WinForms page with a tree: pick a part (some nodes are filled when they are opened), then Draw part adds a TEXT with its name.</summary>

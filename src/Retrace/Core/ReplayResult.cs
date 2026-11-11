@@ -16,6 +16,9 @@ public sealed class CheckpointResult
     [JsonPropertyName("expected")] public DrawingDigest? Expected { get; set; }
     [JsonPropertyName("actual")] public DrawingDigest? Actual { get; set; }
 
+    /// <summary>false when the setting `checkModelSpace` was off for this checkpoint (the entity counts and the geometry hash were not compared); left out otherwise.</summary>
+    [JsonPropertyName("modelSpaceChecked")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public bool? ModelSpaceChecked { get; set; }
+
     /// <summary>Behavior checks (schema 3): "auto" or "manual"; left out when the checkpoint recorded no checks.</summary>
     [JsonPropertyName("checkMode")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? CheckMode { get; set; }
     /// <summary>Behavior ids that were verified; left out when the checkpoint recorded no checks.</summary>
@@ -105,18 +108,23 @@ public sealed class ReplayResult
     [JsonPropertyName("startLayersCreated")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public int? StartLayersCreated { get; set; }
     /// <summary>true for RETRACERUN (waits for a person at dialogs), false for RETRACEREPLAY (stops with INCOMPLETE there).</summary>
     [JsonPropertyName("interactive")] public bool Interactive { get; set; }
+    /// <summary>false when the setting `checkModelSpace` was off in this run (checkpoints skipped the model-space entity comparison); left out when on.</summary>
+    [JsonPropertyName("checkModelSpace")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public bool? CheckModelSpace { get; set; }
+    /// <summary>The basic check (setting `basicCheck`): counts at the end of the test against the end of the recording; left out when the setting was off.</summary>
+    [JsonPropertyName("basicCheck")] [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public BasicCheckResult? BasicCheck { get; set; }
     [JsonPropertyName("steps")] public List<StepResult> Steps { get; set; } = new();
     [JsonPropertyName("checkpoints")] public List<CheckpointResult> Checkpoints { get; set; } = new();
     [JsonPropertyName("message")] public string Message { get; set; } = "";
     /// <summary>The history file <see cref="Write"/> made (not stored in the file); a suite summary links to it.</summary>
     [JsonIgnore] public string? WrittenTo { get; set; }
 
-    /// <summary>ERROR beats FAIL beats INCOMPLETE beats PASS. PASS needs a completed run and at least one checkpoint, every one verified and matching.</summary>
-    public static string ComputeVerdict(bool completed, bool errored, IReadOnlyList<CheckpointResult> checkpoints, int failedSteps = 0)
+    /// <summary>ERROR beats FAIL beats INCOMPLETE beats PASS. PASS needs a completed run and at least one checkpoint, every one verified and matching; or, when no checkpoint failed and none verified anything (there are none, or all are not verified), a basic check that verified at least one item and matched. A basic check that differs is FAIL; one with nothing verified changes nothing.</summary>
+    public static string ComputeVerdict(bool completed, bool errored, IReadOnlyList<CheckpointResult> checkpoints, int failedSteps = 0, BasicCheckResult? basicCheck = null)
     {
         if (errored) return Error;
-        if (failedSteps > 0 || checkpoints.Any(c => c.Pass == false)) return Fail;
+        if (failedSteps > 0 || checkpoints.Any(c => c.Pass == false) || basicCheck?.Pass == false) return Fail;
         if (!completed) return Incomplete;
+        if (checkpoints.All(c => c.Pass == null) && basicCheck?.Pass == true) return Pass;   // no checkpoint verified anything (none, or all not verified): the basic check is the verification
         if (checkpoints.Count == 0 || checkpoints.Any(c => c.Pass == null)) return Incomplete;
         return Pass;
     }

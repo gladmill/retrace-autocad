@@ -115,7 +115,7 @@ public class CommandNamesTests
         var bad = new List<string>();
         foreach (var f in Directory.GetFiles(LayerRulesTests.SourceRoot(), "*.cs", SearchOption.AllDirectories))
             foreach (Match m in Regex.Matches(File.ReadAllText(f), @"\bRETRACE[A-Z_]*\b"))
-                if (!known.Contains(m.Value) && !m.Value.StartsWith("RETRACE_FOLDER", StringComparison.Ordinal) && m.Value != "RETRACEFOLDER_TESTS" && m.Value != "RETRACEFOLDER_CAPTURES" && m.Value != "RETRACEFOLDER_DOCS" && m.Value != "RETRACE")
+                if (!known.Contains(m.Value) && !m.Value.StartsWith("RETRACE_FOLDER", StringComparison.Ordinal) && m.Value != "RETRACE_PROMPTS" && m.Value != "RETRACEFOLDER_TESTS" && m.Value != "RETRACEFOLDER_CAPTURES" && m.Value != "RETRACEFOLDER_DOCS" && m.Value != "RETRACE")
                     bad.Add($"{Path.GetFileName(f)}: {m.Value}");
         Assert.Empty(bad.Distinct());
     }

@@ -21,6 +21,9 @@ public sealed class Step
     public string? DialogTitle;         // dialog: its title; palette: the palette (its tab in the palette set; Panel = the set)
     public string? Button;              // palette: the button clicked, null when only values changed
     public int ButtonIndex = 1;         // palette: which of the palette's buttons with that text (1 = the first)
+    public string? ButtonFrom;          // palette: where the button's name came from when it is not its own text (`buttonFrom`: tooltip, accessible, automation, name); null = the legacy name
+    public int ButtonNoTextCount;       // palette: how many buttons without text of their own the palette had (`noTextCount`), 0 = not recorded
+    public int ButtonLegacyIndex;       // palette: which of the buttons without text of their own it is (`legacyIndex`), 0 = not recorded
     /// <summary>palette: "click" or "dblclick" (a double-click on an item of a tree: <see cref="ClickTree"/> key, <see cref="ClickPath"/> item path, <see cref="ClickTreeLabel"/>; <see cref="Button"/> is the item's text).</summary>
     public string ClickKind = DialogClickKinds.Click;
     public string ClickTree = "";
@@ -204,7 +207,7 @@ public static class Plan
     static bool IsNeutral(JsonElement e)
     {
         var ty = Str(e, "type");
-        if (ty is "shot" or "view_stale" or "state" or "mark" or "doc_active" or "modal_enter" or "modal_title" or "modal_leave" or "modal_alias" or "modal_nowindow" or "dialog_values" or "dialog_click" or DragRuns.DroppedType) return true;
+        if (ty is "shot" or "view_stale" or "state" or "end_counts" or "mark" or "doc_active" or "modal_enter" or "modal_title" or "modal_leave" or "modal_alias" or "modal_nowindow" or "dialog_values" or "dialog_click" or DragRuns.DroppedType) return true;
         return ty == "context_menu" && e.TryGetProperty("for", out var f) && f.ValueKind == JsonValueKind.Number;
     }
 
@@ -620,6 +623,9 @@ public static class Plan
                         palette!.Button = Str(e, "button");
                         palette.ClickKind = DialogClickKinds.Of(Str(e, "kind")); palette.ClickTree = Str(e, "tree") ?? ""; palette.ClickPath = Str(e, "path") ?? ""; palette.ClickTreeLabel = Str(e, "treeLabel") ?? "";
                         palette.ButtonIndex = e.TryGetProperty("index", out var bi) && bi.ValueKind == JsonValueKind.Number && bi.TryGetInt32(out var bn) ? bn : 1;
+                        palette.ButtonFrom = ButtonNames.IsFallback(Str(e, "buttonFrom")) ? Str(e, "buttonFrom") : null;
+                        palette.ButtonNoTextCount = e.TryGetProperty("noTextCount", out var nt) && nt.ValueKind == JsonValueKind.Number && nt.TryGetInt32(out var ntn) ? ntn : 0;
+                        palette.ButtonLegacyIndex = e.TryGetProperty("legacyIndex", out var li) && li.ValueKind == JsonValueKind.Number && li.TryGetInt32(out var ln) ? ln : 0;
                     }
                     else
                     {

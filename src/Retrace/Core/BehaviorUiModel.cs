@@ -18,9 +18,9 @@ public sealed record BehaviorRow(string Id, string Label, string Description, bo
 public static class BehaviorSettingsModel
 {
     public const string AutoExplanation = "Retrace works out what changed at each checkpoint and verifies exactly that. Turn this off to pick the behaviors yourself. Entity appearance and Paper-space entities are large, so they are recorded only when Record is ticked for them: tick it before recording.";
-    public const string ManualExplanation = "Every checkpoint verifies the ticked behaviors in full. Model-space entities are always verified.";
+    public const string ManualExplanation = "Every checkpoint verifies the ticked behaviors in full. Model-space entities are verified too unless that is turned off.";
     public const string ModelSpaceLabel = "Model-space entities";
-    public const string ModelSpaceDescription = "The objects in model space: always verified.";
+    public const string ModelSpaceDescription = "The objects in model space (counts per type and per layer, total, geometry). Off: checkpoints skip them and verify only layers and the behaviors.";
 
     /// <summary>Whether the "check" tick of a row can be edited: only when auto-detect is off. The one predicate for the window and <see cref="Rows"/>.
     /// (The "Record" tick of an opt-in row is editable in both modes.)</summary>

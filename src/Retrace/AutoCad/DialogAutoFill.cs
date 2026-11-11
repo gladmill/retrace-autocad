@@ -314,7 +314,7 @@ sealed partial class DialogAutoFiller
         // the click was made on a tab: its button is on that page (or it was pressed with that tab showing)
         if (!EnsureTab(scan, seg.Tab, now)) { if (State != Phase.GaveUp) State = Phase.Verify; return; }   // looked at again on the next tick
         if (seg.Menu != null) { PressMenu(scan, now); return; }
-        int want = Math.Max(1, seg.ButtonIndex), seen = 0;
+        int want = Math.Max(1, seg.ButtonIndex);
         var target = IntPtr.Zero;
         ToolbarButton toolbar = default;
         ScreenRect? toolbarBox = null;   // a toolbar button's own rectangle, for a Tdoc picture
@@ -332,8 +332,7 @@ sealed partial class DialogAutoFiller
             if (at >= 0) { target = all[at].Tb; toolbar = all[at].B; toolbarBox = ToolbarControl.ItemScreenRect(target, toolbar.Index) is { } r ? new ScreenRect(r.L, r.T, r.R, r.B) : null; }
         }
         else
-            foreach (var (h, _, text) in scan.Buttons)
-                if (string.Equals(PaletteFill.ButtonLabel(text), seg.Button, StringComparison.OrdinalIgnoreCase) && ++seen == want) { target = h; break; }
+            if (DialogReader.FindButton(scan, seg.Button!, want) is var found and >= 0) target = scan.Buttons[found].H;
         if (target == IntPtr.Zero)
         {
             if (now - _segStart > ControlsTimeout) GiveUp(seg.IsDoubleClick ? $"no tree \"{seg.TreeLabel}\" in the dialog" : seg.IsToolbar ? $"toolbar button '{seg.Button}' (command {seg.ButtonId}) not found" : $"no enabled button \"{seg.Button}\" in the dialog");

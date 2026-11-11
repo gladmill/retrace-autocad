@@ -192,6 +192,7 @@ static class ToolbarControl
         if (owner == IntPtr.Zero) return "the toolbar has no owner window";
         if (Find(tb, id) is not { } b) return "the toolbar has no such button";
         if (!b.Enabled) { disabled = true; return "the toolbar button is disabled"; }
+        if (ItemScreenRect(tb, b.Index) is { } shownBtn) ClickArrows.AtRect(shownBtn.L, shownBtn.T, shownBtn.R, shownBtn.B);
         return Post(owner, WM_COMMAND, (IntPtr)(id & 0xFFFF), tb) ? null : "could not post the command to the toolbar's owner";
     }
 }

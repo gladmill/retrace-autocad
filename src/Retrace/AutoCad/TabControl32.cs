@@ -155,6 +155,7 @@ static class TabControl32
             if (index < 0 || index >= Count(tab)) return $"the tab control has no tab {index + 1}";
             var from = Selected(tab);
             if (from == index) return null;
+            if (ItemRect(tab, index) is { } shownTab) ClickArrows.AtClient(tab, (shownTab.L + shownTab.R) / 2, (shownTab.T + shownTab.B) / 2);
             var shows = Text(tab, from);
             string how;
             if (WinFormsControls.TrySelectTab(tab, index)) how = "WinForms";

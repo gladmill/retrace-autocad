@@ -94,6 +94,67 @@ public static class Annotate
         }
     }
 
+    // ---- click arrows ----------------------------------------------------------------------------------------------
+
+    /// <summary>Draws a green arrow (a shaft and a filled head at the tip) with a thin white edge on raw BGRA pixels, changed in place (opaque pixels only: on a cleared buffer
+    /// it is also a valid premultiplied layered-window image). Clipped to the picture. Never throws.</summary>
+    public static void DrawArrow(byte[] pixels, int width, int height, ArrowLine a, int thickness = 5)
+    {
+        if (pixels == null || width <= 0 || height <= 0 || (long)width * height * 4 > pixels.Length) return;
+        try
+        {
+            double dx = a.TipX - a.StartX, dy = a.TipY - a.StartY, len = Math.Sqrt(dx * dx + dy * dy);
+            if (len < 1) return;
+            double ux = dx / len, uy = dy / len;
+            double head = Math.Min(Math.Max(len * 0.38, 14), 40);
+            double bx = a.TipX - ux * head, by = a.TipY - uy * head;
+            double hw = head * 0.55, nx = -uy, ny = ux;
+            for (int pass = 0; pass < 2; pass++)
+            {
+                bool edge = pass == 0;
+                double grow = edge ? 2 : 0;
+                ArrowLineFill(pixels, width, height, a.StartX, a.StartY, bx, by, thickness / 2.0 + grow, edge);
+                ArrowTriangle(pixels, width, height, a.TipX + ux * grow * 1.5, a.TipY + uy * grow * 1.5,
+                    bx + nx * (hw + grow), by + ny * (hw + grow), bx - nx * (hw + grow), by - ny * (hw + grow), edge);
+            }
+        }
+        catch (Exception) { }
+    }
+
+    static void PutArrow(byte[] px, int w, int h, int x, int y, bool white)
+    {
+        if (x < 0 || y < 0 || x >= w || y >= h) return;
+        int i = (y * w + x) * 4;
+        px[i] = white ? (byte)255 : (byte)(Green & 0xFF); px[i + 1] = white ? (byte)255 : (byte)((Green >> 8) & 0xFF); px[i + 2] = white ? (byte)255 : (byte)((Green >> 16) & 0xFF); px[i + 3] = 255;
+    }
+
+    static void ArrowLineFill(byte[] px, int w, int h, double x0, double y0, double x1, double y1, double radius, bool white)
+    {
+        double dx = x1 - x0, dy = y1 - y0, len2 = dx * dx + dy * dy;
+        int minX = Math.Max(0, (int)Math.Floor(Math.Min(x0, x1) - radius)), maxX = Math.Min(w - 1, (int)Math.Ceiling(Math.Max(x0, x1) + radius));
+        int minY = Math.Max(0, (int)Math.Floor(Math.Min(y0, y1) - radius)), maxY = Math.Min(h - 1, (int)Math.Ceiling(Math.Max(y0, y1) + radius));
+        for (int y = minY; y <= maxY; y++)
+            for (int x = minX; x <= maxX; x++)
+            {
+                double t = len2 <= 0 ? 0 : Math.Clamp(((x - x0) * dx + (y - y0) * dy) / len2, 0, 1);
+                double ex = x - (x0 + t * dx), ey = y - (y0 + t * dy);
+                if (ex * ex + ey * ey <= radius * radius) PutArrow(px, w, h, x, y, white);
+            }
+    }
+
+    static void ArrowTriangle(byte[] px, int w, int h, double ax, double ay, double bx, double by, double cx, double cy, bool white)
+    {
+        int minX = Math.Max(0, (int)Math.Floor(Math.Min(ax, Math.Min(bx, cx)))), maxX = Math.Min(w - 1, (int)Math.Ceiling(Math.Max(ax, Math.Max(bx, cx))));
+        int minY = Math.Max(0, (int)Math.Floor(Math.Min(ay, Math.Min(by, cy)))), maxY = Math.Min(h - 1, (int)Math.Ceiling(Math.Max(ay, Math.Max(by, cy))));
+        static double Side(double x1, double y1, double x2, double y2, double x, double y) => (x2 - x1) * (y - y1) - (y2 - y1) * (x - x1);
+        for (int y = minY; y <= maxY; y++)
+            for (int x = minX; x <= maxX; x++)
+            {
+                double d1 = Side(ax, ay, bx, by, x, y), d2 = Side(bx, by, cx, cy, x, y), d3 = Side(cx, cy, ax, ay, x, y);
+                if (!((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0))) PutArrow(px, w, h, x, y, white);
+            }
+    }
+
     /// <summary>A screen rectangle (<paramref name="right"/> and <paramref name="bottom"/> exclusive, like a RECT) as a picture rectangle,
     /// when the picture is the screen area (<paramref name="sx"/>, <paramref name="sy"/>, <paramref name="sw"/>, <paramref name="sh"/>) scaled to
     /// <paramref name="pw"/> x <paramref name="ph"/>. The part outside the area is cut off. null when nothing of it is left or a size is not positive.</summary>

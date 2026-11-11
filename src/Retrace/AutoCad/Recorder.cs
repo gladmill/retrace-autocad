@@ -88,6 +88,8 @@ public sealed class Recorder
     // button's (SendStringToExecute), also after an awaited call; _lastPaletteTick is the input count at the click
     long _lastPaletteT = -100000, _lastPaletteTick;
     string? _lastPaletteButton;
+    int _downX, _downY;       // the screen point of the last left button-down, when and in which window (setting showClickArrows)
+
     bool _lastPaletteConsumed = true;
 
     /// <summary>The checkpoint shortcut was pressed during a command: the checkpoint is taken when that command ends (see Commands.MarkFromKey).</summary>
@@ -193,6 +195,13 @@ public sealed class Recorder
         Log.Safe("Stop views", () => CheckPendingViews(ViewControl.ViewKey()));
         // the pictures still queued (the last command's result) are taken now, and their `shot` events must land before session_end
         Log.Safe("Stop shots", () => { _shots.Pump(w.ElapsedMs, force: true); _shots.Drain(); });
+        // the counts of the basic check (setting `basicCheck`), always written: a recording made now can be basic-checked later
+        Log.Safe("Stop end counts", () =>
+        {
+            var doc = AcApp.DocumentManager.MdiActiveDocument;
+            if (doc == null || DrawingState.ReadCounts(doc) is not { } c) return;
+            w.Event(BasicCheckRules.EndCountsEvent, CurDoc(), ("modelspace", c.ModelSpace), ("layers", c.Layers), ("layouts", c.Layouts));
+        });
         Log.Safe("Stop", () => w.Event("session_end", CurDoc()));
         Unsubscribe();
         _shots.End();
@@ -300,7 +309,12 @@ public sealed class Recorder
         _pal.Enabled = settings.DialogValues;
         _pal.Pictures = settings.Screenshots;
         _dlg.Clock = () => _w?.ElapsedMs ?? 0;
-        _dlg.Confirmed = (n, h) => _shots.DialogAfter(n, h);
+        _dlg.Confirmed = (n, h, pt) =>
+        {
+            // the picture of the filled dialog points at the button that was clicked with the mouse (the point comes from the dialog watch's own hook; a key press closing the dialog has none)
+            if (_shots.Arrows) { if (pt is { } p) _shots.NoteClick(n, p.X, p.Y); else _shots.ForgetClick(n); }   // an Enter after an earlier mouse OK gets no arrow
+            _shots.DialogAfter(n, h);
+        };
         _dlg.Clicked = c => Log.Safe("dialog click", () => EmitDialogClick(c));
         _dlg.Main = MainWindowHandle();
         _menu.Enabled = settings.DialogValues;
@@ -311,6 +325,8 @@ public sealed class Recorder
         _menu.Start();
         _dlg.NestedOpened = e => { var n = 0; Log.Safe("nested dialog", () => n = EmitNestedOpened(e)); return n; };
         _dlg.NestedClosed = r => Log.Safe("nested dialog closed", () => { EmitDialogValues(r); Emit("modal_leave", CurDoc()); });
+        _shots.Arrows = settings.ShowClickArrows;
+        ButtonNaming.NewSession();
         _shots.Begin(w.Path, enabled, MainWindowHandle(), () => _modalOpen > 0, (n, file, what) =>
         {
             var ww = _w;   // pool thread: only the writer is touched
@@ -842,6 +858,7 @@ public sealed class Recorder
         var m = e.Message.message;
         if (m == 0x0200) { _activity++; return; }   // WM_MOUSEMOVE: somebody is at the mouse (a script that answers by itself moves nothing)
         if (CheckpointKey.TryHandle(m, e.Message.wParam, e.Message.lParam)) { e.Handled = true; return; }   // the shortcut is not user input
+        if (m == 0x0201) { _downX = e.Message.pt_x; _downY = e.Message.pt_y; }   // where the person clicked, for the arrow of the step's picture
         if (m is 0x0100 or 0x0201 or 0x0202 or 0x0203 && _pal.Enabled) PaletteInput(e.Message.hwnd, (uint)m, e.Message.wParam, e.Message.lParam);
         if (m == 0x0100 && _w != null && !_inOwnCmd) { if (Native.TypedChar((uint)(long)e.Message.wParam) is { } typedChar) _sel.Key(typedChar); }   // WM_KEYDOWN (no WM_CHAR reaches this handler)
         if (m is 0x0201 or 0x0202 && _w != null && !_inOwnCmd && Native.IsInside(DrawingWindow(), e.Message.hwnd))
@@ -880,8 +897,12 @@ public sealed class Recorder
                 _lastPaletteT = w.ElapsedMs; _lastPaletteTick = _inputTick; _lastPaletteButton = button; _lastPaletteConsumed = false;
                 return;
             }
-            int n = index > 1 ? Emit("palette_click", CurDoc(), ("palette", at.Palette), ("set", at.Set), ("button", button), ("index", index))
-                              : Emit("palette_click", CurDoc(), ("palette", at.Palette), ("set", at.Set), ("button", button));
+            var from = _pal.ButtonFrom;
+            int? legacy = _pal.ButtonLegacyIndex > 0 ? _pal.ButtonLegacyIndex : null;
+            int? noText = _pal.ButtonNoTextCount > 0 ? _pal.ButtonNoTextCount : null;
+            int n = index > 1 ? Emit("palette_click", CurDoc(), ("palette", at.Palette), ("set", at.Set), ("button", button), ("buttonFrom", from), ("index", index), ("legacyIndex", legacy), ("noTextCount", noText))
+                              : Emit("palette_click", CurDoc(), ("palette", at.Palette), ("set", at.Set), ("button", button), ("buttonFrom", from), ("legacyIndex", legacy), ("noTextCount", noText));
+            if (message == 0x0201) _shots.NoteClick(n, _downX, _downY);
             if (picture != null) _shots.Write(n, "palette-closeup", picture, "palette");
             _lastPaletteT = w.ElapsedMs; _lastPaletteTick = _inputTick; _lastPaletteButton = button; _lastPaletteConsumed = false;
         }
@@ -915,7 +936,7 @@ public sealed class Recorder
         var w = _w;
         if (a == null || w == null) return;
         var n = Emit(a.Control == "combo" ? "native_select" : "native_click", CurDoc(), ("palette", a.Where.Palette), ("set", a.Where.Set), ("control", a.Control),
-            ("action", a.Action), ("path", a.Path), ("index", a.Index), ("id", a.Id), ("label", a.Label), ("value", a.Value), ("entry", a.Entry > 0 ? a.Entry : null),
+            ("action", a.Action), ("labelFrom", a.LabelFrom), ("path", a.Path), ("index", a.Index), ("id", a.Id), ("label", a.Label), ("value", a.Value), ("entry", a.Entry > 0 ? a.Entry : null),
             ("statics", DialogStatics.ToJson(NativeStatics(a.Where.Page))));
         NativePalette.Written(a, n, w.ElapsedMs);
         // a command the click starts (a toolbar button, the entry picked from a right-click menu) belongs to this step, as with .NET palettes

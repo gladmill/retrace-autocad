@@ -159,9 +159,10 @@ public sealed class DrawingDigest
     /// Layer state (schema 2) is compared only when <paramref name="compareLayerState"/> is true and the expected digest has it. The caller passes
     /// false for a mark that HAS behavior checks (`Step.Checks != null`): the `layers` behavior owns layer state there. The current layer is never
     /// compared (a test fails on it only through an explicit `sysvars` check of `CLAYER`); the field is still read.</summary>
-    public static List<string> Compare(DrawingDigest expected, DrawingDigest actual, bool compareLayerState = true)
+    public static List<string> Compare(DrawingDigest expected, DrawingDigest actual, bool compareLayerState = true, bool checkModelSpace = true)
     {
         var diffs = new List<string>();
+        if (checkModelSpace)
         foreach (var t in expected.ByType.Keys.Union(actual.ByType.Keys).OrderBy(x => x, StringComparer.Ordinal))
         {
             var ex = expected.ByType.GetValueOrDefault(t);
@@ -170,14 +171,15 @@ public sealed class DrawingDigest
         }
         foreach (var l in expected.Layers.Except(actual.Layers, StringComparer.Ordinal).OrderBy(x => x, StringComparer.Ordinal)) diffs.Add($"layer {l} missing");
         foreach (var l in actual.Layers.Except(expected.Layers, StringComparer.Ordinal).OrderBy(x => x, StringComparer.Ordinal)) diffs.Add($"layer {l} unexpected");
+        if (checkModelSpace)
         foreach (var l in expected.ByLayer.Keys.Union(actual.ByLayer.Keys).OrderBy(x => x, StringComparer.Ordinal))
         {
             var ex = expected.ByLayer.GetValueOrDefault(l);
             var ac = actual.ByLayer.GetValueOrDefault(l);
             if (ex != ac) diffs.Add($"layer {l}: expected {ex} {(ex == 1 ? "entity" : "entities")}, got {ac}");
         }
-        if (expected.Count != actual.Count && diffs.Count == 0) diffs.Add($"entity count: expected {expected.Count}, got {actual.Count}");
-        if (diffs.Count == 0 && !string.Equals(expected.Hash, actual.Hash, StringComparison.OrdinalIgnoreCase))
+        if (checkModelSpace && expected.Count != actual.Count && diffs.Count == 0) diffs.Add($"entity count: expected {expected.Count}, got {actual.Count}");
+        if (checkModelSpace && diffs.Count == 0 && !string.Equals(expected.Hash, actual.Hash, StringComparison.OrdinalIgnoreCase))
             diffs.Add(expected.Version < CurrentVersion && expected.ByType.Keys.Any(IsPlaced)
                 ? "geometry hash differs (checkpoint recorded with digest rules v1, which key text, blocks and dimensions differently, " +
                   "so it cannot match any more: check the drawing, then record the test again)"
@@ -187,6 +189,12 @@ public sealed class DrawingDigest
         if (compareLayerState) CompareLayerState(expected, actual, diffs);
         return diffs;
     }
+
+    /// <summary>With the model-space check off (<c>checkModelSpace: false</c> in <see cref="Compare"/>) only the layer names and the layer state are compared: does
+    /// <paramref name="expected"/> have any of them? Almost every digest does (layer "0" is always listed), and then a matching compare is a real pass. False (no layer names,
+    /// no layer state) = a compare would verify nothing: the checkpoint is "not verified" unless a non-empty behavior check verifies it.</summary>
+    public static bool HasNonEntityPart(DrawingDigest expected, bool compareLayerState = true) =>
+        expected.Layers.Count > 0 || (compareLayerState && expected.LayerState is { Count: > 0 });
 
     /// <summary>Layer state differences, only when the expected digest has <see cref="LayerState"/> (older checkpoints are skipped silently).
     /// A layer missing on either side is already reported above, a property missing on either side is skipped.

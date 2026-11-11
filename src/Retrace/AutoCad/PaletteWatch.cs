@@ -38,6 +38,13 @@ sealed class PaletteWatch
 
     Watched? _cur;
 
+    /// <summary>Where the last button's name came from (<see cref="ButtonNames"/>: "tooltip", "accessible", "automation", "name"); null for its text. Set by <see cref="OnInput"/>.</summary>
+    public string? ButtonFrom { get; private set; }
+    /// <summary>Which of the buttons without text of their own the last button was (`legacyIndex`); 0 when its name is its own text. Set by <see cref="OnInput"/>.</summary>
+    public int ButtonLegacyIndex { get; private set; }
+    /// <summary>How many buttons without text of their own the palette had at the last button click (`noTextCount`); 0 when its name is its own text.</summary>
+    public int ButtonNoTextCount { get; private set; }
+
     /// <summary>A double-click on an item of a tree of the palette (set by <see cref="OnInput"/> when the message is one): the tree field's key and label, and the item's path. The button of the result is the item's text.</summary>
     public sealed record DoubleClick(string Tree, string TreeLabel, string Path);
 
@@ -95,6 +102,8 @@ sealed class PaletteWatch
     public (Values? Changed, Spot? ClickedIn, string? Button, int Index, ShotService.Picture? Picture) OnInput(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam, long nowMs)
     {
         Double = null;
+        ButtonFrom = null; ButtonLegacyIndex = 0; ButtonNoTextCount = 0;
+        ButtonNaming.Recorded? rec = null;
         if (!Enabled) return (null, null, null, 0, null);
         var spot = Locate(hwnd);
         // a combo box's drop-down list is a top-level window of its own (Win32 ComboLBox, a WPF popup): picking an item there is still work in
@@ -104,19 +113,21 @@ sealed class PaletteWatch
         Values? left = null;
         if (_cur == null || _cur.Where.Page != spot.Page) { left = Flush(nowMs, drop: true); Begin(spot, nowMs); }
         string? button = null;
-        bool wpf = false;
         if (message == WM_LBUTTONDOWN)
         {
-            button = DialogReader.PushButtonText(hwnd);
-            if (button == null && WpfPalette.ButtonAt(hwnd, lParam) is { } w) { button = w; wpf = true; }
+            // a WinForms push button is told by its class and style alone (no scan for any other window); a WPF button by a hit test, and only then is the page scanned
+            rec = DialogReader.PushButtonText(hwnd) != null ? DialogReader.RecordButton(spot.Page, hwnd) : null;
+            if (rec == null && WpfPalette.RecordButtonAt(spot.Page, hwnd, lParam) is { } w) { rec = w; }
+            button = rec?.Name;
         }
         else if (message == WM_LBUTTONDBLCLK && TreeDoubleClick(hwnd, spot, lParam) is { } dbl) { Double = dbl.Info; button = dbl.Text; }
         // Space presses a focused WinForms button (Enter only does in a form with an AcceptButton, not in a palette)
-        else if (message == WM_KEYDOWN && (long)wParam == 0x20 && (((long)lParam >> 30) & 1) == 0) button = DialogReader.PushButtonText(hwnd);
+        else if (message == WM_KEYDOWN && (long)wParam == 0x20 && (((long)lParam >> 30) & 1) == 0 && DialogReader.PushButtonText(hwnd) != null && DialogReader.RecordButton(spot.Page, hwnd) is { } kb) { rec = kb; button = kb.Name; }
         if (button == null) return (left, null, null, 0, null);
         if (Double != null) return (left ?? Flush(nowMs, drop: false), spot, button, 1, null);   // the tree's own selection came with the first click: its values go with this step
         // read now, before the button handles the click: these are the values it acts on
-        var index = wpf ? WpfPalette.ButtonIndexAt(spot.Page, hwnd, lParam) : DialogReader.ButtonIndex(spot.Page, hwnd);
+        var index = rec?.Index ?? 1;
+        ButtonFrom = rec?.From; ButtonLegacyIndex = rec?.LegacyIndex ?? 0; ButtonNoTextCount = rec?.NoTextCount ?? 0;
         TakePicture(_cur!);   // the palette is open under the mouse right now: as it looks when the button is pressed
         var picture = _cur!.Picture;
         return (left ?? Flush(nowMs, drop: false), spot, button, index, picture);

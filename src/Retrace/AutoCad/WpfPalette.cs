@@ -31,6 +31,17 @@ static class WpfPalette
         public List<DialogField> Fields = new();
         public List<FrameworkElement> Elements = new();
         public List<(ButtonBase Button, string Text)> Buttons = new();
+        readonly ButtonNaming.Cache _names = new();
+        readonly Dictionary<ButtonBase, bool> _own = new();
+        /// <summary>Has the button at <paramref name="i"/> a name of its own (an automation name or text in its content)? Read once per scan.</summary>
+        public bool HasText(int i)
+        {
+            var b = Buttons[i].Button;
+            if (!_own.TryGetValue(b, out var v)) _own[b] = v = ButtonNaming.WpfHasOwnText(b);
+            return v;
+        }
+        /// <summary>The fallback name of the button at <paramref name="i"/> from one source (null when it has none); read once per scan.</summary>
+        public string? Fallback(int i, string from) => _names.Get(Buttons[i].Button, from, () => ButtonNaming.WpfSource(Buttons[i].Button, from));
         DependencyObject? _root;
         bool _hiddenToo;
         internal void SetRoot(DependencyObject root, bool hiddenToo) { _root = root; _hiddenToo = hiddenToo; }
@@ -261,7 +272,7 @@ static class WpfPalette
 
     /// <summary>The text a push button shows: its automation name, else its content, else its x:Name. Only a string Content or an AccessText has an access key, so only those lose their underscore marker
     /// (<see cref="WpfPresses.StripAccess"/>: "_Add" is "Add"); an automation name, an x:Name and a TextBlock's text are shown as they are. A recording from before compares through <see cref="WpfPresses.SameText"/>.
-    /// One text for palettes and dialogs.</summary>
+    /// One text for palettes and dialogs. This is the legacy name, exactly what earlier versions recorded: it is never changed (<see cref="ButtonNames"/>).</summary>
     internal static string ButtonText(ButtonBase b)
     {
         string text;
@@ -276,32 +287,48 @@ static class WpfPalette
         return text.Length > 0 ? text : "(button)";
     }
 
+    /// <summary>The position of the <paramref name="index"/>-th (1 = first) button recorded as <paramref name="recorded"/> (<see cref="ButtonNames.Matches{T}"/>): without `from` by the legacy name (<see cref="WpfPresses.SameText"/>),
+    /// with a fallback `from` only among buttons without a name of their own, by that source; -1 when there are not that many.</summary>
+    internal static int FindButton(Scan scan, string recorded, int index, string? from = null) =>
+        ButtonNames.Find(Positions(scan), recorded, from, index, i => scan.Buttons[i].Text, scan.HasText, scan.Fallback, WpfPresses.SameText);
+
+    /// <summary>The position of the <paramref name="legacyIndex"/>-th button without a name of its own; -1 when there is none.</summary>
+    internal static int FindButtonByPosition(Scan scan, int legacyIndex) => ButtonNames.FindByLegacyIndex(Positions(scan), legacyIndex, scan.HasText);
+
+    /// <summary>Which of the buttons with the name of the one at <paramref name="at"/> it is (1 = the first), by the legacy name, as dialogs have always counted.</summary>
+    internal static int IndexOfButton(IReadOnlyList<(ButtonBase Button, string Text)> buttons, int at) =>
+        buttons.Count == 0 || at < 0 || at >= buttons.Count ? 1 : WpfPresses.IndexAmong(buttons.Select(x => x.Text).ToList(), at);
+
+    /// <summary>How many buttons of the scan have no name of their own.</summary>
+    internal static int NoTextCount(Scan scan) => Positions(scan).Count(i => !scan.HasText(i));
+
+    static List<int> Positions(Scan scan) => Enumerable.Range(0, scan.Buttons.Count).ToList();
+
+    /// <summary>What a palette click on the push button under <paramref name="lParam"/> (client coordinates of <paramref name="hwnd"/>) is recorded as: the legacy name when the button has a name of its own,
+    /// else the first fallback name (tool tip, automation peer, x:Name) with its source, and the index and legacy index; null if the click is not on a push button.</summary>
+    public static ButtonNaming.Recorded? RecordButtonAt(IntPtr page, IntPtr hwnd, IntPtr lParam)
+    {
+        long lp = lParam.ToInt64();
+        if (!HitButton(hwnd, new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF)), out var b)) return null;
+        var scan = ScanPage(page);
+        var at = scan.Buttons.FindIndex(x => ReferenceEquals(x.Button, b));
+        if (at < 0) return new ButtonNaming.Recorded(ButtonText(b!), null, 1, 0);
+        string name = scan.Buttons[at].Text; string? from = null;
+        if (!scan.HasText(at))
+        {
+            var (n, f) = ButtonNames.Pick(null, () => scan.Fallback(at, ButtonNames.FromTooltip), null, () => scan.Fallback(at, ButtonNames.FromAutomation), () => scan.Fallback(at, ButtonNames.FromName));
+            if (f.Length > 0) { name = n; from = f; }
+        }
+        int index = ButtonNames.IndexAmong(Positions(scan), at, name, from, i => scan.Buttons[i].Text, scan.HasText, scan.Fallback, WpfPresses.SameText);
+        return new ButtonNaming.Recorded(name, from, index, from == null ? 0 : ButtonNames.LegacyIndex(Positions(scan), at, scan.HasText), from == null ? 0 : Positions(scan).Count(i => !scan.HasText(i)));
+    }
+
     /// <summary>Is <paramref name="b"/> a real push button (<see cref="WpfPresses.IsPushButton"/>): not a toggle, repeat button, column header or a part of a scroll bar, slider, combo box or date picker?</summary>
     internal static bool IsPushButton(ButtonBase b)
     {
         var parents = new List<IReadOnlyList<string>>();
         for (var p = b.TemplatedParent; p != null && parents.Count < 8; p = (p as FrameworkElement)?.TemplatedParent) parents.Add(Chain(p));
         return WpfPresses.IsPushButton(Chain(b), parents);
-    }
-
-    /// <summary>The text of the push button under a click at <paramref name="lParam"/> (client coordinates of <paramref name="hwnd"/>), or null
-    /// if <paramref name="hwnd"/> is not WPF or the click is not on a push button (check boxes and radios are fields).</summary>
-    public static string? ButtonAt(IntPtr hwnd, IntPtr lParam)
-    {
-        long lp = lParam.ToInt64();
-        return HitButton(hwnd, new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF)), out var b) ? ButtonText(b!) : null;
-    }
-
-    /// <summary>Which of the page's enabled push buttons with the same text the one under the click is (1 = the first).</summary>
-    public static int ButtonIndexAt(IntPtr page, IntPtr hwnd, IntPtr lParam)
-    {
-        long lp = lParam.ToInt64();
-        if (!HitButton(hwnd, new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF)), out var b)) return 1;
-        var all = ScanPage(page).Buttons;
-        var at = all.FindIndex(x => ReferenceEquals(x.Button, b));
-        if (at < 0) return 1;
-        var text = all[at].Text;
-        return all.Take(at + 1).Count(x => x.Text == text);
     }
 
     static bool HitButton(IntPtr hwnd, Point devicePx, out ButtonBase? button)
@@ -365,6 +392,7 @@ static class WpfPalette
     {
         try
         {
+            if (ScreenRect(e) is { } shown) ClickArrows.AtRect((int)shown.Left, (int)shown.Top, (int)shown.Right, (int)shown.Bottom);
             switch (e)
             {
                 case TextBox t:
@@ -418,6 +446,7 @@ static class WpfPalette
         try
         {
             if (!b.IsEnabled) return false;   // a CanExecute requery may have disabled it since the scan
+            if (ScreenRect(b) is { } shown) ClickArrows.AtRect((int)shown.Left, (int)shown.Top, (int)shown.Right, (int)shown.Bottom);
             if (UIElementAutomationPeer.CreatePeerForElement(b)?.GetPattern(PatternInterface.Invoke) is IInvokeProvider invoke) { invoke.Invoke(); return true; }
             b.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));   // no peer: at least its Click handlers
             return true;

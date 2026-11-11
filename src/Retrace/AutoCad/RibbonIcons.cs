@@ -28,6 +28,7 @@ static class RibbonIcons
         "build" => ("M5,27 L16,16 M13,6 L19,4 L26,11 L24,17 L18,15 L13,11 Z", false, false),
         "open" => ("M4,8 L13,8 L16,12 L28,12 L28,26 L4,26 Z", false, false),
         "sliders" => ("M5,9 L27,9 M5,16 L27,16 M5,23 L27,23 M10,5 L10,13 M20,12 L20,20 M13,19 L13,27", false, false),
+        "prompts" => ("M4,6 L18,6 L18,16 L4,16 Z M4,9 L18,9 M14,21 L28,21 L28,27 L14,27 Z M17,24 L19,24 M21,24 L25,24 M8,17 L8,21 L14,23", false, false),
         "terminal" => ("M4,6 L28,6 L28,26 L4,26 Z M9,12 L14,16 L9,20 M16,21 L23,21", false, false),
         "camera" => ("M4,10 L10,10 L12,6 L20,6 L22,10 L28,10 L28,26 L4,26 Z M16,12 A5,5 0 1 1 15.99,12 Z", false, false),
         "opentest" => ("M5,4 L19,4 L19,8 M5,4 L5,28 L19,28 M9,11 L16,11 M9,16 L16,16 M9,21 L13,21 M20,18 A5,5 0 1 1 19.99,18 Z M24,23 L29,28", false, false),

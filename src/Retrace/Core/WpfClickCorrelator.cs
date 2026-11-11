@@ -20,7 +20,7 @@ public sealed class WpfClickCorrelator
     bool _keyHeld;
 
     /// <summary>The left mouse button went down on <paramref name="button"/> (null: not on a push button).</summary>
-    public void MouseDown(object? button) { _mouseButton = button; _mouseDown = true; _mouseUpMs = null; _keyHeld = false; }   // a mouse press ends a key that was never seen coming up
+    public void MouseDown(object? button) { _mouseButton = button; _mouseDown = true; _mouseUpMs = null; _keyHeld = false; _keyMs = null; }   // a mouse press ends a key that was never seen coming up
 
     public void MouseUp(long nowMs) { _mouseDown = false; _mouseUpMs = nowMs; }
 
@@ -28,15 +28,21 @@ public sealed class WpfClickCorrelator
 
     public void KeyUp(long nowMs) { _keyHeld = false; _keyMs = nowMs; }
 
+    bool KeyActive(long nowMs) => _keyHeld || (_keyMs is { } k && nowMs - k <= KeyGraceMs);
+
+    bool MouseActive(object button, long nowMs) =>
+        _mouseButton != null && ReferenceEquals(_mouseButton, button) && (_mouseDown || (_mouseUpMs is { } u && nowMs - u <= MouseUpGraceMs));
+
+    /// <summary>Is a Click of <paramref name="button"/> at <paramref name="nowMs"/> a mouse press (no key in play)? Asked before <see cref="IsPress"/>, which uses the press up; changes nothing. A mouse press after a key
+    /// outranks it (<see cref="MouseDown"/> forgets the key).</summary>
+    public bool IsMousePress(object button, long nowMs) => !KeyActive(nowMs) && MouseActive(button, nowMs);
+
     /// <summary>Is a Click of <paramref name="button"/> at <paramref name="nowMs"/> a person's press? A mouse press is used up by it.</summary>
     public bool IsPress(object button, long nowMs)
     {
-        if (_keyHeld || (_keyMs is { } k && nowMs - k <= KeyGraceMs)) return true;
-        if (_mouseButton != null && ReferenceEquals(_mouseButton, button) && (_mouseDown || (_mouseUpMs is { } u && nowMs - u <= MouseUpGraceMs)))
-        {
-            if (!_mouseDown) { _mouseButton = null; _mouseUpMs = null; }
-            return true;
-        }
-        return false;
+        if (KeyActive(nowMs)) return true;
+        if (!MouseActive(button, nowMs)) return false;
+        if (!_mouseDown) { _mouseButton = null; _mouseUpMs = null; }
+        return true;
     }
 }

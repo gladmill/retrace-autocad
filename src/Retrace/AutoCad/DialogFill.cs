@@ -103,6 +103,7 @@ static class DialogFill
         {
             if (hs.Count == 0) return "no control";
             var h = hs[0];
+            ClickArrows.AtWindow(h);
             // a tick of a tree item: `live` is the tree it is in (the item may not exist yet); the owner is told as after a tick by a person
             if (TreeChecks.Is(c.Kind))
                 return c.After is "on" or "off" ? (ticks ?? new TickSession(new[] { c })).Apply(h, c) : $"cannot set a tree check box to \"{c.After}\"";
@@ -243,7 +244,7 @@ static class DialogFill
     }
 
     /// <summary>Presses a push button the way a click does, but posted: the dialog runs its own validation and closes from its own loop.</summary>
-    internal static bool PostClick(IntPtr button) => Post(button, BM_CLICK, IntPtr.Zero, IntPtr.Zero);
+    internal static bool PostClick(IntPtr button) { ClickArrows.AtWindow(button); return Post(button, BM_CLICK, IntPtr.Zero, IntPtr.Zero); }
 
     /// <summary>Presses OK or Cancel of a Win32 dialog. False when there is no such button and the dialog is not a stock #32770.</summary>
     internal static bool CloseWin32(IntPtr dialog, Win32Scan scan, bool ok, out string how)

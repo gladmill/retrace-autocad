@@ -85,7 +85,7 @@ sealed partial class DialogAutoFiller
     void PressWpf(WpfPalette.Scan scan, DateTime now)
     {
         var seg = Seg;
-        int at = WpfPresses.Find(WpfDialogs.Texts(scan), seg.Button!, seg.ButtonIndex);
+        int at = WpfPalette.FindButton(scan, seg.Button!, seg.ButtonIndex);
         if (at < 0)
         {
             if (now - _segStart > ControlsTimeout) { NoteSegment(scan, gaveUp: true); GiveUp($"no enabled button \"{seg.Button}\" in the dialog"); }

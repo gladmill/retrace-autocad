@@ -68,6 +68,10 @@ public sealed class RetraceSettings
     /// `ACAD_STATUS_DIR` names), so a person or a tool outside AutoCAD can see what Retrace is doing. On by default. Off: nothing is written.</summary>
     [JsonPropertyName("statusBoard")] public bool StatusBoard { get; set; } = true;
 
+    /// <summary>Draw a green diagonal arrow at the point Retrace clicks or fills while it replays a test (a dialog or palette button or field, a tree double-click, a tab, a native click),
+    /// and into the step pictures of a recording and of Tdoc. Off by default; off draws nothing anywhere.</summary>
+    [JsonPropertyName("showClickArrows")] public bool ShowClickArrows { get; set; } = false;
+
     /// <summary>Where the Retrace ribbon tab goes: "" / "afterHome" (right of Home), "first", "last" or "after:&lt;tab id or title&gt;".</summary>
     [JsonPropertyName("ribbonTabPosition")] public string RibbonTabPosition { get; set; } = "";
 
@@ -92,8 +96,24 @@ public sealed class RetraceSettings
     [JsonPropertyName("promptStyle")] public string PromptStyle { get; set; } = PromptStyles.CommandLine;
 
     /// <summary>Behavior checks: true (default) = at each checkpoint Retrace works out what changed since the previous checkpoint and verifies exactly
-    /// that; false = the behaviors in <see cref="CheckBehaviors"/> are verified whole. Model-space entities are verified either way.</summary>
+    /// that; false = the behaviors in <see cref="CheckBehaviors"/> are verified whole. Model-space entities are verified either way unless <see cref="CheckModelSpace"/> is off.</summary>
     [JsonPropertyName("autoDetectBehavior")] public bool AutoDetectBehavior { get; set; } = true;
+
+    /// <summary>Checkpoints verify the model-space entities (per-type counts, per-layer entity counts, total, geometry hash). On by default. Off: a checkpoint
+    /// compares only the layer names, the layer state and the behavior checks (layer names and state are a real check: a checkpoint that matches them passes); `pass` is null ("not verified")
+    /// only when the recorded checkpoint has no layer names, no layer state and no non-empty behavior checks.
+    /// The result file says so (`checkModelSpace: false`).</summary>
+    [JsonPropertyName("checkModelSpace")] public bool CheckModelSpace { get; set; } = true;
+
+    /// <summary>Basic check: at the END of a test, count what the drawing holds (see <see cref="BasicCheckItems"/>) and compare with the same counts at the end
+    /// of the recording. Independent of checkpoints. Off by default.</summary>
+    [JsonPropertyName("basicCheck")] public bool BasicCheck { get; set; }
+
+    /// <summary>What the basic check counts: `modelspace`, `layers`, `layouts`. Default all three; a settings file without it reads as all three.</summary>
+    [JsonPropertyName("basicCheckItems")] public List<string> BasicCheckItems { get; set; } = new(BasicCheckRules.AllItems);
+
+    /// <summary>The basic check items in <see cref="BasicCheckItems"/>: known ids only, no duplicates, matched without case, in the fixed order modelspace, layers, layouts.</summary>
+    public List<string> EffectiveBasicCheckItems() => BasicCheckRules.Clean(BasicCheckItems);
 
     /// <summary>Behavior ids (see <see cref="BehaviorCatalog"/>) verified when <see cref="AutoDetectBehavior"/> is off.</summary>
     [JsonPropertyName("checkBehaviors")] public List<string> CheckBehaviors { get; set; } = new(BehaviorCatalog.DefaultManual);
@@ -126,7 +146,10 @@ public sealed class RetraceSettings
         BehaviorCatalog.ForRecording(EffectiveRecordBehaviors(), AutoDetectBehavior ? Array.Empty<string>() : EffectiveCheckBehaviors());
 
     /// <summary>The prompt style asked for: true for "ui" (any case), false for anything else.</summary>
-    [JsonIgnore] public bool UiPrompts => string.Equals(Clean(PromptStyle), PromptStyles.Ui, StringComparison.OrdinalIgnoreCase);
+    [JsonIgnore] public bool UiPrompts => IsUiStyle(PromptStyle);
+
+    /// <summary>True when a promptStyle value means the window form: "ui" in any case, around spaces or quotes.</summary>
+    public static bool IsUiStyle(string? promptStyle) => string.Equals(Clean(promptStyle), PromptStyles.Ui, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>The root folder this instance was loaded from (not stored). Tests point it at a temp folder.</summary>
     [JsonIgnore] public string RootDir { get; set; } = Paths.Root;
@@ -244,6 +267,7 @@ public sealed class RetraceSettings
         var c = (RetraceSettings)MemberwiseClone();
         c.CheckBehaviors = new List<string>(CheckBehaviors ?? new());
         c.RecordBehaviors = new List<string>(RecordBehaviors ?? new());
+        c.BasicCheckItems = new List<string>(BasicCheckItems ?? new());
         c.SysvarsAdd = new List<string>(SysvarsAdd ?? new());
         c.SysvarsRemove = new List<string>(SysvarsRemove ?? new());
         return c;
