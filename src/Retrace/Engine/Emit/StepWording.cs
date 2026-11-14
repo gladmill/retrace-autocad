@@ -99,8 +99,8 @@ public static class StepWording
                     + (string.IsNullOrWhiteSpace(st.Panel) || st.Panel == st.DialogTitle ? "" : $" ({Md.Cell(st.Panel)})");
         if (st.Native != null)   // a native palette: one action, no values
             return $"{where}, {st.Native.Describe(Md.Cell, x => $"**{x}**")}" + (st.OpensDrawing != null ? $". It opens {Md.Code(st.OpensDrawing)}" : "");
-        var click = st.Menu != null ? st.Menu.Phrase(true, Md.Cell, "the palette") : string.IsNullOrWhiteSpace(st.Text) ? null
-            : st.ClickKind == Retrace.Core.DialogClickKinds.DoubleClick ? Retrace.Core.DialogClickKinds.DoubleClickWords(st.ClickPath, st.ClickTreeLabel, Md.Code, t => $"**{Md.Cell(t)}**", capital: false)
+        var click = st.Menu != null ? st.Menu.Phrase(true, Md.Cell, "the palette") : string.IsNullOrWhiteSpace(st.Text) && !Retrace.Core.PaletteClickKinds.IsIntermediate(st.ClickKind) ? null
+            : st.ClickKind != Retrace.Core.DialogClickKinds.Click ? Retrace.Core.PaletteClickKinds.Phrase(st.ClickKind, st.Text, st.ClickPath, st.ClickTreeLabel, st.ClickIndex, st.ClickLegacyIndex, st.Hit, Md.Code, t => $"**{Md.Cell(t)}**", capital: false)
             : $"click **{Md.Cell(st.Text)}**";
         if (ChangeLines(st).Count == 0) return click == null ? where + ", leave the values as they are" : $"{where}, {click}";
         return click == null ? where + ", make these changes:" : $"{where}, make these changes, then {click}:";

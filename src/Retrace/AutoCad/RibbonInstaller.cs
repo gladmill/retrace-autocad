@@ -17,6 +17,11 @@ public static class RibbonInstaller
         if (_hooked) return;
         _hooked = true;
         AcApp.Idle += OnIdle;
+        try
+        {
+            AcApp.SystemVariableChanged += OnSysVar;
+        }
+        catch (System.Exception ex) { Log.Error("filedia hooks", ex); }
     }
 
     public static void Uninstall()
@@ -24,6 +29,11 @@ public static class RibbonInstaller
         if (!_hooked) return;
         _hooked = false;
         AcApp.Idle -= OnIdle;
+        try
+        {
+            AcApp.SystemVariableChanged -= OnSysVar;
+        }
+        catch (System.Exception) { }
         try
         {
             var rc = ComponentManager.Ribbon;
@@ -38,16 +48,18 @@ public static class RibbonInstaller
         try
         {
             var now = Environment.TickCount64;
+            if (_fileDiaDirty) { _fileDiaDirty = false; RefreshFileDia(); }   // a FILEDIA change: show it at once
             if (now - _lastCheck < 1000) return;
             _lastCheck = now;
             var rc = ComponentManager.Ribbon;
             if (rc == null) return;
-            if (rc.Tabs.Any(t => t.Id == RetraceTab.TabId)) { RefreshFromSettings(false); return; }   // settings.json changed elsewhere: follow it
+            if (rc.Tabs.Any(t => t.Id == RetraceTab.TabId)) { RefreshFromSettings(false); RefreshFileDia(); return; }   // settings.json changed elsewhere: follow it; FILEDIA: a cheap read, catches any missed event
             var tab = RetraceTab.Build();
             rc.Tabs.Add(tab);
             ShowCheckpointKey(tab);
             Place(rc, tab, RibbonTabPosition.ReadSettingFromDisk());
             RefreshFromSettings(true);
+            RefreshFileDia();
         }
         catch (System.Exception ex) { Log.Error("ribbon create", ex); }
     }
@@ -91,6 +103,39 @@ public static class RibbonInstaller
                 }
         }
         catch (System.Exception ex) { Log.Error("ribbon checkpoint key", ex); }
+    }
+
+    static volatile bool _fileDiaDirty;
+
+    // Handlers do no work: they only mark the indicator stale; the next Idle shows the value (AGENTS.md: no work in AutoCAD event handlers).
+    static void OnSysVar(object? s, Autodesk.AutoCAD.ApplicationServices.SystemVariableChangedEventArgs e)
+    {
+        try { if (string.Equals(e.Name, "FILEDIA", StringComparison.OrdinalIgnoreCase)) _fileDiaDirty = true; } catch (System.Exception) { }
+    }
+
+    /// <summary>Makes the FILEDIA indicator show the variable's value now (also after a workspace change, which rebuilds the tab). Does nothing when the shown value is current. Never throws.</summary>
+    public static void RefreshFileDia()
+    {
+        try
+        {
+            var cur = Ask.FileDia();
+            var tab = ComponentManager.Ribbon?.Tabs.FirstOrDefault(t => t.Id == RetraceTab.TabId);
+            if (tab == null) return;
+            foreach (var panel in tab.Panels)
+                foreach (var item in panel.Source.Items)
+                {
+                    if (item is not RibbonToggleButton b || b.Id != RetraceTab.FileDiaId) continue;
+                    if (b.IsChecked == true) b.IsChecked = false;   // a toggle flips itself on a click; this is an indicator, never pressed
+                    if (cur is not { } v || b.Text == RibbonFileDia.Text(v)) return;
+                    b.Image = RibbonIcons.Make(RibbonFileDia.Icon(v), 16);
+                    b.LargeImage = RibbonIcons.Make(RibbonFileDia.Icon(v), 32);
+                    b.Text = RibbonFileDia.Text(v);
+                    var tip = RibbonFileDia.Tip(v);
+                    b.ToolTip = tip;
+                    b.Description = tip;
+                }
+        }
+        catch (System.Exception ex) { Log.Error("ribbon filedia", ex); }
     }
 
     static DateTime _settingsSeen = DateTime.MinValue;

@@ -5,12 +5,15 @@ using AcApp = Autodesk.AutoCAD.ApplicationServices.Core.Application;
 namespace Retrace.AutoCad;
 
 /// <summary>
-/// The pictures of one test in a Tdoc run. The <see cref="Replayer"/> calls it at four points (all on the UI thread, each one a gate that says
+/// The pictures of one test in a Tdoc run. The <see cref="Replayer"/> calls it at these points (all on the UI thread, each one a gate that says
 /// "not yet" until the picture is taken, so the replay's 200 ms tick is never blocked):
 ///  - <see cref="BeforeStep"/>: the step is shown and AutoCAD has settled, the step has not run. Waits the settle delay, brings AutoCAD to the
 ///    front, hides Retrace's own replay window, finds the box of the ribbon button (UI Automation on a pool thread), then takes the picture.
 ///  - <see cref="DialogReady"/>: asked by <see cref="DialogAutoFiller"/> with the dialog filled in, before it presses OK / Cancel.
 ///  - <see cref="AfterStep"/>: a checkpoint step has run; its result goes into the manifest.
+///  - <see cref="AfterCommand"/> / <see cref="AfterDialog"/>: the answers a command's person gave after a dialog (a step of their own, <see cref="TdocSplit"/>) have been typed: the picture
+///    is taken when the command has ended (the last such step) or when the next dialog of the command has opened. <see cref="AnswersTyped"/> tells it that the replay typed them; a step whose
+///    answers never were (the dialog failed or was cancelled) is dropped from the manifest when the test ends.
 /// Boxes are drawn and the PNG is written on a pool thread. Every failure is logged and costs only the picture. Every hook is called only when a
 /// Tdoc run is active; the replayer holds null otherwise.
 /// </summary>
@@ -33,10 +36,9 @@ sealed class TdocCapture : IDisposable
     DateTime _idleAt = DateTime.MinValue;   // set by the Idle handler (a plain field write)
     bool _disposed;
 
-    // the step before which a picture is being prepared
-    int _cur = -1;
-    bool _ready;
-    DateTime _begin, _hiddenAt;
+    /// <summary>The state of one picture gate (the step's, the answers after a dialog's): the key it is waiting for, whether its picture is taken, when it began and when the replay window was hidden for it.</summary>
+    sealed class PicGate { public int Key = -1; public bool Ready; public DateTime Begin, Hidden; }
+    readonly PicGate _stepGate = new(), _afterGate = new();
 
     // the dialog being waited for
     readonly bool _arrows;   // setting showClickArrows: the picture points at the control the step clicks or fills
@@ -60,9 +62,66 @@ sealed class TdocCapture : IDisposable
         Label = $"Tdoc test {testNo}/{testCount}";
         _front = settings.TdocBringToFront; _annotate = settings.TdocAnnotate; _arrows = settings.ShowClickArrows;
         _delay = TimeSpan.FromMilliseconds(settings.TdocStepDelayMs);
-        _pictures = new int[steps.Count];
-        for (int i = 0; i < steps.Count; i++)
-            test.Steps.Add(new TrainingStep { Number = i + 1, Kind = TdocPlan.KindOf(steps[i]), Title = TdocPlan.StepTitle(steps[i]), Instructions = TdocPlan.Instructions(steps[i]) });
+        // the document's steps: a command's answers given after a dialog are a step of their own (TdocSplit)
+        var entries = TdocSplit.Entries(steps);
+        _pictures = new int[entries.Count];
+        _m = new int[steps.Count]; _before = new Step[steps.Count];
+        for (int k = 0; k < entries.Count; k++)
+        {
+            var e = entries[k];
+            test.Steps.Add(new TrainingStep { Number = k + 1, Kind = TdocSplit.Kind(e), Title = TdocSplit.Title(e), Instructions = TdocSplit.Instructions(e) });
+            if (e.After) { _after[e.Index] = new Continuation(k, e.Shown, e.Group, e.GroupEnd, e.Last); continue; }
+            _m[e.Index] = k; _before[e.Index] = e.Shown;
+        }
+    }
+
+    readonly int[] _m;                 // replay step -> its step in the document
+    readonly Step[] _before;           // replay step -> what its text and boxes are made from (a step that has answers after a dialog: only the ones before)
+    /// <summary>The step of the answers given after a dialog: its place in the document, its text's source, the first and last dialog step of the command (the replay types them all when one of its dialogs is done) and whether it is the last of the command.</summary>
+    sealed record Continuation(int Doc, Step Shown, int Group, int GroupEnd, bool Last);
+    readonly Dictionary<int, Continuation> _after = new();   // dialog step -> the answers given after it
+    readonly HashSet<int> _typed = new();                    // dialog steps after which the replay typed the answers of their command
+    bool Typed(Continuation c) => _typed.Any(d => d >= c.Group && d <= c.GroupEnd);
+
+    /// <summary>The replay typed the answers a command's person gave after its dialogs (it is at the dialog step <paramref name="dialog"/>, the first of the command, or a later one when the next dialog opened at once).</summary>
+    public void AnswersTyped(int dialog) => _typed.Add(dialog);
+
+    /// <summary>The replay is at step <paramref name="next"/> (or past the end) and everything before it has run and settled: when the step before is the last dialog of a command, the answers
+    /// typed after it have run too, and the picture of that step is taken now. False until it is (the replayer asks again on its next tick).</summary>
+    public bool AfterCommand(int next, DateTime now) => AfterDialog(next - 1, last: true, now);
+
+    /// <summary>The dialog step <paramref name="dialog"/> has been done and the replay is at the step after it: <paramref name="last"/> false = that step is another dialog of the command (the answers between the two
+    /// are pictured when it has opened).</summary>
+    public bool AfterDialog(int dialog, bool last, DateTime now)
+    {
+        try
+        {
+            if (!_after.TryGetValue(dialog, out var c) || c.Last != last || !Typed(c)) return true;   // not typed: no picture (the step goes when the test ends)
+            return Gate(_afterGate, dialog, now, null, null, () => Shoot(c.Doc, c.Shown, continuation: true), front: last);   // between two dialogs the next one is open and in front: AutoCAD's window is not brought up over it (the dialog fill looks for it in the foreground)
+        }
+        catch (Exception ex) { Log.Error("tdoc after dialog", ex); ShowReplay(); _afterGate.Key = dialog; _afterGate.Ready = true; return true; }
+    }
+
+    /// <summary>One picture gate: false until the picture is taken, true after. Waits the settle delay, brings AutoCAD to the front, hides the replay window, waits for AutoCAD to be idle, then calls
+    /// <paramref name="shoot"/>. <paramref name="start"/> runs when <paramref name="key"/> is new; <paramref name="wait"/> true = not yet, for a reason of the caller's.</summary>
+    bool Gate(PicGate g, int key, DateTime now, Action? start, Func<bool>? wait, Action shoot, bool front = true)
+    {
+        if (g.Key != key)
+        {
+            g.Key = key; g.Ready = false; g.Begin = now; g.Hidden = DateTime.MinValue;
+            start?.Invoke();
+            if (_front && front) Native.Front(_main);
+        }
+        if (g.Ready) return true;
+        if (wait?.Invoke() == true) return false;
+        if (now - g.Begin < _delay) return false;
+        if (g.Hidden == DateTime.MinValue) { g.Hidden = now; HideReplay(); }
+        if (_front && now - g.Hidden < HideWait) return false;
+        if (_idleAt < g.Begin && now - g.Begin < _delay + IdleWait) return false;   // AutoCAD has not been idle since the picture was asked for
+        shoot();
+        ShowReplay();
+        g.Ready = true;
+        return true;
     }
 
     /// <summary>The replayer started: <paramref name="setReplayVisible"/> hides / shows its window; <paramref name="main"/> is AutoCAD's main window.</summary>
@@ -79,6 +138,15 @@ sealed class TdocCapture : IDisposable
         if (_disposed) return;
         _disposed = true;
         Log.Safe("tdoc idle unhook", () => AcApp.Idle -= OnIdle);
+        Log.Safe("tdoc drop untyped steps", DropUntypedContinuations);
+    }
+
+    /// <summary>The answers after a dialog that the replay never typed (the dialog failed or was cancelled, the command ended) are not a step of the document: the others are numbered again.</summary>
+    void DropUntypedContinuations()
+    {
+        foreach (var c in _after.Values.Where(c => !Typed(c)).OrderByDescending(c => c.Doc))
+            if (c.Doc < Test.Steps.Count && Test.Steps[c.Doc].Pictures.Count == 0) Test.Steps.RemoveAt(c.Doc);
+        for (int k = 0; k < Test.Steps.Count; k++) Test.Steps[k].Number = k + 1;
     }
 
     void HideReplay() { if (_front) _setReplayVisible(false); }
@@ -107,35 +175,25 @@ sealed class TdocCapture : IDisposable
         {
             Log.Error("tdoc before step", ex);
             ShowReplay();
-            _cur = i; _ready = true;
+            _stepGate.Key = i; _stepGate.Ready = true;
             return true;
         }
     }
 
     bool BeforeStepCore(int i, Step s, DateTime now)
     {
-        if (s.Kind == "dialog") return true;
-        if (i != _cur)
-        {
-            _cur = i; _ready = false; _begin = now; _hiddenAt = DateTime.MinValue; _zoom = null;
-            if (s.Kind == "ribbon") Replayer.ActivateTab(s.Tab);   // the button must show
-            if (s.Kind == "mark") ZoomExtents();   // the checkpoint picture shows the whole drawing (the view only; the checkpoint compares objects)
-            if (_front) Native.Front(_main);
-        }
-        if (_ready) return true;
-        if (_zoom is { Pending: true }) return false;   // SDI: the ZOOM is typed a moment after it was sent; the idle check below would not see it yet
-        if (now - _begin < _delay) return false;
-        if (_hiddenAt == DateTime.MinValue)
-        {
-            _hiddenAt = now;
-            HideReplay();
-        }
-        if (_front && now - _hiddenAt < HideWait) return false;
-        if (_idleAt < _begin && now - _begin < _delay + IdleWait) return false;   // AutoCAD has not been idle since the step was shown
-        Shoot(i, s);
-        ShowReplay();
-        _ready = true;
-        return true;
+        // a dialog is pictured by DialogReady; the answers given after the dialog before it (when this is the command's next dialog) are pictured first
+        if (s.Kind == "dialog") return i == 0 || AfterDialog(i - 1, last: false, now);
+        s = _before[i];
+        return Gate(_stepGate, i, now,
+            start: () =>
+            {
+                _zoom = null;
+                if (s.Kind == "ribbon") Replayer.ActivateTab(s.Tab);   // the button must show
+                if (s.Kind == "mark") ZoomExtents();   // the checkpoint picture shows the whole drawing (the view only; the checkpoint compares objects)
+            },
+            wait: () => _zoom is { Pending: true },   // SDI: the ZOOM is typed a moment after it was sent; the idle check would not see it yet
+            shoot: () => Shoot(_m[i], s));
     }
 
     /// <summary>ZOOM Extents in the active drawing, typed as a command: AutoCAD is quiescent here (the step has settled), and the step's delay
@@ -148,16 +206,17 @@ sealed class TdocCapture : IDisposable
         catch (Exception ex) { Log.Error("tdoc zoom extents", ex); }
     }
 
-    void Shoot(int i, Step s)
+    /// <summary><paramref name="i"/>: the step's place in the document.</summary>
+    void Shoot(int i, Step s, bool continuation = false)
     {
-        if (s.Kind == "palette") { ShootPalette(i, s); return; }
+        if (s.Kind == "palette" && !continuation) { ShootPalette(i, s); return; }
         var w = ShotService.CaptureWindow(_main, workArea: true);
         if (w == null) { Log.Info($"tdoc: no picture of step {i + 1} (AutoCAD's window is hidden or minimized)"); return; }
         var targets = new List<(string Text, ScreenRect? Rect)>();
         ScreenRect? arrowAt = null;
-        if (_arrows && s.Kind == "ribbon" && !string.IsNullOrEmpty(s.ItemId)) arrowAt = TdocTargets.RibbonItemRect(s.ItemId)?.Rect;
+        if (_arrows && !continuation && s.Kind == "ribbon" && !string.IsNullOrEmpty(s.ItemId)) arrowAt = TdocTargets.RibbonItemRect(s.ItemId)?.Rect;
         if (_annotate)
-            foreach (var p in TdocPlan.StepCallouts(s))
+            foreach (var p in TdocPlan.StepCallouts(s, continuation))
             {
                 if (p.Role == CalloutRole.RibbonItem)
                 {
@@ -183,7 +242,7 @@ sealed class TdocCapture : IDisposable
                 var boxes = PaletteFill.TdocBoxes(s);
                 foreach (var b in boxes) if (_annotate) targets.Add((b.Text, TdocTargets.Of(b)));
                 // the button the step presses, found the way the replay finds it (a WPF button, a button taken by position too); a step without a button, the first control it fills; a button that was not found gets no arrow
-                if (_arrows) arrowAt = !string.IsNullOrEmpty(s.Button) ? PaletteFill.TdocButtonRect(s) : boxes.Count > 0 ? TdocTargets.Of(boxes[0]) : null;
+                if (_arrows) arrowAt = !string.IsNullOrEmpty(s.Button) || Retrace.Core.PaletteClickKinds.IsIntermediate(s.ClickKind) ? PaletteFill.TdocButtonRect(s) : boxes.Count > 0 ? TdocTargets.Of(boxes[0]) : null;
             }
             Save(i, pic, r.Left, r.Top, targets, TdocPlan.Caption(s), arrowAt);
             return;
@@ -227,16 +286,30 @@ sealed class TdocCapture : IDisposable
         if (w != null)
         {
             var targets = new List<(string Text, ScreenRect? Rect)>();
+            // rectangles that were read (UI Automation, WPF, a toolbar button) move with the dialog: by how far it is from where it was when each one was read (a box has its own place, a button pressed
+            // earlier was read before this gate's move; a shot made after the move was read in the new place already), not by the move this gate made
+            var dlgNow = TdocTargets.Of(shot.Dialog);
+            ScreenRect? Rect(DialogBox b)
+            {
+                var was = b.At ?? shot.DialogAt;
+                return was is { } w0 && dlgNow is { } n0 ? TdocTargets.Of(b, n0.Left - w0.Left, n0.Top - w0.Top) : TdocTargets.Of(b, _dx, _dy);
+            }
             if (_annotate)
             {
-                foreach (var b in shot.Filled) targets.Add((b.Text, TdocTargets.Of(b, _dx, _dy)));
-                if (shot.Close != null) targets.Add((shot.Close.Text, TdocTargets.Of(shot.Close, _dx, _dy)));
+                foreach (var b in shot.Filled) targets.Add((b.Text, Rect(b)));
+                if (shot.Close != null) targets.Add((shot.Close.Text, Rect(shot.Close)));
             }
-            // the button that closes the dialog, else the last field it fills
-            ScreenRect? arrowAt = !_arrows ? null : shot.Close != null ? TdocTargets.Of(shot.Close, _dx, _dy) : shot.Filled.Count > 0 ? TdocTargets.Of(shot.Filled[^1], _dx, _dy) : null;
-            Save(i, w.Value.Pic, w.Value.Left, w.Value.Top, targets, TdocPlan.Caption(_steps[i]), arrowAt);
+            // the button that closes the dialog (no arrow when it was not found: never a guess), else the last field it fills; a rectangle that is not a control of the dialog (the dialog itself, its title bar) gets none
+            ScreenRect? arrowAt = null;
+            if (_arrows)
+            {
+                var pick = shot.Close != null ? Rect(shot.Close) : shot.Filled.Count > 0 ? Rect(shot.Filled[^1]) : null;
+                var client = TdocTargets.ClientOf(shot.Dialog);
+                arrowAt = pick is { } pr && client is { } cr && TdocGeometry.IsControlOf(pr.Left, pr.Top, pr.Right, pr.Bottom, cr.Left, cr.Top, cr.Right, cr.Bottom) ? pick : null;
+            }
+            Save(_m[i], w.Value.Pic, w.Value.Left, w.Value.Top, targets, TdocPlan.Caption(_steps[i]), arrowAt);
             // the instruction names the button as it reads ("Click OK." for a LISP alert, whose only button has Cancel's id)
-            if (shot.Close != null && i < Test.Steps.Count && Test.Steps[i].Instructions is { Count: > 0 } ins)
+            if (shot.Close != null && Test.Steps[_m[i]].Instructions is { Count: > 0 } ins)
                 ins[^1] = Rx.Replace(ins[^1], @"click (OK|Cancel)\.$", m => (char.IsUpper(m.Value[0]) ? "Click " : "click ") + shot.Close.Text + ".", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         }
         else Log.Info($"tdoc: no picture of the dialog of step {i + 1}");
@@ -252,9 +325,9 @@ sealed class TdocCapture : IDisposable
     {
         try
         {
-            if (s.Kind != "mark" || i < 0 || i >= Test.Steps.Count || result.Checkpoints.Count == 0) return;
+            if (s.Kind != "mark" || i < 0 || i >= _m.Length || result.Checkpoints.Count == 0) return;
             var cp = result.Checkpoints[^1];
-            Test.Steps[i].Checkpoint = new TrainingCheckpoint { Index = cp.Index, Note = cp.Note, Pass = cp.Pass, Differences = [.. cp.Differences] };
+            Test.Steps[_m[i]].Checkpoint = new TrainingCheckpoint { Index = cp.Index, Note = cp.Note, Pass = cp.Pass, Differences = [.. cp.Differences] };
         }
         catch (Exception ex) { Log.Error("tdoc checkpoint", ex); }
     }

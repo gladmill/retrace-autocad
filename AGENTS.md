@@ -153,7 +153,7 @@ The replay tells it every command it sends (`Replayer.NoteSent`: `RunStep` befor
 ### Tdoc hooks in the Replayer
 
 A Tdoc run (`AutoCad/TdocRun.cs`) is the RETRACERUN path with a `TdocCapture` handed to `Replayer.Start`. Every hook is a no-op while that field is null, so a plain RETRACERUN / RETRACEREPLAY behaves as before; keep it so.
-`Replayer`: `BeforeStep` (a gate in `Tick`, before the step runs), `AfterStep` (a checkpoint's result), `DialogReady` (the `DialogAutoFiller.BeforeClose` gate: the picture of the filled dialog is taken before OK is pressed; the UI Automation fill stops before the click when it is set) and the `finished` callback at the end of `Finish`.
+`Replayer`: `BeforeStep` (a gate in `Tick`, before the step runs), `AfterStep` (a checkpoint's result), `AfterCommand` (a gate at the top of the tick once the replay has settled after a command's last dialog: the picture of the step of the prompts given after the dialogs, `TdocSplit`) and `AfterDialog` (the same, between two dialogs of one command, called from `Replayer.TickDialog` when the next dialog step is already open, which skips `BeforeStep`; from `BeforeStep` of the next dialog step otherwise), `AnswersTyped` (the replay typed those prompts; a step whose prompts never were is dropped when the test ends), `DialogReady` (the `DialogAutoFiller.BeforeClose` gate: the picture of the filled dialog is taken before OK is pressed; the UI Automation fill stops before the click when it is set) and the `finished` callback at the end of `Finish`.
 Gates return false until ready and are asked again on the next 200 ms tick; nothing blocks the UI thread, and UI Automation runs on a pool thread only. See [docs/tdoc.md](docs/tdoc.md).
 
 ### Status board hooks

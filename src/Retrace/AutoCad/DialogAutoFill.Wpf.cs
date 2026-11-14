@@ -21,7 +21,7 @@ sealed partial class DialogAutoFiller
     /// <summary>Why a queued press could not be done (set from the dispatcher, on the UI thread); <see cref="TickCore"/> gives up with it, in any phase.</summary>
     string? _pressFailure;
     /// <summary>Where the buttons pressed on the way were, for the boxes of a Tdoc picture.</summary>
-    readonly List<(ScreenRect Rect, string Label)> _pressedWpf = new();
+    readonly List<(ScreenRect Rect, string Label, ScreenRect? DialogAt)> _pressedWpf = new();
 
     /// <summary>The window is a WPF window and the recording is done in process (<see cref="WpfPresses.ReplayInProcess"/>). A message box is not.</summary>
     bool UsesWpf => _dlg != IntPtr.Zero && (_wpf ??= _mode != AutoMode.MessageOk && WpfPresses.ReplayInProcess(_source, HasClicks) && WpfDialogs.IsWindow(_dlg)) == true;
@@ -94,7 +94,7 @@ sealed partial class DialogAutoFiller
         }
         var button = scan.Buttons[at].Button;
         if (BeforeClose != null && IsClosingClick && !BeforeClose(ShotOfWpf(scan, true, scan.Buttons[at].Text, button))) { State = Phase.Verify; return; }
-        if (WpfDialogs.RectOf(button) is { } rect) _pressedWpf.Add((rect, seg.Button!));
+        if (WpfDialogs.RectOf(button) is { } rect) _pressedWpf.Add((rect, seg.Button!, TdocTargets.Of(_dlg)));
         WpfDialogs.PressLater(button, seg.Button!, StillWanted, why => _pressFailure ??= why);
         NoteSegment(scan);
         Cur.Pressed = true;
@@ -148,9 +148,9 @@ sealed partial class DialogAutoFiller
             if (map[i] >= 0 && results[i].Status == FieldFillResult.Applied && !FillMatcher.IsNoOp(values[i]) && WpfDialogs.RectOf(scan.Elements[map[i]]) is { } r)
                 filled.Add(new DialogBox(IntPtr.Zero, r, TdocPlan.FieldCallout(values[i])));
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (rect, label) in _pressedWpf)
-            if (seen.Add(label)) filled.Add(new DialogBox(IntPtr.Zero, rect, "Click " + label));
+        foreach (var (rect, label, dlgAt) in _pressedWpf)
+            if (seen.Add(label)) filled.Add(new DialogBox(IntPtr.Zero, rect, "Click " + label, dlgAt));
         var box = WpfDialogs.RectOf(close) is { } cr ? new DialogBox(IntPtr.Zero, cr, IsClosingClick ? TdocPlan.CloseCallout(ok, Seg.Button ?? closeText) : TdocPlan.CloseCallout(ok, closeText)) : null;
-        return new DialogShot(_dlg, filled, box);
+        return new DialogShot(_dlg, filled, box, TdocTargets.Of(_dlg));
     }
 }

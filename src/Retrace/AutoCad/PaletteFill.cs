@@ -78,15 +78,23 @@ static class PaletteFill
     {
         try
         {
-            if (string.IsNullOrEmpty(s.Button) || s.Native != null) return null;
+            if (s.Native != null || (string.IsNullOrEmpty(s.Button) && !Retrace.Core.PaletteClickKinds.IsIntermediate(s.ClickKind))) return null;
             var page = FindPage(s);
             if (page == IntPtr.Zero) return null;
             var hidden = !IsWindowVisible(page);
+            // a tree item, an image, a list row or a control with no name: the control the replay clicks, found by the replay's own finder (never the push-button finder, which could land on an unrelated icon button)
+            if (Retrace.Core.PaletteClickKinds.IsIntermediate(s.ClickKind)) return PaletteClickFill.TdocRect(s, page, hidden);
             bool wpf = DialogReader.Scan(page, hidden, readTicks: false) is { Fields.Count: 0, Buttons.Count: 0 } && WpfPalette.Host(page) != IntPtr.Zero;
             return FindButtonTarget(s, page, hidden, wpf, allowPosition: true)?.Rect;
         }
         catch (Exception ex) { Log.Error("tdoc palette button", ex); return null; }
     }
+
+    /// <summary>A note for the result of the step being done (another class does part of a palette step).</summary>
+    internal static void AddNote(string note) => _note = note;
+
+    /// <summary>A problem found when a queued action ran: the replay stops with it.</summary>
+    internal static void FailLater(string why) => _pressFailure = why;
 
     /// <summary>A note the last palette step left (a button found by position, because its name changed), once; the replay adds it to the result's warnings.</summary>
     public static string? TakeNote() { var n = _note; _note = null; return n; }
@@ -118,6 +126,7 @@ static class PaletteFill
     /// <summary>Does the step; null when done (the button press may still be queued), else what stopped it (tried again, then a person).</summary>
     public static string? Run(Retrace.Core.Step s, FillRun run)
     {
+        if (RealMouse.Pending) return "waiting for the click before it to be sent";   // palette steps keep their order
         var page = FindPage(s);
         if (page == IntPtr.Zero) return $"the {s.DialogTitle} palette is not open";
         var hidden = !IsWindowVisible(page);
@@ -140,6 +149,12 @@ static class PaletteFill
                 case MenuReplay.Status.Failed: var why = run.Menu.Message; run.Menu = null; _activeMenu = null; _menuFinal = true; return why;   // its own reason, not retried
                 default: return run.Menu.Message ?? "waiting for the context menu";
             }
+        }
+        // an intermediate click is a click whatever its name (an older recording may hold an empty one): it is never skipped as "no button"
+        if (Retrace.Core.PaletteClickKinds.IsIntermediate(s.ClickKind))
+        {
+            if (wpf) return $"a {s.ClickKind} click needs a WinForms palette";
+            return PaletteClickFill.Run(s, page, hidden, win32);
         }
         if (string.IsNullOrEmpty(s.Button)) return null;
         if (s.ClickKind == Retrace.Core.DialogClickKinds.DoubleClick)
@@ -243,7 +258,7 @@ static class PaletteFill
             for (int i = 0; i < values.Count; i++)
                 if (map[i] >= 0 && !FillMatcher.IsNoOp(values[i]) && scan.Handles[map[i]].Count > 0)
                     boxes.Add(new DialogBox(scan.Handles[map[i]][0], default, TdocPlan.FieldCallout(values[i])));
-            if (!string.IsNullOrEmpty(s.Button))
+            if (!string.IsNullOrEmpty(s.Button) && !Retrace.Core.PaletteClickKinds.IsIntermediate(s.ClickKind))
             {
                 if (DialogReader.FindButton(scan, s.Button, s.ButtonIndex, s.ButtonFrom) is var at and >= 0) boxes.Add(new DialogBox(scan.Buttons[at].H, default, "Click " + s.Button));
             }

@@ -7,7 +7,7 @@ tells you pass or fail. It can also read your customization folder (`.cuix`, C#,
 write Markdown docs: ribbons, commands, dialogs, a source map, and an editable user guide with how-tos built from your recordings.
 And it maps each ribbon button to the LISP, C++, C# or VB.NET code it runs.
 
-Status: pre-1.0 (0.6.8). AutoCAD 2026 (R25.1), Windows x64. Written against the `AutoCAD.NET` 25.1.0 packages.
+Status: pre-1.0 (0.6.9). AutoCAD 2026 (R25.1), Windows x64. Written against the `AutoCAD.NET` 25.1.0 packages.
 Verified in AutoCAD only in part: see [Limitations](#limitations).
 
 ## Install
@@ -81,7 +81,7 @@ To practise, load `samples/Retrace.Samples` (see its README): a small plugin wit
 
 ## Commands
 
-All are on the Retrace ribbon tab (panels Record, Test, Guide, Open, Tools) except where noted. The ribbon also has a Prompts toggle (Guide panel) that is no command: see [Prompts toggle](#prompts-toggle).
+All are on the Retrace ribbon tab (panels Record, Test, Guide, Open, Tools) except where noted. The ribbon also has a Prompts toggle (Guide panel) that is no command: see [Prompts toggle](#prompts-toggle). Next to it is a FILEDIA indicator, also no command: see [FILEDIA indicator](#filedia-indicator).
 
 | Command | What it does |
 |---|---|
@@ -192,6 +192,10 @@ Retrace does not need AcadStatus, and AcadStatus does not need Retrace. To use b
 3. Start AutoCAD. The pane appears at the right end of the status bar a second later.
 
 Details, the pane's colours, what it cannot see and the file format: [acad-status/README.md](acad-status/README.md).
+
+## FILEDIA indicator
+
+The **FILEDIA** button (Guide panel, right of Prompts) shows the value of the AutoCAD system variable `FILEDIA`: "FILEDIA: 1" normally, and "FILEDIA: 0 (warning sign) file dialogs off" with a warning icon when it is 0. With FILEDIA 0 Retrace never opens a file picker: Run test, Open test and the other file questions are asked on the command line (for example `Recording ('last' = newest):`). The button updates by itself when FILEDIA changes however it changes (typed, a script, LISP, another add-in), and when the ribbon is rebuilt. A click sets FILEDIA to 1 when it is 0 and to 0 otherwise, by setting the system variable directly (no command is typed, so text you have typed on the command line is untouched and a recording gets no step; FILEDIA is a profile setting, so `U` does not undo it). While a command is running, or when FILEDIA cannot be read, the click does nothing and says so on the command line. The tooltip says the same. To fix it by hand, type `FILEDIA`, then `1`.
 
 ## Prompts toggle
 

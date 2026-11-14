@@ -34,6 +34,7 @@ sealed class PaletteWatch
         public long LastReadMs;
         public ShotService.Picture? Picture;   // the palette while open, kept fresh as the user works in it
         public List<DialogField>? PictureOf;   // the values it shows
+        public readonly List<PaletteClickInfo> Absorb = new();   // clicks written since the last flush whose own change of a field is part of the click, not a value
     }
 
     Watched? _cur;
@@ -50,6 +51,9 @@ sealed class PaletteWatch
 
     /// <summary>The double-click the last <see cref="OnInput"/> saw, or null.</summary>
     public DoubleClick? Double { get; private set; }
+
+    /// <summary>The click on a tree item (or its +/- button), an image, a list view item or an unnamed control the last <see cref="OnInput"/> saw, or null. The button of the result is its name.</summary>
+    public PaletteClickInfo? Intermediate { get; private set; }
 
     public bool Enabled { get; set; }
     /// <summary>Keep close-up pictures of the palette (setting screenshots).</summary>
@@ -101,7 +105,7 @@ sealed class PaletteWatch
     /// of the palette's buttons with that text it was (1 = the first or only one). <paramref name="lParam"/> holds the click point.</summary>
     public (Values? Changed, Spot? ClickedIn, string? Button, int Index, ShotService.Picture? Picture) OnInput(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam, long nowMs)
     {
-        Double = null;
+        Double = null; Intermediate = null;
         ButtonFrom = null; ButtonLegacyIndex = 0; ButtonNoTextCount = 0;
         ButtonNaming.Recorded? rec = null;
         if (!Enabled) return (null, null, null, 0, null);
@@ -121,10 +125,20 @@ sealed class PaletteWatch
             button = rec?.Name;
         }
         else if (message == WM_LBUTTONDBLCLK && TreeDoubleClick(hwnd, spot, lParam) is { } dbl) { Double = dbl.Info; button = dbl.Text; }
+        if (button == null && message is WM_LBUTTONDOWN or WM_LBUTTONDBLCLK && PaletteClickDetect.Detect(spot.Page, hwnd, message, lParam) is { } ic) { Intermediate = ic; button = ic.Button; rec = null; }
         // Space presses a focused WinForms button (Enter only does in a form with an AcceptButton, not in a palette)
         else if (message == WM_KEYDOWN && (long)wParam == 0x20 && (((long)lParam >> 30) & 1) == 0 && DialogReader.PushButtonText(hwnd) != null && DialogReader.RecordButton(spot.Page, hwnd) is { } kb) { rec = kb; button = kb.Name; }
         if (button == null) return (left, null, null, 0, null);
         if (Double != null) return (left ?? Flush(nowMs, drop: false), spot, button, 1, null);   // the tree's own selection came with the first click: its values go with this step
+        if (Intermediate is { } clicked)
+        {
+            // the values so far go first; the field the click itself changes (the selected item) belongs to the click
+            TakePicture(_cur!);
+            ButtonFrom = clicked.From; ButtonLegacyIndex = clicked.LegacyIndex; ButtonNoTextCount = clicked.NoTextCount;
+            var flushed = left ?? Flush(nowMs, drop: false);
+            if (clicked.AbsorbKey != null) _cur!.Absorb.Add(clicked);
+            return (flushed, spot, button, clicked.Index, _cur!.Picture);
+        }
         // read now, before the button handles the click: these are the values it acts on
         var index = rec?.Index ?? 1;
         ButtonFrom = rec?.From; ButtonLegacyIndex = rec?.LegacyIndex ?? 0; ButtonNoTextCount = rec?.NoTextCount ?? 0;
@@ -172,6 +186,11 @@ sealed class PaletteWatch
         if (w == null) return null;
         Read(w, nowMs);
         var changes = w.Tracker.Changes();
+        if (w.Absorb.Count > 0)
+        {
+            changes = changes.Where(c => !w.Absorb.Any(a => c.Key == a.AbsorbKey && c.Kind == a.AbsorbKind && (a.AbsorbKind == "tree" ? TreePath.Same(c.After, a.AbsorbValue) : c.After == a.AbsorbValue))).ToList();
+            w.Absorb.Clear();
+        }
         var result = changes.Count > 0 ? new Values(w.Where, w.Source, changes, w.Tracker.ReadCount, w.Picture) : null;
         if (drop) _cur = null;
         else { w.Tracker = new FieldTracker(); w.Tracker.Observe(w.Last); }

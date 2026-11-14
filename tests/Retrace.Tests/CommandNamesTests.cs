@@ -76,8 +76,8 @@ public class CommandNamesTests
         Assert.Equal("SAMPLES_TAB", samples.Id);
         Assert.Equal("Retrace Samples", samples.Title);
         Assert.Equal(new[] { "Draw", "Dialogs" }, samples.Panels.Select(p => p.Title));
-        Assert.Equal(new[] { "DRAWLINE", "DRAWCIRCLE", "DRAWRECT", "DRAWLABEL", "DRAWGRID", "CHAINADD", "SCRIPT", "DRAGADD", "HIDDENADD", "SLOWADD" }, Buttons(samples).Select(b => b.Command));
-        Assert.Equal(new[] { "Line", "Circle", "Rectangle", "Label", "Grid...", "Chain...", "Script...", "Drag place...", "Hidden modal...", "Slow dialog..." }, Buttons(samples).Select(b => b.Text));
+        Assert.Equal(new[] { "DRAWLINE", "DRAWCIRCLE", "DRAWRECT", "DRAWLABEL", "DRAWGRID", "DRAWINSERT", "CHAINADD", "SCRIPT", "DRAGADD", "HIDDENADD", "SLOWADD" }, Buttons(samples).Select(b => b.Command));
+        Assert.Equal(new[] { "Line", "Circle", "Rectangle", "Label", "Grid...", "Insert part...", "Chain...", "Script...", "Drag place...", "Hidden modal...", "Slow dialog..." }, Buttons(samples).Select(b => b.Text));
     }
 
     [Theory]
@@ -115,7 +115,7 @@ public class CommandNamesTests
         var bad = new List<string>();
         foreach (var f in Directory.GetFiles(LayerRulesTests.SourceRoot(), "*.cs", SearchOption.AllDirectories))
             foreach (Match m in Regex.Matches(File.ReadAllText(f), @"\bRETRACE[A-Z_]*\b"))
-                if (!known.Contains(m.Value) && !m.Value.StartsWith("RETRACE_FOLDER", StringComparison.Ordinal) && m.Value != "RETRACE_PROMPTS" && m.Value != "RETRACEFOLDER_TESTS" && m.Value != "RETRACEFOLDER_CAPTURES" && m.Value != "RETRACEFOLDER_DOCS" && m.Value != "RETRACE")
+                if (!known.Contains(m.Value) && !m.Value.StartsWith("RETRACE_FOLDER", StringComparison.Ordinal) && m.Value != "RETRACE_PROMPTS" && m.Value != "RETRACE_FILEDIA" && m.Value != "RETRACEFOLDER_TESTS" && m.Value != "RETRACEFOLDER_CAPTURES" && m.Value != "RETRACEFOLDER_DOCS" && m.Value != "RETRACE")
                     bad.Add($"{Path.GetFileName(f)}: {m.Value}");
         Assert.Empty(bad.Distinct());
     }

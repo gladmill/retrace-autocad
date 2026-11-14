@@ -29,6 +29,8 @@ public sealed class Step
     public string ClickTree = "";
     public string ClickPath = "";
     public string ClickTreeLabel = "";
+    /// <summary>palette: what a click of kind listview / point holds beyond the tree fields (<see cref="PaletteHit"/>); null for the other kinds and older recordings.</summary>
+    public PaletteHit? Hit;
     /// <summary>palette: the context menu choice that ends the step (a `context_menu` event); <see cref="Button"/> then holds the menu path, so a command it starts is linked to the step.</summary>
     public MenuChoice? Menu;
     public string? Note;
@@ -621,7 +623,7 @@ public static class Plan
                     if (type == "palette_click")
                     {
                         palette!.Button = Str(e, "button");
-                        palette.ClickKind = DialogClickKinds.Of(Str(e, "kind")); palette.ClickTree = Str(e, "tree") ?? ""; palette.ClickPath = Str(e, "path") ?? ""; palette.ClickTreeLabel = Str(e, "treeLabel") ?? "";
+                        palette.ClickKind = PaletteClickKinds.Of(Str(e, "kind")); palette.ClickTree = Str(e, "tree") ?? ""; palette.ClickPath = Str(e, "path") ?? ""; palette.ClickTreeLabel = Str(e, "treeLabel") ?? ""; palette.Hit = PaletteHit.FromJson(e);
                         palette.ButtonIndex = e.TryGetProperty("index", out var bi) && bi.ValueKind == JsonValueKind.Number && bi.TryGetInt32(out var bn) ? bn : 1;
                         palette.ButtonFrom = ButtonNames.IsFallback(Str(e, "buttonFrom")) ? Str(e, "buttonFrom") : null;
                         palette.ButtonNoTextCount = e.TryGetProperty("noTextCount", out var nt) && nt.ValueKind == JsonValueKind.Number && nt.TryGetInt32(out var ntn) ? ntn : 0;
@@ -638,7 +640,7 @@ public static class Plan
                     }
                     var changes = palette.Values?.Count ?? 0;
                     palette.Title = $"Palette \"{name}\": " + (changes > 0 ? $"{changes} value(s)" : "") + (changes > 0 && palette.Button != null ? ", then " : "")
-                                    + (palette.Button != null ? (palette.ClickKind == DialogClickKinds.DoubleClick ? DialogClickKinds.Phrase(palette.ClickKind, palette.Button, palette.ClickPath, palette.ClickTreeLabel) : $"click {palette.Button}") : changes == 0 ? "no changes" : "");
+                                    + (palette.Button != null ? PaletteClickKinds.Phrase(palette.ClickKind, palette.Button, palette.ClickPath, palette.ClickTreeLabel, palette.ButtonIndex, palette.ButtonLegacyIndex, palette.Hit, x => x, x => x, capital: false) : changes == 0 ? "no changes" : "");
                     break;
                 }
                 case "mark":

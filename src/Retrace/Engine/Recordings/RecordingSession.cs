@@ -188,6 +188,10 @@ public sealed class RecordingStep
     public string ClickKind { get; set; } = Retrace.Core.DialogClickKinds.Click;
     public string ClickPath { get; set; } = "";
     public string ClickTreeLabel { get; set; } = "";
+    /// <summary>palette: `index` and `legacyIndex` of the click (an image's place), and what a list view / point click holds.</summary>
+    public int ClickIndex { get; set; } = 1;
+    public int ClickLegacyIndex { get; set; }
+    public Retrace.Core.PaletteHit? Hit { get; set; }
     public string? Tab { get; set; }
     /// <summary>The recorder's tab id ("ACAD.ID_TabHome"): tells apart tabs with the same title.</summary>
     public string? TabId { get; set; }
@@ -592,7 +596,7 @@ public static class RecordingReader
                     bool join = e.Type == "palette_click" && palette != null && s.Steps.Count > 0 && ReferenceEquals(s.Steps[^1], palette)
                                 && palette.Text == null && palette.DialogTitle == name && palette.Panel == set;
                     if (!join) { palette = new RecordingStep { Kind = "palette", T = e.T, N = e.N, DialogTitle = name, Panel = set }; s.Steps.Add(palette); }
-                    if (e.Type == "palette_click") { palette!.Text = e.Str("button"); palette.ClickKind = Retrace.Core.DialogClickKinds.Of(e.Str("kind")); palette.ClickPath = e.Str("path") ?? ""; palette.ClickTreeLabel = e.Str("treeLabel") ?? ""; break; }
+                    if (e.Type == "palette_click") { palette!.Text = e.Str("button"); palette.ClickKind = Retrace.Core.PaletteClickKinds.Of(e.Str("kind")); palette.Hit = Retrace.Core.PaletteHit.FromJson(e.Raw); palette.ClickIndex = e.Raw.TryGetProperty("index", out var cix) && cix.ValueKind == JsonValueKind.Number && cix.TryGetInt32(out var cin) ? cin : 1; palette.ClickLegacyIndex = e.Raw.TryGetProperty("legacyIndex", out var clx) && clx.ValueKind == JsonValueKind.Number && clx.TryGetInt32(out var cln) ? cln : 0; palette.ClickPath = e.Str("path") ?? ""; palette.ClickTreeLabel = e.Str("treeLabel") ?? ""; break; }
                     palette!.ValuesRead = e.Raw.TryGetProperty("read", out var prd) && prd.ValueKind == JsonValueKind.Number && prd.TryGetInt32(out var prn) ? prn : 0;
                     if (e.Raw.TryGetProperty("fields", out var pfs) && pfs.ValueKind == JsonValueKind.Array)
                         foreach (var f in pfs.EnumerateArray())

@@ -41,6 +41,23 @@ namespace Retrace.Samples
             set.AutoRollUp = autoHide;   // DRAWPALETTE after DRAWPALETTEHIDE pins it again
         }
 
+        private static PaletteSet? pickSet;
+
+        /// <summary>DRAWPICK: a palette set of its own with the single "Pick" page (<see cref="PickPage"/>: tree, images, list view, panel; every click draws), sized to show all of it.</summary>
+        [CommandMethod("DRAWPICK")]
+        public void ShowPick()
+        {
+            if (pickSet == null)
+            {
+                pickSet = new PaletteSet("Retrace Pick", new System.Guid("3b7e5a10-8c2d-4f6b-9a41-5d0e2c7f1a88"));
+                pickSet.Style = PaletteSetStyles.ShowCloseButton;
+                pickSet.MinimumSize = new System.Drawing.Size(260, 560);
+                pickSet.Size = new System.Drawing.Size(300, 600);
+                pickSet.Add("Pick", new PickPage());
+            }
+            pickSet.Visible = true;
+        }
+
         /// <summary>Draws in model space of the active drawing, from a palette button (outside any command).</summary>
         internal static void Draw(System.Func<Transaction, Database, Entity> make, string layer)
         {

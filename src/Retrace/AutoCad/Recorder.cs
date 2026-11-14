@@ -897,6 +897,17 @@ public sealed class Recorder
                 _lastPaletteT = w.ElapsedMs; _lastPaletteTick = _inputTick; _lastPaletteButton = button; _lastPaletteConsumed = false;
                 return;
             }
+            if (_pal.Intermediate is { } ic)
+            {
+                // a click on a tree item, a +/- button, an image, a list view item or a control with no name: one step of its own, after the values changed so far
+                var fields = new List<(string, object?)> { ("palette", at.Palette), ("set", at.Set), ("button", button) };
+                fields.AddRange(ic.ToFields());
+                int k = Emit("palette_click", CurDoc(), fields.ToArray());
+                if (message is 0x0201 or 0x0203) _shots.NoteClick(k, _downX, _downY);   // a double-click that opens a node: the point of its first button-down
+                if (picture != null) _shots.Write(k, "palette-closeup", picture, "palette");
+                _lastPaletteT = w.ElapsedMs; _lastPaletteTick = _inputTick; _lastPaletteButton = button; _lastPaletteConsumed = false;
+                return;
+            }
             var from = _pal.ButtonFrom;
             int? legacy = _pal.ButtonLegacyIndex > 0 ? _pal.ButtonLegacyIndex : null;
             int? noText = _pal.ButtonNoTextCount > 0 ? _pal.ButtonNoTextCount : null;

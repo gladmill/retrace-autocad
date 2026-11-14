@@ -306,7 +306,7 @@ static class DialogFill
                     if (map[i] >= 0 && !FillMatcher.IsNoOp(values[i]) && TdocTargets.Of(scan.Elements[map[i]]) is { } rect)
                         filled.Add(new DialogBox(IntPtr.Zero, rect, TdocPlan.FieldCallout(values[i])));
                 var close = TdocTargets.Of(el) is { } cr ? new DialogBox(IntPtr.Zero, cr, TdocPlan.CloseCallout(ok, buttons[b].Name)) : null;
-                return new(results, false, null) { Shot = new DialogShot(dialog, filled, close), Click = Press };
+                return new(results, false, null) { Shot = new DialogShot(dialog, filled, close, TdocTargets.Of(dialog)), Click = Press };
             }
             // Invoke may not return until the dialog is gone: never wait for it
             _ = Task.Run(Press);
