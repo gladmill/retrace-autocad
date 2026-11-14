@@ -39,8 +39,8 @@ public static class TdocPlan
 
     // ---- instructions -----------------------------------------------------------------------------------------------------
 
-    /// <summary>The sentences for the reader, in order.</summary>
-    public static List<string> Instructions(Step s)
+    /// <summary>The sentences for the reader, in order. <paramref name="all"/>: all the answers of the step when its <see cref="Step.Answers"/> are only the ones before a dialog (<see cref="TdocSplit"/>).</summary>
+    public static List<string> Instructions(Step s, IReadOnlyList<Answer>? all = null)
     {
         var list = new List<string>();
         switch (s.Kind)
@@ -49,16 +49,16 @@ public static class TdocPlan
             {
                 var label = RibbonLabel(s) ?? "the button";
                 list.Add(string.IsNullOrWhiteSpace(s.Tab) ? $"Click {label}." : $"Click {label} on the {s.Tab.Trim()} tab.");
-                list.AddRange(AnswerLines(s.Answers, s));
+                list.AddRange(AnswerLines(s.Answers, s, all));
                 break;
             }
             case "command":
                 list.Add($"Type {s.Command ?? "the command"} at the command line and press Enter.");
-                list.AddRange(AnswerLines(s.Answers, s));
+                list.AddRange(AnswerLines(s.Answers, s, all));
                 break;
             case "lisp":
                 list.Add($"Type {LispTyped(s)} at the command line and press Enter.");
-                list.AddRange(AnswerLines(s.Answers, s));
+                list.AddRange(AnswerLines(s.Answers, s, all));
                 break;
             case "dialog":
                 list.AddRange(DialogLines(s));
@@ -151,29 +151,31 @@ public static class TdocPlan
             yield break;
         }
         var changes = (s.Values ?? []).Select(v => (Tab: FillMatcher.TabOfChange(v), Line: DialogFieldsCore.Describe(v))).Where(x => x.Line != null).Select(x => (x.Tab, x.Line!.TrimEnd('.') + ".")).ToList();
-        var button = string.IsNullOrWhiteSpace(s.Button) ? null : s.Button.Trim();
+        var button = string.IsNullOrWhiteSpace(s.Button) ? (PaletteClickKinds.IsIntermediate(s.ClickKind) ? "(blank)" : null) : s.Button.Trim();   // a click with an empty name (an older recording) is still a click
         var press = s.Menu != null ? s.Menu.Wording(false, null, "the palette") + "." : $"Click {button}.";
         if (changes.Count == 0 && button == null) { yield return $"Look at the {name}."; yield break; }
-        if (changes.Count == 0) { yield return s.Menu != null ? $"In the {name}: {press}" : $"In the {name}, " + (s.ClickKind == DialogClickKinds.DoubleClick ? DialogClickKinds.DoubleClickWords(s.ClickPath, s.ClickTreeLabel, x => x, x => x, capital: false) : $"click {button}") + "."; yield break; }
+        if (changes.Count == 0) { yield return s.Menu != null ? $"In the {name}: {press}" : $"In the {name}, " + (s.ClickKind != DialogClickKinds.Click ? PaletteClickKinds.Phrase(s.ClickKind, button, s.ClickPath, s.ClickTreeLabel, s.ButtonIndex, s.ButtonLegacyIndex, s.Hit, x => x, x => x, capital: false) : $"click {button}") + "."; yield break; }
         yield return $"In the {name}:";
         var tabs = new TabLines();
         foreach (var (tab, text) in changes)
             foreach (var line in tabs.Add(tab, text)) yield return line;
-        if (button != null) yield return s.Menu != null ? press : s.ClickKind == DialogClickKinds.DoubleClick ? DialogClickKinds.DoubleClickWords(s.ClickPath, s.ClickTreeLabel, x => x, x => x) + "." : $"Click {button}.";
+        if (button != null) yield return s.Menu != null ? press : s.ClickKind != DialogClickKinds.Click ? PaletteClickKinds.Phrase(s.ClickKind, button, s.ClickPath, s.ClickTreeLabel, s.ButtonIndex, s.ButtonLegacyIndex, s.Hit, x => x, x => x, capital: true) + "." : $"Click {button}.";
     }
 
     // ---- answers at the command line ---------------------------------------------------------------------------------------
 
     /// <summary>"At the prompt 'Specify first point', type 10,10." for each recorded answer a person could give.</summary>
-    public static IEnumerable<string> AnswerLines(IEnumerable<Answer> answers, Step? step = null)
+    /// <param name="all">all the answers of the step when <paramref name="answers"/> are some of them (the part before or after a dialog): the SETVAR decision is made on the whole list</param>
+    public static IEnumerable<string> AnswerLines(IEnumerable<Answer> answers, Step? step = null, IReadOnlyList<Answer>? all = null)
     {
         bool first = true;
         var effective = SelectionReplay.Effective(answers.ToList());
+        var whole = all == null ? effective : SelectionReplay.Effective(all.ToList());
         foreach (var a in effective)
         {
             // SETVAR: the recording holds only the value prompt, which names the variable; a person is asked for the name first
             // (the same decision as the replay's, Plan.SetvarNameToType)
-            if (first && step != null && Plan.SetvarNameToType(step, effective) is { } sysvar) yield return $"At the prompt 'Enter variable name', type {sysvar}.";
+            if (first && step != null && Plan.SetvarNameToType(step, whole) is { } sysvar) yield return $"At the prompt 'Enter variable name', type {sysvar}.";
             first = false;
             var action = AnswerAction(a);
             if (action == null) continue;
@@ -229,12 +231,15 @@ public static class TdocPlan
     }
 
     /// <summary>The command line as the picture's box tells it: "Command line: type LINE, then 10,10, then 20,20". Null when the step types nothing.</summary>
-    public static string? CommandLineText(Step s)
+    public static string? CommandLineText(Step s, bool continuation = false)
     {
         const int Max = 6;
         var parts = new List<string>();
-        if (s.Kind == "command") parts.Add($"type {s.Command ?? "the command"}");
-        else if (s.Kind == "lisp") parts.Add($"type {LispTyped(s)}");
+        if (!continuation)   // the answers after a dialog: the command was typed before it
+        {
+            if (s.Kind == "command") parts.Add($"type {s.Command ?? "the command"}");
+            else if (s.Kind == "lisp") parts.Add($"type {LispTyped(s)}");
+        }
         foreach (var a in SelectionReplay.Effective(s.Answers))
             if (AnswerAction(a) is { } act) parts.Add(act.StartsWith("type ", StringComparison.Ordinal) && parts.Count > 0 ? act[5..] : act);
         if (parts.Count == 0) return null;
@@ -245,11 +250,11 @@ public static class TdocPlan
     // ---- legend lines --------------------------------------------------------------------------------------------------------
 
     /// <summary>The boxes a ribbon, command or LISP step would like on its picture, in the order they are numbered.</summary>
-    public static List<CalloutPlan> StepCallouts(Step s)
+    public static List<CalloutPlan> StepCallouts(Step s, bool continuation = false)
     {
         var plans = new List<CalloutPlan>();
-        if (s.Kind == "ribbon" && RibbonLabel(s) is { } label) plans.Add(new CalloutPlan(CalloutRole.RibbonItem, "Click " + label));
-        if (s.Kind is "ribbon" or "command" or "lisp" && CommandLineText(s) is { } cl) plans.Add(new CalloutPlan(CalloutRole.CommandLine, cl));
+        if (s.Kind == "ribbon" && !continuation && RibbonLabel(s) is { } label) plans.Add(new CalloutPlan(CalloutRole.RibbonItem, "Click " + label));
+        if (s.Kind is "ribbon" or "command" or "lisp" && CommandLineText(s, continuation) is { } cl) plans.Add(new CalloutPlan(CalloutRole.CommandLine, cl));
         return plans;
     }
 

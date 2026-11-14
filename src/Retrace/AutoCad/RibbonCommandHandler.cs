@@ -67,3 +67,38 @@ public sealed class PromptToggleHandler : System.Windows.Input.ICommand
         catch (System.Exception ex) { Log.Error("prompts toggle", ex); }
     }
 }
+
+/// <summary>The FILEDIA indicator click: sets FILEDIA to 0 or 1 with SetSystemVariable (a profile variable, no command: nothing typed on the command line is
+/// disturbed and a recording sees no step), unless a command runs. FILEDIA is not undone by U. The button is a toggle that flips itself on a click, so every path ends
+/// with <see cref="RibbonInstaller.RefreshFileDia"/>, which un-presses it.</summary>
+public sealed class FileDiaHandler : System.Windows.Input.ICommand
+{
+    public bool CanExecute(object? parameter) => true;
+
+    public event EventHandler? CanExecuteChanged { add { } remove { } }
+
+    public void Execute(object? parameter)
+    {
+        try
+        {
+            if (AcApp.DocumentManager.MdiActiveDocument == null)
+            {
+                Commands.Print("FILEDIA: no drawing is open. Nothing changed.");
+            }
+            else if (Ask.FileDia() is not { } now)
+            {
+                Commands.Print("FILEDIA: its value could not be read. Nothing changed.");
+            }
+            else if ((Ask.ActiveBits() ?? 0) != 0)
+            {
+                Commands.Print("FILEDIA: a command is running; finish or cancel it first. Nothing changed.");
+            }
+            else
+            {
+                AcApp.SetSystemVariable("FILEDIA", (short)RibbonFileDia.Flip(now));
+            }
+        }
+        catch (System.Exception ex) { Log.Error("filedia click", ex); }
+        RibbonInstaller.RefreshFileDia();
+    }
+}

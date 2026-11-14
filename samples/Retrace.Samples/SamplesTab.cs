@@ -101,6 +101,7 @@ namespace Retrace.Samples
         {
             var only = new RibbonRowPanel();
             only.Items.Add(Button("DRAWGRID", "Grid...", "Opens a dialog where you set rows, columns, spacing and layer, then draws a grid of points."));
+            only.Items.Add(Button("DRAWINSERT", "Insert part...", "Opens a dialog with a parts tree and the buttons Add and Quick add, then asks for an insertion point and a rotation angle."));
             only.Items.Add(ChainButton());
             only.Items.Add(ScriptButton());
             only.Items.Add(DragButton());

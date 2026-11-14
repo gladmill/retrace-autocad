@@ -112,6 +112,48 @@ static class WinFormsControls
         catch (Exception) { return null; }
     }
 
+    /// <summary>What a click on a WinForms control that is no field and no push button is: <c>Picture</c> (a PictureBox), <c>Clickable</c> (the control is made to be clicked: a type of the program's own with no child controls, or one whose Click /
+    /// MouseDown / MouseUp event has a handler; never a form's own client area) and its <c>Name</c>. Null when <paramref name="h"/> is no WinForms control.</summary>
+    public static (bool Picture, bool Clickable, string Name)? ClickKindOf(IntPtr h)
+    {
+        if (Control(h) is not { } c) return null;
+        try
+        {
+            var t = c.GetType();
+            var name = t.GetProperty("Name")?.GetValue(c) as string ?? "";
+            if (IsA(t, "System.Windows.Forms.PictureBox")) return (true, true, name);
+            if (t.GetProperty("Parent")?.GetValue(c) == null) return (false, false, name);   // the top of what the palette hosts: its blank area is not a control
+            if (HasClickHandler(c)) return (false, true, name);
+            bool own = t.Assembly.GetName().Name != "System.Windows.Forms" && t.GetProperty("Controls")?.GetValue(c) is System.Collections.ICollection { Count: 0 };
+            return (false, own, name);
+        }
+        catch (Exception) { return (false, false, ""); }
+    }
+
+    static List<object>? _clickKeys;
+    static PropertyInfo? _eventsProp;
+
+    static bool HasClickHandler(object c)
+    {
+        try
+        {
+            var ctl = Type.GetType("System.Windows.Forms.Control, System.Windows.Forms", false);
+            if (ctl == null) return false;
+            _eventsProp ??= ctl.GetProperty("Events", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            if (_clickKeys == null)
+            {
+                _clickKeys = new List<object>();
+                foreach (var f in ctl.GetFields(BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public))
+                    if (f.FieldType == typeof(object) && System.Text.RegularExpressions.Regex.IsMatch(f.Name, "(?i)^(s_|_)?(event)?(click|mouseclick|mousedown|mouseup)(event)?$") && f.GetValue(null) is { } key) _clickKeys.Add(key);
+            }
+            if (_eventsProp?.GetValue(c) is not { } list) return false;
+            var item = list.GetType().GetProperty("Item", new[] { typeof(object) });
+            foreach (var key in _clickKeys) if (item?.GetValue(list, new[] { key }) != null) return true;
+            return false;
+        }
+        catch (Exception) { return false; }
+    }
+
     /// <summary>The window of the AcceptButton of the WinForms form <paramref name="h"/> (the button Enter presses), or zero when <paramref name="h"/> is no form or has none.</summary>
     public static IntPtr AcceptButtonOf(IntPtr h)
     {

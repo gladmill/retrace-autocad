@@ -25,11 +25,14 @@ static class Ask
     public static IDisposable CommandLineOnly() { _commandLineOnly++; return new Scope(); }
     sealed class Scope : IDisposable { bool _done; public void Dispose() { if (!_done) { _done = true; _commandLineOnly--; } } }
 
-    /// <summary>FILEDIA is on (file dialogs allowed). An error counts as on.</summary>
-    public static bool FileDialogsOn()
+    /// <summary>The value of FILEDIA, or null when it cannot be read.</summary>
+    public static int? FileDia()
     {
-        try { return Convert.ToInt32(AcApp.GetSystemVariable("FILEDIA")) != 0; } catch (Exception) { return true; }
+        try { return Convert.ToInt32(AcApp.GetSystemVariable("FILEDIA")); } catch (Exception) { return null; }
     }
+
+    /// <summary>FILEDIA is on (file dialogs allowed). An error counts as on.</summary>
+    public static bool FileDialogsOn() => FileDia() != 0;
 
     /// <summary>The promptStyle setting, read again only when settings.json changed.</summary>
     internal static bool UiSetting()

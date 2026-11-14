@@ -299,6 +299,45 @@ static class MenuListView
         finally { Marshal.FreeHGlobal(rect); }
     }
 
+    /// <summary>The first-column texts of every row (at most <see cref="MaxItems"/>); null when the list is of another thread.</summary>
+    public static List<string>? AllTexts(IntPtr list)
+    {
+        try
+        {
+            if (!Native.OwnedByThisThread(list)) return null;
+            using var reader = new Texts(list);
+            return reader.All(Count(list));
+        }
+        catch (Exception ex) { Log.Error("list view texts", ex); return null; }
+    }
+
+    /// <summary>The view mode of a list view as recorded (`view`).</summary>
+    public static string ViewOf(IntPtr list) => PaletteClickKinds.ViewName((uint)DialogReader.GetWindowLong(list, -16));
+
+    /// <summary>Where a click on row <paramref name="index"/> goes, in screen coordinates: the middle of its icon in the icon views, else of its label; the row is scrolled into view first. Null when the list does not show it.</summary>
+    public static (int X, int Y)? RowClickPoint(IntPtr list, int index, bool scroll = true)
+    {
+        var rect = Marshal.AllocHGlobal(16);
+        try
+        {
+            if (scroll) Ask(list, LVM_ENSUREVISIBLE, (IntPtr)index, IntPtr.Zero);   // a replay scrolls the row into view; Tdoc only looks (no point for a row that is not in view)
+            bool icons = ViewOf(list) is "icon" or "smallicon";
+            foreach (var part in icons ? new[] { 1, 2, 0 } : new[] { 2, 0 })   // LVIR_ICON, LVIR_LABEL, LVIR_BOUNDS
+            {
+                Marshal.WriteInt32(rect, 0, part);
+                if (Ask(list, LVM_GETITEMRECT, (IntPtr)index, rect) == IntPtr.Zero) continue;
+                int l = Marshal.ReadInt32(rect, 0), t = Marshal.ReadInt32(rect, 4), r = Marshal.ReadInt32(rect, 8), b = Marshal.ReadInt32(rect, 12);
+                if (r - l < 2 || b - t < 2) continue;
+                var p = new POINT { X = (l + r) / 2, Y = (t + b) / 2 };
+                if (!scroll && (!GetClientRect(list, out var cr) || p.X < 0 || p.Y < 0 || p.X >= cr.Width || p.Y >= cr.Height)) return null;
+                ClientToScreen(list, ref p);
+                return (p.X, p.Y);
+            }
+            return null;
+        }
+        finally { Marshal.FreeHGlobal(rect); }
+    }
+
     /// <summary>The row texts of a list, read once and kept across the ticks of one replay step; read again when the number of rows changed.</summary>
     public sealed class TextCache
     {

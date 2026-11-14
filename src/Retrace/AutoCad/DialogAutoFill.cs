@@ -66,7 +66,7 @@ sealed partial class DialogAutoFiller
     DialogFill.UiaOutcome? _hold;
     DialogAutoFiller? _child;
     bool _uia;
-    readonly List<(IntPtr Button, string Label, ScreenRect? Box)> _pressed = new();
+    readonly List<(IntPtr Button, string Label, ScreenRect? Box, ScreenRect? DialogAt)> _pressed = new();
     /// <summary>The check button a posted command was for (toolbar, command id, style, state before): it must end as a click leaves it (<see cref="ToolbarPress.CheckProblem"/>), else a person finishes.</summary>
     (IntPtr Toolbar, int Id, int Style, bool Before)? _toolbarCheck;
     string _pressState = "";   // the field values and static texts when the button was pressed: a retry needs them unchanged
@@ -363,7 +363,7 @@ sealed partial class DialogAutoFiller
         else if (!DialogFill.PostPress(target, seg.OnDown, out var pressWhy)) { GiveUp($"could not press {seg.Button}" + (pressWhy != null ? $": {pressWhy}" : "")); return; }
         Cur.Pressed = true;
         _toolbarCheck = seg.IsToolbar && ToolbarPress.IsCheck(toolbar.Style) ? (target, toolbar.Id, toolbar.Style, toolbar.Checked) : null;   // a check button: its state is looked at once the command has run
-        _pressed.Add((target, seg.Button!, toolbarBox));
+        _pressed.Add((target, seg.Button!, toolbarBox, TdocTargets.Of(_dlg)));
         _pressedAt = now; _nestedUsed = 0; _lastNested = IntPtr.Zero; _mouseTried = seg.OnDown || seg.IsDoubleClick || seg.IsToolbar || !DialogFill.IsWinForms(target); _pressState = PressState(scan);
         State = Phase.Pressed;
     }
@@ -502,11 +502,12 @@ sealed partial class DialogAutoFiller
                 tabBoxes.Add(new DialogBox(IntPtr.Zero, new ScreenRect(tr.L, tr.T, tr.R, tr.B), "Click the " + text + " tab"));
         filled.InsertRange(0, tabBoxes);
         var seenLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (h, label, box) in _pressed)
-            if (Native.Exists(h) && seenLabels.Add(label)) filled.Add(box is { } bx ? new DialogBox(IntPtr.Zero, bx, "Click " + label) : new DialogBox(h, default, "Click " + label));   // a toolbar button: its own rectangle, not the whole toolbar
-        if (closingClick is { } cc) return new DialogShot(_dlg, filled, cc.Box is { } cb ? new DialogBox(IntPtr.Zero, cb, TdocPlan.CloseCallout(ok, cc.Label)) : new DialogBox(cc.Button, default, TdocPlan.CloseCallout(ok, cc.Label)));
+        foreach (var (h, label, box, dlgAt) in _pressed)
+            if (Native.Exists(h) && seenLabels.Add(label)) filled.Add(box is { } bx ? new DialogBox(IntPtr.Zero, bx, "Click " + label, dlgAt) : new DialogBox(h, default, "Click " + label));   // a toolbar button: its own rectangle, not the whole toolbar
+        var at = TdocTargets.Of(_dlg);
+        if (closingClick is { } cc) return new DialogShot(_dlg, filled, cc.Box is { } cb ? new DialogBox(IntPtr.Zero, cb, TdocPlan.CloseCallout(ok, cc.Label)) : new DialogBox(cc.Button, default, TdocPlan.CloseCallout(ok, cc.Label)), at);
         int b = FillMatcher.PickButton(scan.Buttons.Select(x => (x.Id, x.Text)).ToList(), ok);
-        return new DialogShot(_dlg, filled, b < 0 ? null : new DialogBox(scan.Buttons[b].H, default, TdocPlan.CloseCallout(ok, scan.Buttons[b].Text)));
+        return new DialogShot(_dlg, filled, b < 0 ? null : new DialogBox(scan.Buttons[b].H, default, TdocPlan.CloseCallout(ok, scan.Buttons[b].Text)), at);
     }
 
     /// <summary>What the replay did, segment by segment, for the replay's result file. <paramref name="personFinished"/>: the replay gave up and a person finished the step by hand,

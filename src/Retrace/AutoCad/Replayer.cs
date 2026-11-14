@@ -72,6 +72,7 @@ sealed class Replayer
     PaletteReveal.TabSession? _tabSession;
     readonly HashSet<(string?, string?)> _tabFailed = new();   // (set, palette) whose tab the replay could not bring to the front: later steps drive it hidden at once
     DateTime _cursorBackAt = DateTime.MaxValue;
+    bool _cursorBackAfterClick;   // a queued real click is still to be sent when its palette step ends: the cursor goes back after it
     PaletteReveal.POINT? _cursorHome, _cursorSet;   // where the mouse was before; where Retrace last put it
     bool _paletteCommandStarted;
     int _modalDepth;
@@ -210,6 +211,15 @@ sealed class Replayer
     {
         Log.Safe("click arrows", () => ClickArrows.Begin(RetraceSettings.Load().ShowClickArrows));
         ButtonNaming.NewSession();
+        RealMouse.Reset();
+        RealMouse.AvoidHook = (l, t, r, b) => _win.Avoid(l, t, r, b);
+        RealMouse.CursorHook = (x, y) =>
+        {
+            if (_cursorHome == null && PaletteReveal.GetCursorPos(out var home)) _cursorHome = home;
+            MoveCursor(new PaletteReveal.POINT { X = x, Y = y });
+            // the step that queued this click was the last one in its palette: the mouse goes back once the click has been sent (it was not sent yet when the step ended)
+            if (_cursorBackAfterClick) { _cursorBackAfterClick = false; _cursorBackAt = DateTime.Now.AddMilliseconds(900); }
+        };
         if (_cfg.BasicCheck) _expectedEnd = BasicCheckRules.ExpectedFrom(events ?? Array.Empty<System.Text.Json.JsonElement>());
         PaletteFill.Reset();   // no menu state of an earlier replay
         if (_sdi && SdiGuard.IsOwnTestDrawing(_doc.Name)) { _afterOpen = true; _quietSince = DateTime.MinValue; }   // a drawing just opened is waited for until it has been quiet for a second
@@ -530,6 +540,7 @@ sealed class Replayer
     void Finish(bool completed, bool errored, string message, bool needsPerson = false)
     {
         PaletteFill.Abandon();   // never leave a context menu open when the replay ends
+        RealMouse.Reset(); RealMouse.AvoidHook = null; RealMouse.CursorHook = null; _cursorBackAfterClick = false;
         ClickArrows.End();
         _fill?.Abandon();
         if (!_running) return;
@@ -674,6 +685,7 @@ sealed class Replayer
 
     bool Settled()
     {
+        if (RealMouse.Pending) return false;   // a palette click still waiting out the double-click spacing: no step starts and the replay does not end before it was sent
         _sends.RemoveAll(x => !x.Pending);
         if (_sends.Count > 0) return false;   // SDI: text this replay typed is not delivered yet (_pendingStart stays armed)
         if (_modalDepth > 0 && !ModalWithoutWindow()) return false;   // a command's hidden modal state is not a dialog: its command still running keeps the step from starting
@@ -792,6 +804,7 @@ sealed class Replayer
         if (_unknownWaiting) return;   // AutoCAD called a command the replay sent unknown; it may still start (CheckUnknown decides)
         if (!Settled()) return;
         RestoreView();   // the step is done: the person's view comes back
+        if (_tdoc != null && !_tdoc.AfterCommand(_i, DateTime.Now)) return;   // Tdoc: a command's last answers (after its dialog) have run: their picture
         if (_i >= _steps.Count) { Finish(true, false, "finished"); return; }
 
         if (_netSkip.Remove(_i))
@@ -894,6 +907,8 @@ sealed class Replayer
     /// <summary>Interactive dialog pause: see DialogWait. Runs instead of the normal step logic while a dialog step is pending.</summary>
     void TickDialog()
     {
+        // Tdoc: the dialog before this one (of the same command) is done and its prompts typed: their picture comes before this dialog is dealt with (a dialog that is open already skips BeforeStep)
+        if (_tdoc != null && IsDialogStep(_i) && IsDialogStep(_i - 1) && !_tdoc.AfterDialog(_i - 1, last: false, DateTime.Now)) return;
         var d = _dialog;
         d.Tick(DateTime.Now);
         var step = _steps[Math.Min(_i, _steps.Count - 1)];
@@ -1007,6 +1022,7 @@ sealed class Replayer
             if (!string.IsNullOrEmpty(_doc.CommandInProgress))
             {
                 SendTracked(_deferred);
+                _tdoc?.AnswersTyped(_i);   // Tdoc: the answers given after the dialog have been typed (their step is pictured)
                 _notBefore = DateTime.Now.AddMilliseconds(400);
             }
             else d.FailAfterClose("the command ended when the dialog closed (was it cancelled?)");
@@ -1270,8 +1286,10 @@ sealed class Replayer
         // the next step in the same palette keeps it open; otherwise the mouse goes back once the press has had time to show its result
         var next = _i + 1 < _steps.Count ? _steps[_i + 1] : null;
         var cur = _steps[_i];
-        if (_cursorHome != null && !(next is { Kind: "palette" } && next.DialogTitle == cur.DialogTitle && next.Panel == cur.Panel))
-            _cursorBackAt = DateTime.Now.AddMilliseconds(900);
+        if ((_cursorHome != null || RealMouse.Pending) && !(next is { Kind: "palette" } && next.DialogTitle == cur.DialogTitle && next.Panel == cur.Panel))
+        {
+            if (RealMouse.Pending) _cursorBackAfterClick = true; else _cursorBackAt = DateTime.Now.AddMilliseconds(900);
+        }
         _revealDone = false; _hover.Reset(); _tabClick.Reset(); _tabSession = null;
         _i++;
         _shown = false;

@@ -65,6 +65,10 @@ The click can run several things; each is a target. Targets are looked up in the
 
 A DIESEL macro (`$M=...`, also after control codes: `^C^C$M=...`) is not followed. A macro whose commands are built at run time is not followed either.
 
+## Retrace's own non-command items
+
+Retrace's ribbon tab (Guide panel) has two items that run no command, so they map as `toggle` with no code target: the Prompts toggle (`RETRACE_PROMPTS`, flips `promptStyle`) and the FILEDIA indicator (`RETRACE_FILEDIA`, shows the `FILEDIA` system variable with a warning when it is 0; a click sets it to 1 or 0). Both are built in `AutoCad/RetraceTab.cs` and kept current by `AutoCad/RibbonInstaller.cs`; see the README.
+
 ## Status
 
 | Status | Meaning |

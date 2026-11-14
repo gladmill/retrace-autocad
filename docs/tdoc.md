@@ -23,6 +23,8 @@ Pictures are taken at these points:
 | Before a palette step | The palette (its frame), or AutoCAD's window when the palette is hidden. The step has not run yet: the picture shows where the values go. | The WinForms controls the step sets, and its button. WPF and native palettes get no boxes. |
 | Before a checkpoint | AutoCAD's window, after ZOOM Extents (the view only; the checkpoint compares objects, not the view). | None. The result (PASS, FAIL and the differences) goes under the picture. |
 
+The steps follow the order a person does things in. A command that opens a dialog keeps the prompts it asked before the dialog in its own step (the ribbon click or the typed command); the dialog is the next step; and the prompts asked after the dialog closed are a step of their own right after it ("INSERTPART: answer the prompts"), pictured when the command has ended (AutoCAD's window, a box on the command line). With two dialogs in one command, the prompts between them come between their steps (pictured once the second dialog has opened, so the picture has that dialog on it) and the prompts after the second one come last. A command that asks nothing after its dialog gets no such step; a command that asks nothing before it has a plain click step; a script-chain click is not split. The step of the prompts after a dialog is in the document only when the replay typed them: when the dialog could not be filled in, or was cancelled, they are not.
+
 A box is numbered only when it was found on the screen; the legend under the picture lists the numbered ones (`1  Click Create Block`, `2  Name: KitBlock`, `3  OK`). The text before the picture says the same in sentences ("Click Create Block on the Insert tab.", "In the Block Definition dialog:", "Set Name to KitBlock.", "Click OK.").
 
 Before each picture Retrace waits `tdocStepDelayMs`, then hides its own replay window for a moment (it comes back right after) and waits for AutoCAD to be idle. Pictures of AutoCAD's window are cut to the monitor's work area, so the task bar is not in them.
@@ -33,7 +35,7 @@ Before each picture Retrace waits `tdocStepDelayMs`, then hides its own replay w
 |---|---|---|
 | `tdocBringToFront` | `true` | Bring AutoCAD's window (and the dialog being filled) to the front before each picture, move a dialog that is off the screen onto it, and hide the replay window for the picture. |
 | `tdocAnnotate` | `true` | Draw the green numbered boxes and write the legend. Off: plain pictures. |
-| `showClickArrows` | `false` | A green arrow in each picture, pointing at the control the step clicks (the button that closes the dialog, the palette button, the ribbon item) or, without a click, fills. Drawn into the image, never captured from the screen. Off: no arrow. |
+| `showClickArrows` | `false` | A green arrow in each picture, pointing at the control the step clicks (the button that closes the dialog, the palette button, the ribbon item) or, without a click, fills. A control whose place is not known, or whose rectangle is the dialog itself (nearly all of its client area) or reaches into its title bar, gets no arrow; any other control inside the dialog gets one, however wide or tall. Drawn into the image, never captured from the screen. Off: no arrow. |
 | `tdocStepDelayMs` | `1500` | Pause before each picture, 0 to 10000. Raise it when tool tips or half-drawn dialogs show up in pictures. |
 
 ## Files

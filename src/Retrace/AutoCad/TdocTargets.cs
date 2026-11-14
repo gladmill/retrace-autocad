@@ -10,11 +10,13 @@ readonly record struct ScreenRect(int Left, int Top, int Right, int Bottom)
 }
 
 /// <summary>A control that gets a numbered box in the Tdoc picture of a dialog or palette. <see cref="Handle"/> (a Win32 control) is read again when the
-/// picture is taken, because the window may have been moved; without one (UI Automation) <see cref="Rect"/> is where it was.</summary>
-sealed record DialogBox(IntPtr Handle, ScreenRect Rect, string Text);
+/// picture is taken, because the window may have been moved; without one (UI Automation) <see cref="Rect"/> is where it was. <see cref="At"/>: where the dialog's window was when <see cref="Rect"/> was read
+/// (null = when the <see cref="DialogShot"/> was made).</summary>
+sealed record DialogBox(IntPtr Handle, ScreenRect Rect, string Text, ScreenRect? At = null);
 
 /// <summary>What a dialog shows when it is filled in and about to be closed: the controls that were filled and the button that closes it.</summary>
-sealed record DialogShot(IntPtr Dialog, List<DialogBox> Filled, DialogBox? Close);
+/// <param name="DialogAt">where the dialog's window was when the rectangles were read (null = not known: they are taken as read before the picture's own move onto the screen)</param>
+sealed record DialogShot(IntPtr Dialog, List<DialogBox> Filled, DialogBox? Close, ScreenRect? DialogAt = null);
 
 /// <summary>Where things are on the screen, for the boxes of a Tdoc picture. Every failure is logged and means "no box".</summary>
 static class TdocTargets
@@ -99,6 +101,19 @@ static class TdocTargets
     {
         if (h == IntPtr.Zero || !IsWindowVisible(h) || !GetWindowRect(h, out var r) || r.Right <= r.Left || r.Bottom <= r.Top) return null;
         return new ScreenRect(r.Left, r.Top, r.Right, r.Bottom);
+    }
+
+    [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }
+    [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr h, ref POINT p);
+
+    /// <summary>A window's client area on the screen (without its caption and borders); null when it is not visible. UI thread.</summary>
+    public static ScreenRect? ClientOf(IntPtr h)
+    {
+        if (h == IntPtr.Zero || !IsWindowVisible(h) || !GetClientRect(h, out var c)) return null;
+        var p = new POINT { X = c.Left, Y = c.Top };
+        if (!ClientToScreen(h, ref p) || c.Right <= c.Left || c.Bottom <= c.Top) return null;
+        return new ScreenRect(p.X, p.Y, p.X + (c.Right - c.Left), p.Y + (c.Bottom - c.Top));
     }
 
     /// <summary>The rectangle of a box: the control's window now when it has one, else where it was seen, moved by (<paramref name="dx"/>, <paramref name="dy"/>).</summary>

@@ -61,6 +61,7 @@ public static class RetraceTab
         src.Items.Add(Button("RETRACEMAP", "Map", "map", "^C^C_RETRACEMAP ", "Map each ribbon button to the code it runs (LISP, C++, C#, VB.NET), from the CUI and CUIX files and the code in the folders you pick, and from the ribbon AutoCAD shows now."));
         src.Items.Add(Button("RETRACESETTINGS", "Settings", "sliders", "^C^C_RETRACESETTINGS ", "Set the folders, the editor and the checkpoint shortcut."));
         src.Items.Add(PromptToggle());
+        src.Items.Add(FileDiaButton());
         return Wrap(src);
     }
 
@@ -103,6 +104,28 @@ public static class RetraceTab
         b.ToolTip = RibbonPrompts.ToggleTip(PromptStyles.CommandLine);
         b.Description = b.ToolTip as string;
         b.CommandHandler = new PromptToggleHandler();
+        return b;
+    }
+
+    /// <summary>The Id of the FILEDIA indicator.</summary>
+    public const string FileDiaId = "RETRACE_FILEDIA";
+
+    /// <summary>The FILEDIA indicator: shows the value of FILEDIA, a warning when it is 0; a click flips it. Text, icon and tooltip follow the variable
+    /// (<see cref="RibbonInstaller.RefreshFileDia"/>). Not made by <see cref="Button"/>: it runs no macro, its handler sets the variable.</summary>
+    static RibbonToggleButton FileDiaButton()
+    {
+        var b = new RibbonToggleButton();
+        b.Id = FileDiaId;
+        b.Size = RibbonItemSize.Large;
+        b.Orientation = System.Windows.Controls.Orientation.Vertical;
+        b.ShowImage = true;
+        b.ShowText = true;
+        b.Image = RibbonIcons.Make(RibbonFileDia.Icon(1), 16);
+        b.LargeImage = RibbonIcons.Make(RibbonFileDia.Icon(1), 32);
+        b.Text = RibbonFileDia.Text(1);   // until FILEDIA has been read
+        b.ToolTip = RibbonFileDia.Tip(1);
+        b.Description = b.ToolTip as string;
+        b.CommandHandler = new FileDiaHandler();
         return b;
     }
 
