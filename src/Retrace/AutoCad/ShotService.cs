@@ -17,6 +17,12 @@ sealed class ShotService
         public int Left { get; init; }
         public int Top { get; init; }
         public bool HasOrigin { get; init; }
+        /// <summary>The size of that screen rectangle in the process's own (logical) coordinates; 0 = the pixel size. The picture's pixels are physical, so on a scaled screen it is smaller than <see cref="Picture.Width"/> x <see cref="Picture.Height"/>
+        /// (<see cref="ScreenSpace"/>); every rectangle and point is mapped from this size to the pixels.</summary>
+        public int SrcW { get; init; }
+        public int SrcH { get; init; }
+        public int SrcWidth => SrcW > 0 ? SrcW : Width;
+        public int SrcHeight => SrcH > 0 ? SrcH : Height;
     }
 
     // ---- click arrows in step pictures (setting showClickArrows) ------------------------------------------------------------
@@ -40,26 +46,31 @@ sealed class ShotService
     (AnnotationBox? Box, Func<byte[], ArrowLine?>? Arrow) MarksFor(int n, Core.PxRect src, int w, int h)
     {
         if (!_arrows) return (null, null);
+        _clicks.TryGetValue(n, out var click);
+        bool haveClick = _clicks.ContainsKey(n);
         if (_rects.TryGetValue(n, out var r))
         {
+            // never a mark that is not inside the picture and on the click (a rectangle read in another coordinate space, a stale one)
+            if (!Core.MarkGuard.Accept(src, r, haveClick ? click : null, reach: Core.MarkGuard.RowReach)) return (null, null);
             var box = Annotate.ToPicture(r.Left, r.Top, r.Right, r.Bottom, src.Left, src.Top, src.Width, src.Height, w, h, 0);
             if (box == null) return (null, null);
             var pb = new Core.PxRect(box.Value.Left, box.Value.Top, box.Value.Left + box.Value.Width, box.Value.Top + box.Value.Height);
             return (box, px => ClickArrow.ForBoxQuiet(pb, src, w, h, px));   // ends at the rectangle's corner, from the side of the picture that is least busy there
         }
+        if (haveClick && !Core.MarkGuard.Accept(src, null, click)) return (null, null);
         var point = ArrowFor(n, src, w, h);
         return (null, point == null ? null : _ => point);
     }
 
     // ---- pictures taken after the click has settled -------------------------------------------------------------------------
-    sealed record Deferred(int N, string Kind, string What, long DueMs, Func<(int L, int T, int R, int B)?> Area, Picture? Held, Func<(int L, int T, int R, int B)?>? Reread = null);
+    sealed record Deferred(int N, string Kind, string What, long DueMs, Func<(int L, int T, int R, int B)?> Area, Picture? Held, Func<(int L, int T, int R, int B)?>? Reread = null, IntPtr Window = default);
     readonly List<Deferred> _deferred = new();
 
     /// <summary>A picture of a screen area for event <paramref name="n"/>, taken when <paramref name="dueMs"/> has come (the click's reaction has been painted by then), or at once on <see cref="FlushDeferred"/>.
     /// <paramref name="area"/> is asked then: null (the window is gone or something is over it) means <paramref name="held"/>, the picture taken when the click was pressed, is written instead; no held picture, none written.</summary>
-    public void DeferRect(int n, string kind, string what, long dueMs, Func<(int L, int T, int R, int B)?> area, Picture? held, Func<(int L, int T, int R, int B)?>? reread = null)
+    public void DeferRect(int n, string kind, string what, long dueMs, Func<(int L, int T, int R, int B)?> area, Picture? held, Func<(int L, int T, int R, int B)?>? reread = null, IntPtr window = default)
     {
-        if (_enabled && n > 0) _deferred.Add(new Deferred(n, kind, what, dueMs, area, held, reread));
+        if (_enabled && n > 0) _deferred.Add(new Deferred(n, kind, what, dueMs, area, held, reread, window));
     }
 
     /// <summary>The dialog window's picture of a click, as <see cref="DeferRect"/>; <paramref name="held"/> from <see cref="CaptureDialogNow"/>. Settled means the dialog still exists, shows and is enabled (no window over it).</summary>
@@ -69,7 +80,7 @@ sealed class ShotService
             if (!Native.Exists(dialog) || !Win.IsWindowVisible(dialog) || Win.IsIconic(dialog) || !Native.IsEnabled(dialog)) return null;
             var b = Win.Bounds(dialog);
             return b.Width > 0 && b.Height > 0 ? (b.Left, b.Top, b.Right, b.Bottom) : null;
-        }, held, reread);
+        }, held, reread, dialog);
 
     /// <summary>A picture of the dialog window as it is now (the press-time picture of a button that may close it); null when it cannot be taken. UI thread.</summary>
     public Picture? CaptureDialogNow(IntPtr dialog) => _enabled ? CaptureWindow(dialog)?.Pic : null;
@@ -86,7 +97,7 @@ sealed class ShotService
                 Picture? pic = null;
                 if (d.Area() is { } a)
                 {
-                    pic = CaptureRect(a.L, a.T, a.R, a.B);
+                    pic = CaptureRect(a.L, a.T, a.R, a.B, d.Window);   // the window's own monitor decides the scale (ScreenSpace)
                     // the click may have scrolled or opened the item: where it is now (the press-time rectangle stays when it cannot be read)
                     if (pic != null && d.Reread != null)
                     {
@@ -137,11 +148,12 @@ sealed class ShotService
         _folder = Path.Combine(Path.GetDirectoryName(sessionPath) ?? "", ShotNaming.FolderFor(sessionPath));
         _enabled = enabled;
         _main = mainWindow;
+        if (mainWindow != IntPtr.Zero) ScreenSpace.Reference = mainWindow;
         _modalOpen = modalOpen;
         _onShot = onShot;
     }
 
-    public void SetMainWindow(IntPtr h) { if (_main == IntPtr.Zero) _main = h; }
+    public void SetMainWindow(IntPtr h) { if (_main == IntPtr.Zero) _main = h; if (h != IntPtr.Zero) ScreenSpace.Reference = h; }
     public bool NeedsMainWindow => _enabled && _main == IntPtr.Zero;
 
     public void Request(ShotRequest? r)
@@ -197,11 +209,11 @@ sealed class ShotService
     }
 
     /// <summary>A picture of a screen rectangle (device pixels), taken now; null if it is empty or the capture fails. UI thread.</summary>
-    public static Picture? CaptureRect(int left, int top, int right, int bottom)
+    public static Picture? CaptureRect(int left, int top, int right, int bottom, IntPtr hwnd = default)
     {
         var r = new Win.RECT { Left = left, Top = top, Right = right, Bottom = bottom };
         if (r.Width <= 0 || r.Height <= 0) return null;
-        try { return new Picture(Win.CopyScreen(r), r.Width, r.Height) { Left = left, Top = top, HasOrigin = true }; }
+        try { return Capture(r, hwnd); }
         catch (Exception ex) { Log.Error("capture rect", ex); return null; }
     }
 
@@ -213,15 +225,32 @@ sealed class ShotService
         try
         {
             if (hwnd == IntPtr.Zero || Win.IsIconic(hwnd) || !Win.IsWindowVisible(hwnd)) return null;
-            var b = Win.Bounds(hwnd);
+            var (b, pb) = Win.BoundsBoth(hwnd);
             if (workArea && Win.WorkArea(hwnd) is { } wa)
+            {
                 b = new Win.RECT { Left = Math.Max(b.Left, wa.Left), Top = Math.Max(b.Top, wa.Top), Right = Math.Min(b.Right, wa.Right), Bottom = Math.Min(b.Bottom, wa.Bottom) };
-            return Capture(b) is { } p ? (p, b.Left, b.Top) : null;
+                var (wl, wt) = ScreenSpace.ToPhysical(hwnd, wa.Left, wa.Top); var (wr, wb) = ScreenSpace.ToPhysical(hwnd, wa.Right, wa.Bottom);
+                pb = new Win.RECT { Left = Math.Max(pb.Left, wl), Top = Math.Max(pb.Top, wt), Right = Math.Min(pb.Right, wr), Bottom = Math.Min(pb.Bottom, wb) };
+            }
+            return b.Width > 0 && b.Height > 0 && pb.Width > 0 && pb.Height > 0 && Capture(b, hwnd, pb) is { } p ? (p, b.Left, b.Top) : null;
         }
         catch (Exception ex) { Log.Error("capture window", ex); return null; }
     }
 
-    static Picture? Capture(Win.RECT r) => r.Width <= 0 || r.Height <= 0 ? null : new Picture(Win.CopyScreen(r), r.Width, r.Height) { Left = r.Left, Top = r.Top, HasOrigin = true };
+    /// <summary>A picture of the logical screen rectangle <paramref name="r"/> at the screen's own (physical) resolution (<see cref="ScreenSpace"/>).</summary>
+    static Picture? Capture(Win.RECT r, IntPtr hwnd = default, Win.RECT? physical = null)
+    {
+        if (r.Width <= 0 || r.Height <= 0) return null;
+        Win.RECT phys;
+        if (physical is { } known) phys = known;   // a window's frame is copied exactly as DWM has it: no logical round trip that could shift an edge by a pixel
+        else
+        {
+            var (pl, pt) = ScreenSpace.ToPhysical(hwnd, r.Left, r.Top);
+            var (pr, pb) = ScreenSpace.ToPhysical(hwnd, r.Right, r.Bottom);
+            phys = new Win.RECT { Left = pl, Top = pt, Right = Math.Max(pr, pl + 1), Bottom = Math.Max(pb, pt + 1) };
+        }
+        return new Picture(Win.CopyScreen(phys), phys.Width, phys.Height) { Left = r.Left, Top = r.Top, HasOrigin = true, SrcW = r.Width, SrcH = r.Height };
+    }
 
     /// <summary>Writes a picture taken earlier as the `shot` of event <paramref name="n"/> (what: "palette").</summary>
     public void Write(int n, string kind, Picture p, string what)
@@ -231,7 +260,7 @@ sealed class ShotService
         var rel = ShotNaming.RelativePathFor(_sessionPath, n, kind);
         var onShot = _onShot;
         var (nw, nh) = what == "window" ? ShotImage.FitSize(p.Width, p.Height) : (p.Width, p.Height);
-        var (box, arrow) = p.HasOrigin ? MarksFor(n, new Core.PxRect(p.Left, p.Top, p.Left + p.Width, p.Top + p.Height), nw, nh) : (null, null);
+        var (box, arrow) = p.HasOrigin ? MarksFor(n, new Core.PxRect(p.Left, p.Top, p.Left + p.SrcWidth, p.Top + p.SrcHeight), nw, nh) : (null, null);
         var t = Task.Run(() =>
         {
             try
@@ -251,15 +280,17 @@ sealed class ShotService
 
     void Grab(int n, string kind, IntPtr hwnd, string what, bool announce = true)
     {
-        var b = Win.Bounds(hwnd);
-        if (b.Width <= 0 || b.Height <= 0) return;
-        var px = Win.CopyScreen(b);                          // the only part that must run on the UI thread
+        var (b, pbounds) = Win.BoundsBoth(hwnd);
+        if (b.Width <= 0 || b.Height <= 0 || pbounds.Width <= 0 || pbounds.Height <= 0) return;
+        var cap = Capture(b, hwnd, pbounds);                          // the only part that must run on the UI thread
+        if (cap == null) return;
+        var px = cap.Pixels;
         var path = Path.Combine(_folder, ShotNaming.FileName(n, kind));
         var rel = ShotNaming.RelativePathFor(_sessionPath, n, kind);
-        int w = b.Width, h = b.Height;
+        int w = cap.Width, h = cap.Height;
         var onShot = _onShot;
         var (nw, nh) = what == "window" ? ShotImage.FitSize(w, h) : (w, h);
-        var (box, arrow) = MarksFor(n, new Core.PxRect(b.Left, b.Top, b.Right, b.Bottom), nw, nh);
+        var (box, arrow) = MarksFor(n, new Core.PxRect(b.Left, b.Top, b.Right, b.Bottom), nw, nh);   // logical rectangle: the pixels are physical (ScreenSpace)
         var t = Task.Run(() =>
         {
             try
@@ -328,12 +359,22 @@ sealed class ShotService
         const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
         const uint SRCCOPY = 0x00CC0020;   // no CAPTUREBLT: it makes the cursor flicker on every capture
 
-        /// <summary>Visible frame (DWM extended frame bounds: without the invisible resize border); GetWindowRect if DWM fails.</summary>
-        public static RECT Bounds(IntPtr hwnd)
+        /// <summary>Visible frame (DWM extended frame bounds: without the invisible resize border) in logical coordinates; GetWindowRect if DWM fails.</summary>
+        public static RECT Bounds(IntPtr hwnd) => BoundsBoth(hwnd).Logical;
+
+        /// <summary>The visible frame both as the screen has it (physical: what DWM answers, kept as is for the BitBlt) and in the process's logical space (what marks are computed in).</summary>
+        public static (RECT Logical, RECT Physical) BoundsBoth(IntPtr hwnd)
         {
-            if (DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, out var r, Marshal.SizeOf<RECT>()) == 0 && r.Width > 0) return r;
+            if (DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, out var r, Marshal.SizeOf<RECT>()) == 0 && r.Width > 0)
+            {
+                var (l, t) = ScreenSpace.ToLogical(hwnd, r.Left, r.Top);
+                var (rr, b) = ScreenSpace.ToLogical(hwnd, r.Right, r.Bottom);
+                return (new RECT { Left = l, Top = t, Right = rr, Bottom = b }, r);
+            }
             GetWindowRect(hwnd, out r);
-            return r;
+            var (pl, pt) = ScreenSpace.ToPhysical(hwnd, r.Left, r.Top);
+            var (pr, pb) = ScreenSpace.ToPhysical(hwnd, r.Right, r.Bottom);
+            return (r, new RECT { Left = pl, Top = pt, Right = pr, Bottom = pb });
         }
 
         /// <summary>BitBlt from the screen DC; 32-bit BGRA, top-down.</summary>

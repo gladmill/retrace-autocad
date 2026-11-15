@@ -119,7 +119,7 @@ static class PaletteClickDetect
         var (name, from) = PaletteToolbar.Display(cands[at]);
         int occurrence = PaletteToolbar.Occurrence(cands, at);
         string? src = ButtonNames.FromToRecord(from);
-        ScreenRect? rect = WantRects && ToolStripControls.ScreenOf(hwnd, item, arrow: false) is { } sc ? sc.Rect : null;   // the item, never the whole strip
+        ScreenRect? rect = WantRects && ToolStripControls.ScreenOf(hwnd, item, arrow: false) is { } sc ? ToolStripControls.InsideStrip(hwnd, sc.Rect) : null;   // the item, never the whole strip; none when it is not inside the strip
         return new PaletteClickInfo(PaletteClickKinds.ToolStrip, name, src, occurrence, 0, 0, "", "", "",
             new PaletteHit(Strip: ToolStripControls.NameOf(strip), StripIndex: StripNumber(page, hwnd, false), ItemName: UniqueName(buttons, item), Position: at + 1, Count: buttons.Count), Target: item.Obj, Rect: rect);
     }
@@ -153,7 +153,7 @@ static class PaletteClickDetect
         if (ToolbarPress.StopFor(b.Style, ToolbarControl.ExtendedStyle(tb)) != null) Log.Info($"palette toolbar button {b.Id} opens a menu: the click is recorded, the menu item chosen is not followed");
         return new PaletteClickInfo(PaletteClickKinds.Toolbar, name, ButtonNames.FromToRecord(from), occurrence, 0, 0, "", "", "",
             new PaletteHit(Strip: WinFormsControls.NamesOf(tb)?.Name ?? "", StripIndex: StripNumber(page, tb, true), Position: at + 1, Count: buttons.Count, Cmd: b.Id > 0 && buttons.Count(q => q.Id == b.Id) == 1 ? b.Id : 0), TargetIndex: index,
-            Rect: WantRects && ToolbarControl.ItemScreenRect(tb, index) is { } ir ? new ScreenRect(ir.L, ir.T, ir.R, ir.B) : null);   // a duplicate or zero id names nothing
+            Rect: WantRects && ToolbarControl.ItemScreenRectInStrip(tb, index) is { } ir ? new ScreenRect(ir.L, ir.T, ir.R, ir.B) : null);   // a duplicate or zero id names nothing
     }
 
     /// <summary>A click on a drop-down menu of a toolbar item of a palette (the menu is a window of its own, so the palette's click detection never sees it): the item chosen, as a click of the toolbar item that opened the menu, with
@@ -494,7 +494,9 @@ static class PaletteClickFill
         {
             var scan = DialogReader.Scan(page, hidden, readTicks: false);
             var (t, _) = Resolve(s, page, hidden, scan, mutate: false);
-            return t is { Nothing: false, Instead: null } ? t.Rect : null;
+            if (t is not { Nothing: false, Instead: null }) return null;
+            // a toolbar item's rectangle is used only when it lies inside the toolbar's own client area
+            return t.What.StartsWith("toolbar button", StringComparison.Ordinal) ? ToolStripControls.InsideStrip(t.Control, t.Rect) : t.Rect;
         }
         catch (Exception ex) { Log.Error("tdoc palette click", ex); return null; }
     }

@@ -33,6 +33,13 @@ sealed class SettingsWindow : Window
     readonly CheckBox _showUi = new() { Content = "Run test opens rolled-up and auto-hidden palettes while it drives them", Margin = new Thickness(0, 6, 0, 0), ToolTip = "Moves the mouse over the palette (and back after) so you can watch the step. Off: the palette is filled while it stays hidden." };
     readonly CheckBox _review = new() { Content = "After Stop, show the checkpoints so you can rename them", Margin = new Thickness(0, 6, 0, 0), ToolTip = "Opens the checkpoints window when a recording with checkpoints stops. RETRACECHECKPOINTS opens it any time." };
     readonly CheckBox _statusBoard = new() { Content = "Write Retrace's state to the AutoCAD status board", Margin = new Thickness(0, 6, 0, 0), ToolTip = "retrace-<acad pid>.json in %ProgramData%\\Gladmill\\acad-status (or the folder ACAD_STATUS_DIR names): what Retrace is doing, refreshed every few seconds. Off: nothing is written." };
+    readonly ComboBox _postZoom = new() { Margin = new Thickness(0, 4, 0, 0), ToolTip = "Applies when a replay (Run test, Step, a suite, Tdoc) has run its last step and model space is current: the view is set before the end-of-test pictures. Never while recording, never in a layout, and it never changes the verdict." };
+    static readonly (string Value, string Text)[] PostZoomChoices =
+    {
+        (PostTestZoomModes.None, "After a test: leave the view as it is"),
+        (PostTestZoomModes.Extents, "After a test: zoom to extents"),
+        (PostTestZoomModes.LastEntity, "After a test: zoom to the last created object"),
+    };
     readonly CheckBox _docx = new() { Content = "Also write Word (.docx)", Margin = new Thickness(0, 6, 0, 0), ToolTip = "steps.docx next to steps.md, made when a recording is stopped." };
     readonly CheckBox _xlsx = new() { Content = "Also write Excel (.xlsx)", Margin = new Thickness(0, 6, 0, 0), ToolTip = "steps.xlsx next to steps.md: one row per step with a PASS / FAIL column." };
     readonly CheckBox _tdocFront = new() { Content = "Bring the step's windows to the front before each picture", Margin = new Thickness(0, 4, 0, 0), ToolTip = "AutoCAD, the dialog being filled and the palette are put on top (a dialog that is off screen is moved onto it), and Retrace's own replay window stays out of the picture." };
@@ -138,6 +145,10 @@ sealed class SettingsWindow : Window
         suite.Children.Add(_suiteTimeout);
         suite.Children.Add(_suiteTimeoutMsg);
         root.Children.Add(new GroupBox { Header = "Test suites (RETRACESUITE)", Margin = new Thickness(0, 12, 0, 0), Content = suite });
+
+        foreach (var (_, text) in PostZoomChoices) _postZoom.Items.Add(text);
+        _postZoom.SelectedIndex = Math.Max(0, Array.FindIndex(PostZoomChoices, c => c.Value == current.PostTestZoom));
+        root.Children.Add(new GroupBox { Header = "Post test", Margin = new Thickness(0, 12, 0, 0), Content = new StackPanel { Margin = new Thickness(6), Children = { _postZoom } } });
 
         root.Children.Add(BuildBehaviorGroup(current));
         root.Children.Add(BuildBasicCheckGroup(current));
@@ -384,6 +395,7 @@ sealed class SettingsWindow : Window
         _testDocArrows.IsChecked = true;
         _docx.IsChecked = false;
         _xlsx.IsChecked = false;
+        _postZoom.SelectedIndex = 0;
         _tabPos.SelectedIndex = 0;
         var dflt = new RetraceSettings();
         _autoDetect.IsChecked = dflt.AutoDetectBehavior;
@@ -445,6 +457,7 @@ sealed class SettingsWindow : Window
         s.ShowClickArrows = _showClickArrows.IsChecked == true;
         s.TestDocArrows = _testDocArrows.IsChecked == true;
         s.ExportDocx = _docx.IsChecked == true;
+        s.PostTestZoom = _postZoom.SelectedIndex >= 0 ? PostZoomChoices[_postZoom.SelectedIndex].Value : PostTestZoomModes.None;
         s.ExportXlsx = _xlsx.IsChecked == true;
         var pos = _tabPos.SelectedIndex >= 0 ? _tabPosValues[_tabPos.SelectedIndex] : RibbonTabPosition.AfterHome;
         s.RibbonTabPosition = pos == RibbonTabPosition.AfterHome ? "" : pos;

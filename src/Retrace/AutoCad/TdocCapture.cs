@@ -127,7 +127,7 @@ sealed class TdocCapture : IDisposable
     /// <summary>The replayer started: <paramref name="setReplayVisible"/> hides / shows its window; <paramref name="main"/> is AutoCAD's main window.</summary>
     public void Begin(Action<bool> setReplayVisible, IntPtr main)
     {
-        _setReplayVisible = setReplayVisible; _main = main;
+        _setReplayVisible = setReplayVisible; _main = main; if (main != IntPtr.Zero) ScreenSpace.Reference = main;
         AcApp.Idle += OnIdle;
     }
 
@@ -190,7 +190,8 @@ sealed class TdocCapture : IDisposable
             {
                 _zoom = null;
                 if (s.Kind == "ribbon") Replayer.ActivateTab(s.Tab);   // the button must show
-                if (s.Kind == "mark") ZoomExtents();   // the checkpoint picture shows the whole drawing (the view only; the checkpoint compares objects)
+                if (s.Kind == "mark" && i == _steps.Count - 1 && Replayer.Current?.PostTestZoomNow() == true) { }   // the test ends on this checkpoint: setting postTestZoom (not "none") sets the view for its picture
+                else if (s.Kind == "mark") ZoomExtents();   // the checkpoint picture shows the whole drawing (the view only; the checkpoint compares objects)
             },
             wait: () => _zoom is { Pending: true },   // SDI: the ZOOM is typed a moment after it was sent; the idle check would not see it yet
             shoot: () => Shoot(_m[i], s));
@@ -233,7 +234,7 @@ sealed class TdocCapture : IDisposable
     {
         var page = PaletteFill.FindPage(s);
         // an open palette: its own frame; hidden (auto-hide) or not found: AutoCAD's window, without boxes
-        if (page != IntPtr.Zero && PaletteReveal.PictureRect(page) is { } r && ShotService.CaptureRect(r.Left, r.Top, r.Right, r.Bottom) is { } pic)
+        if (page != IntPtr.Zero && PaletteReveal.PictureRect(page) is { } r && ShotService.CaptureRect(r.Left, r.Top, r.Right, r.Bottom, page) is { } pic)
         {
             var targets = new List<(string Text, ScreenRect? Rect)>();
             var arrows = new List<ArrowAt>();
@@ -357,7 +358,10 @@ sealed class TdocCapture : IDisposable
     void Save(int i, ShotService.Picture pic, int sx, int sy, IReadOnlyList<(string Text, ScreenRect? Rect)> targets, string? caption, IReadOnlyList<ArrowAt>? arrowsAt = null)
     {
         var (nw, nh) = ShotImage.FitSize(pic.Width, pic.Height);
-        var candidates = targets.Select(t => t.Rect is { } r ? Annotate.ToPicture(r.Left, r.Top, r.Right, r.Bottom, sx, sy, pic.Width, pic.Height, nw, nh, 1) : null).ToList();
+        // rectangles are in the process's logical space like sx, sy and the picture's source size; the pixels are the screen's own (ScreenSpace). A rectangle that does not show in the picture gets no frame; one that sticks out is clipped (MarkGuard).
+        int sw = pic.SrcWidth, sh = pic.SrcHeight;
+        var shown = new PxRect(sx, sy, sx + sw, sy + sh);
+        var candidates = targets.Select(t => t.Rect is { } r && MarkGuard.Visible(shown, new PxRect(r.Left, r.Top, r.Right, r.Bottom)) is not null ? Annotate.ToPicture(r.Left, r.Top, r.Right, r.Bottom, sx, sy, sw, sh, nw, nh, 1) : null).ToList();
         var numbered = TdocPlan.Number(targets.Select((t, k) => new CalloutSpec(t.Text, candidates[k] != null)).ToList());
         var boxes = numbered.Select(n => candidates[n.Index]!.Value with { Number = n.Number }).ToList();
 
@@ -374,7 +378,7 @@ sealed class TdocCapture : IDisposable
         List<ArrowLine> arrows = [];
         if (_arrows && arrowsAt is { Count: > 0 })
         {
-            var src = new PxRect(sx, sy, sx + pic.Width, sy + pic.Height);
+            var src = shown;
             var rects = new List<PxRect>();   // every box and number tag of the picture: what an arrow keeps off
             var own = new Dictionary<int, List<PxRect>>();
             foreach (var n in numbered)
@@ -389,7 +393,8 @@ sealed class TdocCapture : IDisposable
             var list = new List<ClickArrow.ArrowTarget>();
             foreach (var a in arrowsAt)
             {
-                var ip = Annotate.ToPicture(a.Rect.Left, a.Rect.Top, a.Rect.Right, a.Rect.Bottom, sx, sy, pic.Width, pic.Height, nw, nh, 1);
+                if (MarkGuard.Visible(shown, new PxRect(a.Rect.Left, a.Rect.Top, a.Rect.Right, a.Rect.Bottom)) is null) continue;   // an arrow only on a rectangle that shows in the picture (clipped by ToPicture)
+                var ip = Annotate.ToPicture(a.Rect.Left, a.Rect.Top, a.Rect.Right, a.Rect.Bottom, sx, sy, sw, sh, nw, nh, 1);
                 if (ip is not { } b) continue;
                 var pr = new PxRect(b.Left, b.Top, b.Left + b.Width, b.Top + b.Height);
                 // an arrow's own box and tag may be run over by it, except the tag of an item arrow (it ends on the box's edge, next to the tag)

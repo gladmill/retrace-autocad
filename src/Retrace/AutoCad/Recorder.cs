@@ -971,7 +971,7 @@ public sealed class Recorder
         if (_shots.Arrows && (itemRect ?? ClickRects.Of(hwnd, lParam, pictureBox)) is { } r) _shots.NoteTarget(n, r.Left, r.Top, r.Right, r.Bottom);
         int modalAtClick = _modalOpen;   // a modal state that was already open at the click does not cover the palette; one that opened after it does
         // a click that opens a modal dialog: the palette is under it by then (taken at the EnterModal, or the one from before the click is used)
-        _shots.DeferRect(n, "palette-closeup", "palette", w.ElapsedMs + ShotRules.ClickSettleMs, () => _modalOpen <= modalAtClick && PaletteReveal.PictureRect(at.Page) is { } pr ? (pr.Left, pr.Top, pr.Right, pr.Bottom) : null, before);
+        _shots.DeferRect(n, "palette-closeup", "palette", w.ElapsedMs + ShotRules.ClickSettleMs, () => _modalOpen <= modalAtClick && PaletteReveal.PictureRect(at.Page) is { } pr ? (pr.Left, pr.Top, pr.Right, pr.Bottom) : null, before, null, at.Page);
     }
 
     /// <summary>A context menu item was chosen (<see cref="MenuWatch"/>): in a tracked dialog it is written as a click of that dialog; in a palette the values changed so far go first, then the

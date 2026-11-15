@@ -385,6 +385,15 @@ public sealed partial class Commands
                 var tdArrows = Ask.Keywords(ed, new PromptKeywordOptions($"\nDraw a green rectangle and arrow at each click in the test document pictures (testDocArrows) [Yes/No] <{(s.TestDocArrows ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
                 if (tdArrows.Status == PromptStatus.Cancel) return;
                 n.TestDocArrows = tdArrows.Status == PromptStatus.OK ? tdArrows.StringResult == "Yes" : s.TestDocArrows;
+                var pz = Ask.String(ed, $"\nAfter a test, set the model-space view (postTestZoom): none, extents or lastEntity <{s.PostTestZoom}>: ");
+                if (pz.Status == PromptStatus.Cancel) return;
+                var pzt = (pz.StringResult ?? "").Trim();
+                if (pzt.Length > 0)
+                {
+                    var pzv = PostTestZoomModes.Normalize(pzt, out var pzKnown);
+                    if (!pzKnown) ed.WriteMessage($"\nPost-test zoom not changed: \"{pzt}\" is not none, extents or lastEntity.\n");
+                    else n.PostTestZoom = pzv;
+                }
                 SaveAndReport(ed, n);
                 return;
             }
@@ -442,6 +451,7 @@ public sealed partial class Commands
                $"  Tdoc front       : {(s.TdocBringToFront ? "on" : "off")} (RETRACETDOC brings AutoCAD, the dialog or the palette to the front before each picture)\n" +
                $"  Click arrows     : {(s.ShowClickArrows ? "on" : "off")} (a green arrow at each click of a replay, and in Tdoc pictures)\n" +
                $"  Test doc arrows  : {(s.TestDocArrows ? "on" : "off")} (a green rectangle and arrow at each click in the pictures of steps.md, made while recording)\n" +
+               $"  Post-test zoom   : {s.PostTestZoom} (none, extents, lastEntity: the model-space view after a replayed test's last step, before the end-of-test pictures)\n" +
                $"  Tdoc boxes       : {(s.TdocAnnotate ? "on" : "off")} (green numbered boxes on the pictures where the user gives input)\n" +
                $"  Tdoc pause       : {s.TdocStepDelayMs} ms (before each picture, so the screen has repainted)\n" +
                $"  Suite timeout    : {s.SuiteStepTimeoutSeconds} s (RETRACESUITE cancels a step that runs longer and records the test as ERROR)\n" +

@@ -124,6 +124,14 @@ static class ToolbarControl
         return ClientToScreen(tb, ref a) && ClientToScreen(tb, ref b) ? (a.X, a.Y, b.X, b.Y) : null;
     }
 
+    /// <summary>As <see cref="ItemScreenRect"/>, but only when the button's rectangle lies inside the toolbar's client area (a stale rectangle, a toolbar clipped by its container: none, so no frame and no arrow).</summary>
+    public static (int L, int T, int R, int B)? ItemScreenRectInStrip(IntPtr tb, int index)
+    {
+        if (!Ok(tb) || ItemRect(tb, index) is not { } r || !Win32.GetClientRect(tb, out var c)) return null;
+        if (!Retrace.Core.MarkGuard.ItemInStrip(new Retrace.Core.PxRect(c.Left, c.Top, c.Right, c.Bottom), new Retrace.Core.PxRect(r.L, r.T, r.R, r.B))) return null;
+        return ItemScreenRect(tb, index);
+    }
+
     /// <summary>The toolbar's extended style (TB_GETEXTENDEDSTYLE), 0 for a window that is no toolbar of this thread. Sent to a verified <c>ToolbarWindow32</c> only.</summary>
     public static int ExtendedStyle(IntPtr tb) => Ok(tb) ? (int)Send(tb, TB_GETEXTENDEDSTYLE, IntPtr.Zero, IntPtr.Zero) : 0;
 

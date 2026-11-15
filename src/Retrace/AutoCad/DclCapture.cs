@@ -189,7 +189,12 @@ public sealed unsafe class DclCapture
     void Capture(IntPtr hwnd, DclDialog job)
     {
         var outBase = Path.Combine(_out, $"{Sanitize(job.Stem)}__{Sanitize(job.Name)}");
+        // The dialog's own view (dpi, dialogBaseUnits, font height) is in its own, possibly virtualised (logical) space; every rectangle and the screenshot are the screen's own pixels (physical).
+        // The JSON says so: `scale` = physical / logical size of the window (1 unless the screen is scaled and AutoCAD is virtualised), `dpi`, `dialogBaseUnits` and `font` are logical.
+        GetWindowRect(hwnd, out var logicalWin);
+        using var physical = ScreenSpace.Physical();
         GetWindowRect(hwnd, out var win);
+        double scale = logicalWin.Width > 0 ? Math.Round((double)win.Width / logicalWin.Width, 4) : 1.0;
         string boundsSource = "DWMWA_EXTENDED_FRAME_BOUNDS";
         if (DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, out var vis, sizeof(RECT)) != 0) { vis = win; boundsSource = "GetWindowRect (DWM call failed)"; }
         SaveScreenshot(vis, outBase + ".png");
@@ -234,7 +239,7 @@ public sealed unsafe class DclCapture
             dcl = job.File, name = job.Name, line = job.Line, formId = job.FormId,
             caption = TextOf(hwnd), @class = ClassOf(hwnd),
             style = Hex((uint)(long)GetWindowLongPtr(hwnd, GWL_STYLE)), exStyle = Hex((uint)(long)GetWindowLongPtr(hwnd, GWL_EXSTYLE)),
-            dpi = GetDpiForWindow(hwnd), foreground = GetForegroundWindow() == hwnd, boundsSource,
+            dpi = GetDpiForWindow(hwnd), foreground = GetForegroundWindow() == hwnd, boundsSource, rectSpace = "physical (screen pixels)", scale, viewSpace = "logical: dpi, dialogBaseUnits and font are the dialog's own, not multiplied by scale",
             visibleBounds = new { x = vis.Left, y = vis.Top, w = vis.Width, h = vis.Height },
             windowRect = new { x = win.Left, y = win.Top, w = win.Width, h = win.Height },
             clientOrigin = new { x = origin.X - vis.Left, y = origin.Y - vis.Top },

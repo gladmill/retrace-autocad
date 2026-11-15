@@ -100,6 +100,15 @@ static class ToolStripControls
         return ((p1.X + p2.X) / 2, (p1.Y + p2.Y) / 2, new ScreenRect(p1.X, p1.Y, p2.X, p2.Y));
     }
 
+    /// <summary>The rectangle for a picture's frame: <paramref name="rect"/> only when it lies inside the strip's client area (screen); a rectangle outside it (a stale item rectangle, a strip nested in a container that clips it) is dropped.</summary>
+    public static ScreenRect? InsideStrip(IntPtr strip, ScreenRect rect)
+    {
+        if (!Win32.GetClientRect(strip, out var c)) return null;
+        var p1 = new Win32.POINT { X = c.Left, Y = c.Top }; var p2 = new Win32.POINT { X = c.Right, Y = c.Bottom };
+        if (!Win32.ClientToScreen(strip, ref p1) || !Win32.ClientToScreen(strip, ref p2)) return null;
+        return Retrace.Core.MarkGuard.ItemInStrip(new Retrace.Core.PxRect(p1.X, p1.Y, p2.X, p2.Y), new Retrace.Core.PxRect(rect.Left, rect.Top, rect.Right, rect.Bottom)) ? rect : null;
+    }
+
     /// <summary>The whole item (a split button's two parts together) on the screen, for a picture's frame.</summary>
     public static ScreenRect? WholeItemRect(IntPtr client, TsItem item)
     {

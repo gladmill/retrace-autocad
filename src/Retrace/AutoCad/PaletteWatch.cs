@@ -212,7 +212,7 @@ sealed class PaletteWatch
     {
         if (!Pictures) return null;
         if (_cur != null && _cur.Where.Page == spot.Page) { TakePicture(_cur); return _cur.Picture; }
-        return PaletteReveal.PictureRect(spot.Page) is { } r ? ShotService.CaptureRect(r.Left, r.Top, r.Right, r.Bottom) : null;
+        return PaletteReveal.PictureRect(spot.Page) is { } r ? ShotService.CaptureRect(r.Left, r.Top, r.Right, r.Bottom, spot.Page) : null;
     }
 
     /// <summary>Timer tick: re-read the palette being worked in, at most every <see cref="ThrottleMs"/>.</summary>
@@ -246,7 +246,7 @@ sealed class PaletteWatch
     void TakePicture(Watched w)
     {
         if (!Pictures || PaletteReveal.PictureRect(w.Where.Page) is not { } r) return;
-        if (ShotService.CaptureRect(r.Left, r.Top, r.Right, r.Bottom) is { } p) { w.Picture = p; w.PictureOf = w.Last; }
+        if (ShotService.CaptureRect(r.Left, r.Top, r.Right, r.Bottom, w.Where.Page) is { } p) { w.Picture = p; w.PictureOf = w.Last; }
     }
 
     void Begin(Spot spot, long nowMs)
