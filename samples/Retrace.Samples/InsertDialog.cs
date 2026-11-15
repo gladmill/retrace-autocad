@@ -19,11 +19,14 @@ namespace Retrace.Samples
         private readonly Button quick = new() { Name = "quickButton", Text = "Quick add", Location = new Point(232, 70), Size = new Size(90, 27), TabIndex = 6 };
         private readonly Button cancel = new() { Name = "cancelButton", Text = "Cancel", Location = new Point(232, 262), Size = new Size(90, 27), TabIndex = 7, DialogResult = DialogResult.Cancel };
 
-        public InsertDialog(string title = "Insert part")
+        private readonly ListView cabinets = new() { Name = "CabinetsList", View = View.LargeIcon, HideSelection = false, MultiSelect = false, Location = new Point(192, 36), Size = new Size(210, 190), TabIndex = 2 };
+
+        /// <param name="withList">DRAWINSERTLIST: the tree, then a list view of large icons (cabinets) between it and the buttons, both with no label of their own (a control the recording can only name by its id), as a vendor dialog has them</param>
+        public InsertDialog(string title = "Insert part", bool withList = false)
         {
             Text = title;
             AutoScaleMode = AutoScaleMode.Font;
-            ClientSize = new Size(340, 306);
+            ClientSize = withList ? new Size(524, 306) : new Size(340, 306);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
@@ -31,9 +34,30 @@ namespace Retrace.Samples
             StartPosition = FormStartPosition.CenterParent;
             low = Low;
             CancelButton = cancel;
-            Controls.Add(new Label { Name = "partsLabel", AutoSize = true, Location = new Point(16, 14), Text = "&Parts:" });
+            if (!withList) Controls.Add(new Label { Name = "partsLabel", AutoSize = true, Location = new Point(16, 14), Text = "&Parts:" });
             Controls.Add(tree);
             Controls.Add(selected);
+            if (withList)
+            {
+                tree.Size = new Size(160, 190);
+                tree.AccessibleName = null;
+                var images = new ImageList { ImageSize = new Size(32, 32), ColorDepth = ColorDepth.Depth32Bit };
+                string[] names = ["Base cabinet", "Wall cabinet", "Tall cabinet", "Corner cabinet", "Drawer unit", "Sink unit"];
+                for (int i = 0; i < names.Length; i++)
+                {
+                    var bmp = new Bitmap(32, 32);
+                    using (var g = Graphics.FromImage(bmp)) { g.Clear(Color.FromArgb(50 + 30 * i, 130, 210 - 25 * i)); g.DrawRectangle(Pens.Black, 3, 3, 25, 25); }
+                    images.Images.Add(bmp);
+                    cabinets.Items.Add(new ListViewItem(names[i], i));
+                }
+                cabinets.LargeImageList = images;
+                Controls.Add(cabinets);
+                var finishes = new ListBox { Name = "FinishList", Location = new Point(416, 110), Size = new Size(90, 100), TabIndex = 3 };   // a list box, no label either
+                finishes.Items.AddRange(["Oak", "Walnut", "Maple", "Birch", "Ash"]);
+                Controls.Add(finishes);
+                add.Location = new Point(416, 36); quick.Location = new Point(416, 70); cancel.Location = new Point(416, 262);
+            }
+            else
             for (int i = 0; i < 3; i++)
             {
                 var bmp = new Bitmap(24, 24);

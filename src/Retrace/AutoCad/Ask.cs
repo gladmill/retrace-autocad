@@ -81,8 +81,9 @@ static class Ask
 
     /// <summary>A line of text, a file or a folder. <paramref name="recent"/>: the recent-places list a file or folder answer goes to (and comes
     /// from), one per question (e.g. "recording", "folder:docs"). <paramref name="filter"/>: the file dialog's filter. <paramref name="initial"/>:
-    /// the text the box starts with. <paramref name="browseFrom"/>: where Browse... starts when the box and the recent places give no folder.</summary>
-    public static Answer String(Editor ed, string message, Of kind = Of.Text, string? recent = null, string? filter = null, string initial = "", string? browseFrom = null)
+    /// the text the box starts with. <paramref name="browseFrom"/>: where Browse... starts when the box and the recent places give no folder.
+    /// <paramref name="lastTest"/>: not null = the window (never the command line) has a "Run last test" button; it gives the recording the button runs (null = none, button disabled).</summary>
+    public static Answer String(Editor ed, string message, Of kind = Of.Text, string? recent = null, string? filter = null, string initial = "", string? browseFrom = null, Func<string?>? lastTest = null, bool recordingRunning = false)
     {
         if (!InWindow())
         {
@@ -91,7 +92,7 @@ static class Ask
         }
         var places = kind != Of.Text && recent != null ? RecentPlaces.Load() : null;
         var w = new PromptWindow("Retrace", message, kind switch { Of.File => PromptWindow.Kind.File, Of.Folder => PromptWindow.Kind.Folder, _ => PromptWindow.Kind.Text },
-            initial, recent: places?.List(recent!), filter: filter, browseFrom: browseFrom);
+            initial, recent: places?.List(recent!), filter: filter, browseFrom: browseFrom, offerLast: lastTest != null, lastTest: lastTest?.Invoke(), recordingRunning: recordingRunning);
         var text = Show(w);
         if (text == null) return new Answer(PromptStatus.Cancel, "");
         var t = text.Trim();

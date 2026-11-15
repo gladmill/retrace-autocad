@@ -28,7 +28,10 @@ static class ToolbarControl
     static extern IntPtr CreateWindowEx(uint exStyle, string cls, string name, uint style, int x, int y, int w, int h, IntPtr parent, IntPtr menu, IntPtr instance, IntPtr param);
     [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }
 
-    /// <summary>Is this window a toolbar of this thread? (the one test every TB_ message is behind)</summary>
+    /// <summary>Is this window a toolbar of a palette, including one a WinForms control hosts (class <c>WindowsForms10.ToolbarWindow32...</c>)? Every function below is behind this; <see cref="Is"/> stays as it was for the dialog side, which only ever hands over windows it found as toolbars.</summary>
+    public static bool Ok(IntPtr h) => h != IntPtr.Zero && Native.OwnedByThisThread(h) && NativeParts.IsToolbarWindow(DialogReader.ClassOf(h));
+
+    /// <summary>Is this window a toolbar of this thread? (the test of the dialog side; the palette side uses <see cref="Ok"/>)</summary>
     public static bool Is(IntPtr h) => h != IntPtr.Zero && Native.OwnedByThisThread(h) && NativeParts.IsToolbarClass(DialogReader.ClassOf(h));
 
     /// <summary>The visible buttons (no separators or hidden ones), from the TBBUTTON of each: state and style come with it. Empty when the window is no toolbar of this thread.</summary>
@@ -37,7 +40,7 @@ static class ToolbarControl
         var list = new List<ToolbarButton>();
         try
         {
-            if (!Is(tb)) return list;
+            if (!Ok(tb)) return list;
             int n = (int)Send(tb, TB_BUTTONCOUNT, IntPtr.Zero, IntPtr.Zero);
             for (int i = 0; i < Math.Min(n, 200); i++)
                 if (ReadButton(tb, i) is { } b) list.Add(b);
@@ -65,7 +68,7 @@ static class ToolbarControl
     /// <summary>The visible button with that command id (TB_COMMANDTOINDEX, then its TBBUTTON), or null.</summary>
     public static ToolbarButton? Find(IntPtr tb, int id)
     {
-        if (!Is(tb)) return null;
+        if (!Ok(tb)) return null;
         int index = (int)Send(tb, TB_COMMANDTOINDEX, (IntPtr)id, IntPtr.Zero);
         return index < 0 ? null : ReadButton(tb, index) is { } b && b.Id == id ? b : null;
     }
@@ -101,7 +104,7 @@ static class ToolbarControl
     /// what a point beside the first button can give: a result of 0 or more counts only when the point lies inside that button's rectangle (TB_GETITEMRECT).</summary>
     public static int HitTest(IntPtr tb, int x, int y)
     {
-        if (!Is(tb)) return -1;
+        if (!Ok(tb)) return -1;
         var p = Marshal.AllocHGlobal(16);
         try
         {
@@ -116,13 +119,13 @@ static class ToolbarControl
     /// <summary>The button's rectangle on the screen, for a picture's box (a Tdoc picture boxes the button, not the whole toolbar); null when it cannot be read.</summary>
     public static (int L, int T, int R, int B)? ItemScreenRect(IntPtr tb, int index)
     {
-        if (!Is(tb) || ItemRect(tb, index) is not { } r) return null;
+        if (!Ok(tb) || ItemRect(tb, index) is not { } r) return null;
         var a = new POINT { X = r.L, Y = r.T }; var b = new POINT { X = r.R, Y = r.B };
         return ClientToScreen(tb, ref a) && ClientToScreen(tb, ref b) ? (a.X, a.Y, b.X, b.Y) : null;
     }
 
     /// <summary>The toolbar's extended style (TB_GETEXTENDEDSTYLE), 0 for a window that is no toolbar of this thread. Sent to a verified <c>ToolbarWindow32</c> only.</summary>
-    public static int ExtendedStyle(IntPtr tb) => Is(tb) ? (int)Send(tb, TB_GETEXTENDEDSTYLE, IntPtr.Zero, IntPtr.Zero) : 0;
+    public static int ExtendedStyle(IntPtr tb) => Ok(tb) ? (int)Send(tb, TB_GETEXTENDEDSTYLE, IntPtr.Zero, IntPtr.Zero) : 0;
 
     /// <summary>Is the check button checked now (its TBSTATE_CHECKED)?</summary>
     public static bool IsChecked(IntPtr tb, int id) => Find(tb, id) is { Checked: true };
@@ -130,7 +133,7 @@ static class ToolbarControl
     /// <summary>Puts a check button in a state as the toolbar does for a click (TB_CHECKBUTTON; for a button of a check group the toolbar unchecks the others itself).</summary>
     public static void SetChecked(IntPtr tb, int id, bool check)
     {
-        if (Is(tb)) Send(tb, TB_CHECKBUTTON, (IntPtr)id, (IntPtr)(check ? 1 : 0));
+        if (Ok(tb)) Send(tb, TB_CHECKBUTTON, (IntPtr)id, (IntPtr)(check ? 1 : 0));
     }
 
     /// <summary>The window the toolbar's WM_COMMAND is for: its parent, as the control itself sends it.</summary>
@@ -139,6 +142,30 @@ static class ToolbarControl
     // the tooltips found, per toolbar window and command id: only a text is kept (an owner that has none now may have one later), and an entry of a window that is gone is dropped (a handle can be given to a new window)
     static readonly Dictionary<(IntPtr Toolbar, int Id), string> Tips = new();
     static IntPtr _asker;
+    static readonly HashSet<(IntPtr Toolbar, int Id)> Asked = new();
+
+    /// <summary>A recording or a replay starts: tool tips are asked of the program again (an empty answer is remembered only within one).</summary>
+    public static void ForgetAsked() { Asked.Clear(); Tips.Clear(); }
+
+    const uint TB_GETITEMDROPDOWNRECT = 0x0467;
+
+    /// <summary>The arrow part of a split drop-down button (BTNS_DROPDOWN on a toolbar with TBSTYLE_EX_DRAWDDARROWS) in client coordinates (TB_GETITEMDROPDOWNRECT), or null when it has none.</summary>
+    public static (int L, int T, int R, int B)? DropDownArrowRect(IntPtr tb, ToolbarButton b)
+    {
+        if (!Ok(tb) || !ToolbarPress.IsDropDown(b.Style) || (b.Style & ToolbarPress.WholeDropDown) != 0 || (ExtendedStyle(tb) & ToolbarPress.ExDrawDropDownArrows) == 0) return null;
+        var p = Marshal.AllocHGlobal(16);
+        try
+        {
+            for (int i = 0; i < 16; i += 4) Marshal.WriteInt32(p, i, 0);
+            if (Send(tb, TB_GETITEMDROPDOWNRECT, (IntPtr)b.Index, p) == IntPtr.Zero) return null;
+            var r = (Marshal.ReadInt32(p, 0), Marshal.ReadInt32(p, 4), Marshal.ReadInt32(p, 8), Marshal.ReadInt32(p, 12));
+            return r.Item3 > r.Item1 ? r : null;
+        }
+        finally { Marshal.FreeHGlobal(p); }
+    }
+
+    /// <summary>The button's rectangle in client coordinates.</summary>
+    public static (int L, int T, int R, int B)? ButtonRect(IntPtr tb, int index) => Ok(tb) ? ItemRect(tb, index) : null;
 
     /// <summary>The window a tooltip request is sent from: a window of Retrace's own, hidden (message-only), made once. MFC's handler of TTN_NEEDTEXT puts the window the notification names in <c>hwndFrom</c> on top (SetWindowPos
     /// HWND_TOP), a thing that must happen to Retrace's window and never to the program's toolbar or tooltip control.</summary>
@@ -155,7 +182,7 @@ static class ToolbarControl
     {
         foreach (var gone in Tips.Keys.Where(k => !Native.Exists(k.Toolbar)).ToList()) Tips.Remove(gone);
         if (Tips.TryGetValue((tb, id), out var known)) return known;
-        if (!Is(tb)) return "";
+        if (!Ok(tb)) return "";
         string tip = "";
         var owner = OwnerOf(tb);
         var from = Asker();
@@ -182,12 +209,27 @@ static class ToolbarControl
         return ToolbarLabel.Choose(own, own.Trim().Length > 0 ? null : Tooltip(tb, id), id);
     }
 
+    /// <summary>A button's own text and its tooltip (asked only when it has no text), both "" when none; for a recording only.</summary>
+    public static (string Text, string Tip) NamesOf(IntPtr tb, int id, bool ask = true, bool fresh = false)
+    {
+        foreach (var gone in Tips.Keys.Where(k => !Native.Exists(k.Toolbar)).ToList()) Tips.Remove(gone);
+        foreach (var gone in Asked.Where(k => !Native.Exists(k.Toolbar)).ToList()) Asked.Remove(gone);
+        var own = TextOf(tb, id);
+        if (own.Trim().Length > 0) return (own, "");
+        // the button the step is about is asked fresh (a toolbar may change its tool tips: Lock / Unlock); the cache serves only the other buttons, for the count of a name
+        if (fresh) { Tips.Remove((tb, id)); Asked.Add((tb, id)); return (own, Tooltip(tb, id)); }
+        if (Tips.TryGetValue((tb, id), out var known)) return (own, known);
+        if (!ask || Asked.Contains((tb, id))) return (own, "");   // an empty answer is asked once, not at every click or retry
+        Asked.Add((tb, id));
+        return (own, Tooltip(tb, id));   // without ask: only a tool tip already known (a request goes to the program for every button otherwise)
+    }
+
     /// <summary>Presses a button the way the toolbar does: posts WM_COMMAND (command id, notification 0, the toolbar as the control) to its owner. Null = posted, else why not; <paramref name="disabled"/>: the reason is that the
     /// button is disabled, which may be the program's update of its state that has not come yet (the caller tries again until the controls time out). The caller has checked <see cref="ToolbarPress.StopFor"/>.</summary>
     public static string? Press(IntPtr tb, int id, out bool disabled)
     {
         disabled = false;
-        if (!Is(tb)) return "the window is no toolbar";
+        if (!Ok(tb)) return "the window is no toolbar";
         var owner = OwnerOf(tb);
         if (owner == IntPtr.Zero) return "the toolbar has no owner window";
         if (Find(tb, id) is not { } b) return "the toolbar has no such button";

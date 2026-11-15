@@ -91,7 +91,18 @@ sealed partial class DialogWatch
     /// before, read before the button's handler ran; <paramref name="Index"/> says which of the enabled buttons with that text it is (1 = the first). <paramref name="Tab"/>: the tab the button sits on, or
     /// the one showing for a button outside the tabs (""/none in a dialog without tabs).</summary>
     public sealed record Click(int ForN, string Button, int Id, int Index, List<FieldChange> Changes, int Read, List<DialogStatic> Statics, string Tab = "",
-        string Kind = DialogClickKinds.Click, string Tree = "", string Path = "", string TreeLabel = "", bool OnDown = false, Retrace.Core.MenuChoice? Menu = null);
+        string Kind = DialogClickKinds.Click, string Tree = "", string Path = "", string TreeLabel = "", bool OnDown = false, Retrace.Core.MenuChoice? Menu = null,
+        IntPtr Dialog = default, ScreenRect? Rect = null);
+
+    /// <summary>A left click on an item of a tree, a list view or a list box of a tracked Win32 dialog (not a push button, not a double-click): <paramref name="Kind"/> tree | listview | list, the field's label, the item's text (a
+    /// tree item's path) and its rectangle on the screen, read before the control reacted. Only its picture matters: the value it set is read as ever.</summary>
+    public sealed record Pick(int ForN, IntPtr Dialog, string Kind, string Label, string Item, int Row, ScreenRect? Rect, Func<ScreenRect?>? Reread);
+
+    /// <summary>An item was clicked (see <see cref="Pick"/>), before the control handles the click.</summary>
+    public Action<Pick>? Picked { get; set; }
+
+    /// <summary>The rectangles of clicked items and buttons are read (the test document draws a frame and arrow on them); off: none is read, nowhere.</summary>
+    public bool WantRects { get; set; }
 
     /// <summary>ParentN: the <c>for</c> of the dialog this one was opened from (null: it was opened with no other tracked dialog open). Statics: the static texts of the last read
     /// that asked for them. ClosedBy: with <c>closedWith</c> "click", the button whose click closed the dialog. CloseTab: the tab showing when it closed (null: it has no tabs).</summary>
@@ -111,7 +122,7 @@ sealed partial class DialogWatch
 
     /// <summary>OK, or Enter / Space / a mnemonic that presses it, in a tracked dialog, before the dialog handles it: (n of its modal_title/modal_enter, dialog window). The recorder
     /// takes the "after" picture here.</summary>
-    public Action<int, IntPtr, (int X, int Y)?>? Confirmed { get; set; }
+    public Action<int, IntPtr, (int X, int Y)?, ScreenRect?>? Confirmed { get; set; }
 
     /// <summary>A dialog opened over the innermost tracked one, right after a button click, without <c>EnterModal</c> (see <see cref="ModalAbove"/>): the recorder writes its
     /// <c>modal_enter</c> and returns its event number (the <c>for</c> of its <c>dialog_values</c>); 0 = not recorded, and the window is left alone.
@@ -355,7 +366,60 @@ sealed partial class DialogWatch
         }
         Touch(e);
         ReadAtInput(e, now);
-        if (role == "ok") Confirmed?.Invoke(e.ForN, e.Hwnd, m.message == WM_LBUTTONDOWN ? (m.x, m.y) : null);   // the point of the mouse click that confirms; the dialog's picture points at it
+        if (role == "ok") Confirmed?.Invoke(e.ForN, e.Hwnd, m.message == WM_LBUTTONDOWN ? (m.x, m.y) : null, m.message == WM_LBUTTONDOWN && WantRects ? ClickRects.Window(hwnd) : null);   // the point and button of the mouse click that confirms; the dialog's picture points at it
+        else if (m.message == WM_LBUTTONDOWN) NotePick(e, m);
+    }
+
+    /// <summary>The mouse went down on a tree item, a list view item or a list box item: it is announced (<see cref="Picked"/>) so the recorder takes the picture of the dialog once the click has settled.</summary>
+    void NotePick(Entry e, Native.Msg m)
+    {
+        if (Picked == null || !e.Resolved || IsWpf(e)) return;
+        try
+        {
+            var h = m.hwnd;
+            var seg = DialogReader.Segment(DialogReader.ClassOf(h));
+            string kind, item;
+            ScreenRect? rect;
+            int row = 0;
+            Func<ScreenRect?>? reread;
+            int x = (short)((long)m.lParam & 0xFFFF), y = (short)(((long)m.lParam >> 16) & 0xFFFF);
+            if (seg == "systreeview32")
+            {
+                var it = TreeControl.ItemAt(h, m.lParam);
+                if (it == IntPtr.Zero) return;   // the +/- button, the indent, a check box, empty space
+                kind = "tree"; item = TreePath.Join(TreeControl.TextsTo(h, it)); var picked = item;
+                rect = WantRects ? ClickRects.TreeItem(h, it) : null;
+                // at picture time: the same item (its path unchanged) and in view, else no rectangle
+                reread = WantRects ? () => Native.Exists(h) && TreePath.Join(TreeControl.TextsTo(h, it)) == picked ? ClickRects.TreeItem(h, it) : null : null;
+            }
+            else if (seg == "syslistview32")
+            {
+                if (!Native.OwnedByThisThread(h)) return;
+                int index = MenuListView.HitTest(h, x, y);
+                if (index < 0) return;
+                kind = ListSelection.Kind; item = ClickRects.ListViewText(h, index); row = index + 1; var picked = item;
+                rect = WantRects ? ClickRects.ListViewItem(h, index) : null;
+                // the row must still hold the clicked item (a click that refilled or re-sorted the list moves it): else no rectangle
+                reread = WantRects ? () => Native.Exists(h) && ClickRects.ListViewText(h, index) == picked ? ClickRects.ListViewItem(h, index) : null : null;
+            }
+            else if (seg == "listbox")
+            {
+                if (!Native.OwnedByThisThread(h)) return;
+                int index = ClickRects.ListBoxIndexAt(h, x, y);
+                if (index < 0) return;
+                // an owner-drawn list box without strings answers LB_GETTEXT with item data: no text then, the row number says which
+                kind = "list"; item = (DialogReader.GetWindowLong(h, -16) & 0x40 /* LBS_HASSTRINGS */) != 0 ? DialogReader.ListBoxItemText(h, index).Trim() : ""; row = index + 1; var picked = item;
+                rect = WantRects ? ClickRects.ListBoxItem(h, index) : null;
+                reread = WantRects ? () => Native.Exists(h) && (DialogReader.GetWindowLong(h, -16) & 0x40) != 0 == (picked.Length > 0) && (picked.Length == 0 || DialogReader.ListBoxItemText(h, index).Trim() == picked) ? ClickRects.ListBoxItem(h, index) : null : null;
+            }
+            else return;
+            var label = $"#{DialogReader.GetDlgCtrlID(h)}";
+            if (e.LastScan is { } scan)
+                for (int i = 0; i < scan.Fields.Count && i < scan.Handles.Count; i++)
+                    if (scan.Fields[i].Kind == kind && scan.Handles[i].Contains(h)) { label = scan.Fields[i].Label; break; }
+            Picked(new Pick(e.ForN, e.Hwnd, kind, label, item, row, rect, reread));
+        }
+        catch (Exception ex) { Log.Error("dialog pick", ex); }
     }
 
     /// <summary>The mouse button came up: the click is complete when it is on the button the press went down on and inside it; released elsewhere, it is dropped.</summary>
@@ -431,7 +495,7 @@ sealed partial class DialogWatch
             SettleIfPending(e, null);
             e.ClosedWith = "ok";
             ReadAtInput(e, now);
-            Confirmed?.Invoke(e.ForN, e.Hwnd, null);
+            Confirmed?.Invoke(e.ForN, e.Hwnd, null, null);
             return;
         }
         ButtonPressed(e, button, now);
@@ -448,7 +512,7 @@ sealed partial class DialogWatch
         if (role == null && !Retrace.Core.DialogButtons.IsHelp(text)) { e.Press = new Pending(focus, text, DialogReader.GetDlgCtrlID(focus), true); return; }
         SettleIfPending(e, null);
         ReadAtInput(e, now);
-        if (role == "ok") Confirmed?.Invoke(e.ForN, e.Hwnd, null);
+        if (role == "ok") Confirmed?.Invoke(e.ForN, e.Hwnd, null, null);
     }
 
     void SpaceUp(Entry e, Native.Msg m, long now)
@@ -481,7 +545,7 @@ sealed partial class DialogWatch
         }
         SettleIfPending(e, null);
         ReadAtInput(e, now);
-        if (role == "ok") Confirmed?.Invoke(e.ForN, e.Hwnd, null);
+        if (role == "ok") Confirmed?.Invoke(e.ForN, e.Hwnd, null, null);
     }
 
     /// <summary>The press is a click: the dialog is read (fields and buttons in one pass, then the static texts), the click goes out, and the baseline moves to the values read, so the dialog's
@@ -494,7 +558,8 @@ sealed partial class DialogWatch
         var basis = snap.Basis;
         var dbl = p.Kind == DialogClickKinds.DoubleClick;
         var click = new Click(e.ForN, p.Text, p.Id, dbl || basis == null || p.Menu != null ? 1 : DialogReader.ButtonIndex(basis, p.Button), snap.Changes, snap.Read, snap.Statics,
-            p.Menu != null || p.Kind == DialogClickKinds.Toolbar ? (basis != null && basis.Tabs.Count > 0 ? basis.Showing : "") : dbl ? p.Tab : basis?.TabOf(p.Button) ?? "", p.Kind, p.TreeKey, p.Path, p.TreeLabel, onDown && !dbl, p.Menu);
+            p.Menu != null || p.Kind == DialogClickKinds.Toolbar ? (basis != null && basis.Tabs.Count > 0 ? basis.Showing : "") : dbl ? p.Tab : basis?.TabOf(p.Button) ?? "", p.Kind, p.TreeKey, p.Path, p.TreeLabel, onDown && !dbl, p.Menu,
+            e.Hwnd, p.Menu != null || dbl || !WantRects ? null : p.Kind == DialogClickKinds.Toolbar ? (ToolbarControl.ItemScreenRect(p.Button, (int)p.Item) is { } tb ? new ScreenRect(tb.L, tb.T, tb.R, tb.B) : null) : ClickRects.Window(p.Button));
         // a diagnostic for a custom control Retrace does not know: a button click that changed no field logs what the window holds, once
         if (snap.Changes.Count == 0 && !e.ClassesLogged && p.Menu == null && !dbl && Native.Exists(e.Hwnd))
         {
@@ -620,7 +685,7 @@ sealed partial class DialogWatch
     }
 
     /// <summary>"ok" / "cancel" for the dialog's OK / Cancel button (control id IDOK/IDCANCEL, or its text), else null.</summary>
-    static string? ButtonRole(IntPtr hwnd) => DialogReader.GetDlgCtrlID(hwnd) switch { 1 => "ok", 2 => "cancel", _ => Retrace.Core.DialogButtons.Role(Native.TitleOf(hwnd)) };
+    static string? ButtonRole(IntPtr hwnd) => DialogReader.GetDlgCtrlID(hwnd) switch { 1 => "ok", 2 => Retrace.Core.DialogButtons.RoleOfId2(Native.TitleOf(hwnd)), _ => Retrace.Core.DialogButtons.Role(Native.TitleOf(hwnd)) };
 
     /// <summary>One read of the dialog: the static texts when asked for (they are Win32 texts, whatever the source of the fields), then the fields. A dialog with no Win32 field after a few reads is
     /// read through UI Automation (<see cref="DialogClickRules.FlipToUia"/>); that is only how its fields are read: its push buttons are still tracked.</summary>

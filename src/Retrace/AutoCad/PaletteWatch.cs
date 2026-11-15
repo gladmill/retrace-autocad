@@ -15,7 +15,7 @@ namespace Retrace.AutoCad;
 sealed class PaletteWatch
 {
     public const long ThrottleMs = 300;
-    const uint WM_LBUTTONDBLCLK = 0x0203, WM_LBUTTONDOWN = 0x0201, WM_KEYDOWN = 0x0100;
+    const uint WM_LBUTTONDBLCLK = 0x0203, WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202, WM_KEYDOWN = 0x0100;
 
     /// <summary>Where input landed: the palette's window (its tab in the set), the palette's name and the palette set's title.</summary>
     public sealed record Spot(IntPtr Page, string Palette, string Set);
@@ -55,6 +55,23 @@ sealed class PaletteWatch
     /// <summary>The click on a tree item (or its +/- button), an image, a list view item or an unnamed control the last <see cref="OnInput"/> saw, or null. The button of the result is its name.</summary>
     public PaletteClickInfo? Intermediate { get; private set; }
 
+    /// <summary>A toolbar click that went down and waits for its button-up.</summary>
+    sealed record Pend(Spot Spot, PaletteClickInfo Info, IntPtr Hwnd);
+    Pend? _pend;
+
+    /// <summary>A toolbar item went down and its button-up is still to come (the recorder passes that message on).</summary>
+    public bool HasPending => _pend != null;
+
+    /// <summary>Does the button come up over the same item it went down on?</summary>
+    static bool SameTarget(Pend p, IntPtr hwnd, IntPtr lParam)
+    {
+        int x = (short)((long)lParam & 0xFFFF), y = (short)(((long)lParam >> 16) & 0xFFFF);
+        if (hwnd != p.Hwnd) return false;
+        if (p.Info.Kind == PaletteClickKinds.Toolbar) return ToolbarControl.HitTest(hwnd, x, y) == p.Info.TargetIndex;
+        if (p.Info.Drop) return PaletteClickDetect.DropDownChoice(hwnd, lParam, out _, out var leaf) != null && ReferenceEquals(leaf, p.Info.Target);
+        return ToolStripControls.StripOf(hwnd) is { } strip && ToolStripControls.ItemAt(strip, x, y) is { } it && ReferenceEquals(it.Obj, p.Info.Target) && !ToolStripControls.OnArrow(it, x, y);
+    }
+
     public bool Enabled { get; set; }
     /// <summary>Keep close-up pictures of the palette (setting screenshots).</summary>
     public bool Pictures { get; set; }
@@ -64,7 +81,7 @@ sealed class PaletteWatch
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] static extern bool IsChild(IntPtr parent, IntPtr h);
 
-    public void Clear() => _cur = null;
+    public void Clear() { _cur = null; _pend = null; }
 
     /// <summary>The palette <paramref name="h"/> is in, or null. The chain AutoCAD builds (seen in R25.1, floating and docked): the control's
     /// WinForms / WPF windows, then the palette (AfxWnd, titled with the palette's name), the palette set (AfxWnd, the set's title), and
@@ -108,16 +125,39 @@ sealed class PaletteWatch
         Double = null; Intermediate = null;
         ButtonFrom = null; ButtonLegacyIndex = 0; ButtonNoTextCount = 0;
         ButtonNaming.Recorded? rec = null;
-        if (!Enabled) return (null, null, null, 0, null);
-        var spot = Locate(hwnd);
+        if (!Enabled) { _pend = null; return (null, null, null, 0, null); }
+        // a toolbar item acts on the button-UP over the item it went down on: the click is recorded then (before the control handles that message, so what the handler starts follows it in the recording), and a press dragged off the item records nothing
+        PaletteClickInfo? upClick = null;
+        Spot? upSpot = null;
+        if (message == WM_LBUTTONUP)
+        {
+            var p = _pend; _pend = null;
+            if (p == null)
+            {
+                // the press went down on a drop-down button and the button came up on an item of its menu: no click (a menu item acts on a press that went down on it)
+                if (ToolStripControls.IsDropDownWindow(hwnd) && PaletteClickDetect.DropDownChoice(hwnd, lParam, out _) != null) Log.Info("palette toolbar click not recorded: the button was pressed on a drop-down button and released on a menu item");
+                return (null, null, null, 0, null);
+            }
+            if (!SameTarget(p, hwnd, lParam)) { Log.Info($"palette toolbar click not recorded: the button was released off the item it went down on ({p.Info.Button})"); return (null, null, null, 0, null); }
+            // a menu item whose menu opens when it is pressed but had no items at the press (filled on open): the click is the choice made in it, not this press
+            if (!p.Info.Drop && p.Info.Target != null && ToolStripControls.IsOpen(p.Info.Target)) { Log.Info($"palette toolbar click not recorded: the item opened a menu ({p.Info.Button}); the item chosen in it is the click"); return (null, null, null, 0, null); }
+            upClick = p.Info; upSpot = p.Spot;
+        }
+        else if (message == WM_LBUTTONDOWN) _pend = null;
+        var spot = upSpot ?? Locate(hwnd);
+        // the menu of a toolbar's drop-down button is a window of its own: an item chosen there is a click of the palette's toolbar item (the strip leads back to the palette)
+        PaletteClickInfo? dropChoice = null;
+        if (spot == null && message == WM_LBUTTONDOWN && PaletteClickDetect.DropDownChoice(hwnd, lParam, out var stripWindow) is { } dc && Locate(stripWindow) is { } stripSpot) { dropChoice = dc; spot = stripSpot; }
         // a combo box's drop-down list is a top-level window of its own (Win32 ComboLBox, a WPF popup): picking an item there is still work in
         // the palette
-        if (spot == null && _cur != null && (DialogReader.ClassOf(hwnd) == "ComboLBox" || WpfPalette.IsPopup(hwnd))) return (null, null, null, 0, null);
+        // (a click in the drop-down menu of a toolbar item that is no choice, a sub menu that only opens, a separator, a disabled item, padding, is work in the palette too)
+        if (spot == null && _cur != null && (DialogReader.ClassOf(hwnd) == "ComboLBox" || WpfPalette.IsPopup(hwnd) || ToolStripControls.IsDropDownWindow(hwnd))) return (null, null, null, 0, null);
         if (spot == null) return (Flush(nowMs, drop: true), null, null, 0, null);
         Values? left = null;
         if (_cur == null || _cur.Where.Page != spot.Page) { left = Flush(nowMs, drop: true); Begin(spot, nowMs); }
         string? button = null;
-        if (message == WM_LBUTTONDOWN)
+        if (upClick != null) { Intermediate = upClick; button = upClick.Button; }
+        else if (message == WM_LBUTTONDOWN)
         {
             // a WinForms push button is told by its class and style alone (no scan for any other window); a WPF button by a hit test, and only then is the page scanned
             rec = DialogReader.PushButtonText(hwnd) != null ? DialogReader.RecordButton(spot.Page, hwnd) : null;
@@ -125,7 +165,11 @@ sealed class PaletteWatch
             button = rec?.Name;
         }
         else if (message == WM_LBUTTONDBLCLK && TreeDoubleClick(hwnd, spot, lParam) is { } dbl) { Double = dbl.Info; button = dbl.Text; }
-        if (button == null && message is WM_LBUTTONDOWN or WM_LBUTTONDBLCLK && PaletteClickDetect.Detect(spot.Page, hwnd, message, lParam) is { } ic) { Intermediate = ic; button = ic.Button; rec = null; }
+        if (upClick == null && button == null && message is WM_LBUTTONDOWN or WM_LBUTTONDBLCLK && (dropChoice ?? PaletteClickDetect.Detect(spot.Page, hwnd, message, lParam)) is { } ic)
+        {
+            if (ic.Kind is PaletteClickKinds.ToolStrip or PaletteClickKinds.Toolbar) { _pend = new Pend(spot, ic, hwnd); return (left, null, null, 0, null); }   // recorded at the button-up
+            Intermediate = ic; button = ic.Button; rec = null;
+        }
         // Space presses a focused WinForms button (Enter only does in a form with an AcceptButton, not in a palette)
         else if (message == WM_KEYDOWN && (long)wParam == 0x20 && (((long)lParam >> 30) & 1) == 0 && DialogReader.PushButtonText(hwnd) != null && DialogReader.RecordButton(spot.Page, hwnd) is { } kb) { rec = kb; button = kb.Name; }
         if (button == null) return (left, null, null, 0, null);

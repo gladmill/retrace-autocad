@@ -56,13 +56,13 @@ public sealed partial class Commands
     {
         var dir = RetraceSettings.Load().Tests;
         Directory.CreateDirectory(dir);
-        if (Ask.InWindow()) return AskSession(ed);
+        if (Ask.InWindow()) return AskSession(ed, offerLast: true);
         if (!FileDialogsOn() || Ask.ScriptKnown())   // FILEDIA 0, or a script: the command-line path prompt (a script's next line answers it)
         {
             var r = Ask.String(ed, "\nRecording ('last' = newest): ");
             if (r.Status != PromptStatus.OK) return null;
             var s = r.StringResult.Trim().Trim('"');
-            if (s.Equals("last", StringComparison.OrdinalIgnoreCase)) return TestFolders.Newest(dir);
+            if (s.Equals("last", StringComparison.OrdinalIgnoreCase)) return TestFolders.Newest(dir, Recorder.Instance.Writer?.Path);
             return s.Length == 0 ? null : s;
         }
         var dlg = new Microsoft.Win32.OpenFileDialog { Title = "Choose recording.jsonl in a test folder", Filter = "Retrace recordings (*.jsonl)|*.jsonl", InitialDirectory = dir };
@@ -379,9 +379,12 @@ public sealed partial class Commands
                     if (chosen.Count > 0) n.BasicCheckItems = chosen;
                     else ed.WriteMessage($"\nBasic check counts not changed: \"{biv}\" names none of {string.Join(", ", BasicCheckRules.AllItems)}.\n");
                 }
-                var ar = Ask.Keywords(ed, new PromptKeywordOptions($"\nDraw a green arrow at each click of a replay and in step pictures (showClickArrows) [Yes/No] <{(s.ShowClickArrows ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
+                var ar = Ask.Keywords(ed, new PromptKeywordOptions($"\nDraw a green arrow at each click of a replay and in Tdoc pictures (showClickArrows) [Yes/No] <{(s.ShowClickArrows ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
                 if (ar.Status == PromptStatus.Cancel) return;
                 n.ShowClickArrows = ar.Status == PromptStatus.OK ? ar.StringResult == "Yes" : s.ShowClickArrows;
+                var tdArrows = Ask.Keywords(ed, new PromptKeywordOptions($"\nDraw a green rectangle and arrow at each click in the test document pictures (testDocArrows) [Yes/No] <{(s.TestDocArrows ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
+                if (tdArrows.Status == PromptStatus.Cancel) return;
+                n.TestDocArrows = tdArrows.Status == PromptStatus.OK ? tdArrows.StringResult == "Yes" : s.TestDocArrows;
                 SaveAndReport(ed, n);
                 return;
             }
@@ -437,7 +440,8 @@ public sealed partial class Commands
                $"  Loaded CUIX      : {(s.LoadedCustomization ? "documented too (the main .cuix, partials, enterprise file AutoCAD has loaded)" : "not documented")}\n" +
                $"  Prompts          : {(s.UiPrompts ? "window (on top, Browse and recent places; scripts, LISP and FILEDIA 0 use the command line)" : "command line")}\n" +
                $"  Tdoc front       : {(s.TdocBringToFront ? "on" : "off")} (RETRACETDOC brings AutoCAD, the dialog or the palette to the front before each picture)\n" +
-               $"  Click arrows     : {(s.ShowClickArrows ? "on" : "off")} (a green arrow at each click of a replay, and in step pictures)\n" +
+               $"  Click arrows     : {(s.ShowClickArrows ? "on" : "off")} (a green arrow at each click of a replay, and in Tdoc pictures)\n" +
+               $"  Test doc arrows  : {(s.TestDocArrows ? "on" : "off")} (a green rectangle and arrow at each click in the pictures of steps.md, made while recording)\n" +
                $"  Tdoc boxes       : {(s.TdocAnnotate ? "on" : "off")} (green numbered boxes on the pictures where the user gives input)\n" +
                $"  Tdoc pause       : {s.TdocStepDelayMs} ms (before each picture, so the screen has repainted)\n" +
                $"  Suite timeout    : {s.SuiteStepTimeoutSeconds} s (RETRACESUITE cancels a step that runs longer and records the test as ERROR)\n" +

@@ -35,6 +35,9 @@ public static class ShotRules
     /// <summary>How long after an event the picture is taken: AutoCAD repaints after the handler returns.</summary>
     public const int SettleMs = 200;
     public const int DialogSettleMs = 150;
+    /// <summary>How long after a click inside a dialog or palette its picture is taken: the control has reacted (a list filled by a tree selection) and the window has been painted. The first of the
+    /// timer and idle pumps at or after this time takes it; a click that comes sooner takes the one before it at once.</summary>
+    public const int ClickSettleMs = 300;
 
     /// <summary>The picture request an event leads to, or null. <paramref name="input"/> is the prompt event's `input` flag.
     /// Prompt results only get one when a real click or key press led to them; a scripted command (no flags) is covered by its cmd_end.</summary>

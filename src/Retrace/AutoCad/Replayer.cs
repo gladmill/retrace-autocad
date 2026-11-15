@@ -772,7 +772,13 @@ sealed class Replayer
             var d = PaletteReveal.RectOf(dlg);
             _win.Avoid(d.Left, d.Top, d.Right, d.Bottom);   // keep the replay window off the dialog being filled
         }
-        if (PaletteFill.TakePressFailure() is { } pressFailed) { Finish(false, true, pressFailed); return; }
+        if (PaletteFill.TakePressFailure() is { } pressFailed)
+        {
+            // a click the queue refused (a toolbar button that is not the recorded one): the same end as a button that is not found, needs a person; any other late failure is an error as before
+            if (PaletteFill.TakeFailureNeedsPerson() && _i > 0 && _i - 1 < _steps.Count) StopForPerson("palette", _steps[_i - 1].Title, pressFailed, $"needs a person: palette ({pressFailed})", step: _i - 1);
+            else Finish(false, true, pressFailed);
+            return;
+        }
         if (_paletteCommand != null) { TickPaletteCommand(); return; }
         bool dialogWindowOpen = _modalDepth > 0 && !ModalWithoutWindow();
         // the answers a person gave between the click and the chain's first dialog are the click's: typed as the script asks, whether a dialog step follows or not
@@ -977,6 +983,7 @@ sealed class Replayer
                         Log.Info($"replay: the script's command waits at \"{tick.Answer!.Message}\" ({tick.Answer.Kind}): typing {ReplayRules.AnswerText(tick.Answer)}");
                         Say($"\n  typing {ReplayRules.AnswerText(tick.Answer)}\n");
                         SendTracked(tick.Text!);
+                        _tdoc?.AnswersTyped(_i);   // Tdoc: the first answer after this dialog is typed: their step stays, even when the command's next dialog opens before the rest (or the delivery's end) is seen
                         _win.Show($"Step {_i + 1}/{_steps.Count}: typing the script's input", ReplayRules.AnswerText(tick.Answer), false);
                         return;
                     case DeliveryKind.Wait:
@@ -985,6 +992,7 @@ sealed class Replayer
                         return;
                     case DeliveryKind.Done:
                         _delivery = null; _chainPausedFor = _i; _notBefore = DateTime.Now.AddMilliseconds(400);
+                        _tdoc?.AnswersTyped(_i);   // Tdoc: the answers a person gave after this dialog have been typed (their step is pictured)
                         break;
                     case DeliveryKind.TimedOut:
                         pauseMessage = _delivery.TimedOutMessage(_chainStep);
@@ -993,7 +1001,7 @@ sealed class Replayer
                 }
             }
             else if (due.Count > 0) pauseMessage = ReplayRules.ChainPauseMessage(_chainStep, due);
-            if (due.Count == 0) _chainPausedFor = _i;
+            if (due.Count == 0) { _chainPausedFor = _i; _tdoc?.AnswersTyped(_i); }   // nothing for the replay to type after this dialog: what a person gave while it was open (a pick-point button) is still in the Tdoc's step
             else if (pauseMessage != null)
             {
                 _chainPausedFor = _i;
@@ -1013,6 +1021,7 @@ sealed class Replayer
         {
             if (!_userNext) return;
             _chainPausing = false; _userNext = false;
+            _tdoc?.AnswersTyped(_i);   // Tdoc: the replay could not type the answers after this dialog (or the script did not ask in time); the person gave them and continued: their step stays in the document
             _notBefore = DateTime.Now.AddMilliseconds(400);
         }
         if (d.Phase == DialogWaitPhase.Done && _deferred != null && _modalDepth == 0)

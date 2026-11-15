@@ -178,6 +178,7 @@ public sealed class Recorder
         var w = _w;
         Unsubscribe();
         if (w == null) return null;
+        _shots.FlushDeferred();
         _shots.Drain(2000);   // pictures taken so far get their `shot` events; pending requests are dropped
         _shots.End();
         _w = null;
@@ -305,16 +306,22 @@ public sealed class Recorder
         var enabled = settings.Screenshots;
         _dlg.Clear(); _modals.Clear(); _episodes.Clear();
         _dlg.Enabled = settings.DialogValues;
-        _pal.Clear(); NativePalette.Clear();
+        _pal.Clear(); NativePalette.Clear(); PaletteClickDetect.NewSession();
         _pal.Enabled = settings.DialogValues;
         _pal.Pictures = settings.Screenshots;
         _dlg.Clock = () => _w?.ElapsedMs ?? 0;
-        _dlg.Confirmed = (n, h, pt) =>
+        _dlg.Confirmed = (n, h, pt, rect) =>
         {
-            // the picture of the filled dialog points at the button that was clicked with the mouse (the point comes from the dialog watch's own hook; a key press closing the dialog has none)
+            _shots.FlushDeferred();   // the click before OK has settled: the dialog shows what it did
+            // the picture of the filled dialog points at the button that was clicked with the mouse (the point and the button's rectangle come from the dialog watch's own hook; a key press closing the dialog has none)
             if (_shots.Arrows) { if (pt is { } p) _shots.NoteClick(n, p.X, p.Y); else _shots.ForgetClick(n); }   // an Enter after an earlier mouse OK gets no arrow
+            if (rect is { } r) _shots.NoteTarget(n, r.Left, r.Top, r.Right, r.Bottom);
             _shots.DialogAfter(n, h);
         };
+        _dlg.WantRects = settings.Screenshots && settings.TestDocArrows;
+        PaletteClickDetect.WantRects = settings.Screenshots && settings.TestDocArrows;
+        ToolbarControl.ForgetAsked();   // with the arrows off no rectangle is read
+        _dlg.Picked = settings.Screenshots ? p => Log.Safe("dialog pick", () => EmitDialogPick(p)) : null;   // with pictures off nothing is read for a pick
         _dlg.Clicked = c => Log.Safe("dialog click", () => EmitDialogClick(c));
         _dlg.Main = MainWindowHandle();
         _menu.Enabled = settings.DialogValues;
@@ -325,7 +332,7 @@ public sealed class Recorder
         _menu.Start();
         _dlg.NestedOpened = e => { var n = 0; Log.Safe("nested dialog", () => n = EmitNestedOpened(e)); return n; };
         _dlg.NestedClosed = r => Log.Safe("nested dialog closed", () => { EmitDialogValues(r); Emit("modal_leave", CurDoc()); });
-        _shots.Arrows = settings.ShowClickArrows;
+        _shots.Arrows = settings.TestDocArrows;   // the test document's own setting (the training document's showClickArrows is not read here)
         ButtonNaming.NewSession();
         _shots.Begin(w.Path, enabled, MainWindowHandle(), () => _modalOpen > 0, (n, file, what) =>
         {
@@ -533,13 +540,22 @@ public sealed class Recorder
             _lastRibbonId = item.Id;
             _lastRibbonMacro = macro;
             _lastRibbonConsumed = false;
-            Emit("ribbon", CurDoc(),
+            // the picture of the click is taken now, with the button under the cursor and before the command's dialog covers the screen; the picture the scheduler would take 200 ms later is then not needed
+            ShotService.Picture? clickPic = null;
+            if (_shots.Enabled) { var main = MainWindowHandle(); clickPic = ShotService.CaptureWindow(main)?.Pic; }
+            var n0 = Emit("ribbon", CurDoc(),
                 ("id", item.Id), ("text", RibbonMap.Label(item)), ("name", item.Name),
                 ("macro", macro), ("itemType", item.GetType().Name),
                 ("tabId", tab?.Id ?? loc?.TabId), ("tab", tab?.Title ?? loc?.TabTitle),
                 ("panelId", panel?.Source?.Id ?? loc?.PanelId), ("panel", panel?.Source?.Title ?? loc?.PanelTitle), ("path", loc?.Path),
                 ("parent", e.Parent == null ? null : RibbonMap.Label(e.Parent)),
                 ("activeTab", _hookedRibbon?.ActiveTab?.Title));
+            if (n0 > 0 && clickPic != null)
+            {
+                _shots.Suppress(n0);
+                if (_shots.Arrows && TdocTargets.RibbonItemRect(item.Id) is { Panel: false } hit) _shots.NoteTarget(n0, hit.Rect.Left, hit.Rect.Top, hit.Rect.Right, hit.Rect.Bottom);   // the button itself; none when it is not shown
+                _shots.Write(n0, "ribbon", clickPic, "window");
+            }
         });
     }
 
@@ -681,6 +697,7 @@ public sealed class Recorder
 
     void OnEnterModal(object? s, EventArgs e) => Log.Safe("EnterModal", () =>
     {
+        _shots.FlushDeferred();   // a click that opened this dialog: its picture is taken now, before the window shows (it would show the dialog later)
         _modalOpen++;
         if (_inOwnCmd || _ownModal > 0) { _ownModal++; return; }
         var token = _modals.Enter();
@@ -795,7 +812,31 @@ public sealed class Recorder
         EmitDialogButton(c);
     }
 
-    void EmitDialogButton(DialogWatch.Click c) =>
+    /// <summary>A tree / list item clicked in a dialog: its event (the picture is taken once the click has settled, so the list a tree selection filled is in it) and the item's rectangle for the frame and arrow.</summary>
+    void EmitDialogPick(DialogWatch.Pick p)
+    {
+        var w = _w;
+        if (w == null || !_shots.Enabled) return;
+        _shots.FlushDeferred();   // the click before it has settled by now
+        var n = Emit("dialog_pick", CurDoc(), ("for", p.ForN), ("kind", p.Kind), ("label", p.Label), ("item", p.Item), ("row", p.Row > 0 ? p.Row : null));
+        if (n <= 0) return;
+        if (_shots.Arrows && p.Rect is { } r) _shots.NoteTarget(n, r.Left, r.Top, r.Right, r.Bottom);
+        _shots.DeferDialog(n, p.Dialog, w.ElapsedMs + ShotRules.ClickSettleMs, null, p.Reread is { } re ? () => re() is { } rr ? (rr.Left, rr.Top, rr.Right, rr.Bottom) : null : null);
+    }
+
+    void EmitDialogButton(DialogWatch.Click c)
+    {
+        _shots.FlushDeferred();   // the click before it has settled by now
+        var n = EmitDialogButtonEvent(c);
+        var w = _w;
+        if (n <= 0 || w == null || !_shots.Enabled || c.Dialog == IntPtr.Zero || c.Kind == DialogClickKinds.DoubleClick) return;
+        // the picture of the click: taken now, before the button's handler runs (a button that closes the dialog is shown as it was pressed), and again once the dialog has settled when it is still there
+        if (c.Rect is { } r) _shots.NoteTarget(n, r.Left, r.Top, r.Right, r.Bottom);
+        // a button that acts as the mouse goes down and opens a nested dialog: that dialog is over this one by now, so there is no press-time picture (the settled one is not taken either: the dialog is covered)
+        _shots.DeferDialog(n, c.Dialog, w.ElapsedMs + ShotRules.ClickSettleMs, Native.IsEnabled(c.Dialog) ? _shots.CaptureDialogNow(c.Dialog) : null, null);
+    }
+
+    int EmitDialogButtonEvent(DialogWatch.Click c) =>
         Emit("dialog_click", CurDoc(), ("for", c.ForN), ("button", c.Button), ("id", c.Id), ("index", c.Index), ("fields", FieldsJson(c.Changes)), ("read", c.Read),
             ("tab", c.Tab.Length > 0 ? c.Tab : null), ("statics", DialogStatics.ToJson(c.Statics)),
             ("kind", c.Kind != DialogClickKinds.Click ? c.Kind : null), ("onDown", c.OnDown ? true : null), ("tree", c.Tree.Length > 0 ? c.Tree : null), ("path", c.Path.Length > 0 ? c.Path : null),
@@ -886,7 +927,8 @@ public sealed class Recorder
         if (w == null) return;
         try
         {
-            if (message == 0x0202) { _pal.NoteInput(hwnd); return; }   // a button-up: no click of its own
+            if (message == 0x0202 && !_pal.HasPending) { _pal.NoteInput(hwnd); return; }   // a button-up: no click of its own (but the one a toolbar item waits for)
+            if (message is 0x0201 or 0x0202 or 0x0203) _shots.FlushDeferred();   // the click before this one has settled by now: its picture is taken before this click is handled
             var (changed, at, button, index, picture) = _pal.OnInput(hwnd, message, wParam, lParam, w.ElapsedMs);
             _pal.NoteInput(hwnd);
             EmitPalette(changed, withPicture: button == null);   // values and the click are one step: the click carries the picture
@@ -903,8 +945,8 @@ public sealed class Recorder
                 var fields = new List<(string, object?)> { ("palette", at.Palette), ("set", at.Set), ("button", button) };
                 fields.AddRange(ic.ToFields());
                 int k = Emit("palette_click", CurDoc(), fields.ToArray());
-                if (message is 0x0201 or 0x0203) _shots.NoteClick(k, _downX, _downY);   // a double-click that opens a node: the point of its first button-down
-                if (picture != null) _shots.Write(k, "palette-closeup", picture, "palette");
+                if (message is 0x0201 or 0x0202 or 0x0203) _shots.NoteClick(k, _downX, _downY);   // a double-click that opens a node: the point of its first button-down
+                PaletteClickPicture(k, hwnd, lParam, at, picture, ic.Kind == PaletteClickKinds.Image, ic.Rect);
                 _lastPaletteT = w.ElapsedMs; _lastPaletteTick = _inputTick; _lastPaletteButton = button; _lastPaletteConsumed = false;
                 return;
             }
@@ -914,10 +956,22 @@ public sealed class Recorder
             int n = index > 1 ? Emit("palette_click", CurDoc(), ("palette", at.Palette), ("set", at.Set), ("button", button), ("buttonFrom", from), ("index", index), ("legacyIndex", legacy), ("noTextCount", noText))
                               : Emit("palette_click", CurDoc(), ("palette", at.Palette), ("set", at.Set), ("button", button), ("buttonFrom", from), ("legacyIndex", legacy), ("noTextCount", noText));
             if (message == 0x0201) _shots.NoteClick(n, _downX, _downY);
-            if (picture != null) _shots.Write(n, "palette-closeup", picture, "palette");
+            PaletteClickPicture(n, hwnd, lParam, at, picture);
             _lastPaletteT = w.ElapsedMs; _lastPaletteTick = _inputTick; _lastPaletteButton = button; _lastPaletteConsumed = false;
         }
         catch (Exception ex) { Log.Error("palette input", ex); }
+    }
+
+    /// <summary>The palette's close-up for a click, taken once the click has settled (a list a tree click filled is in it); <paramref name="before"/>, the close-up kept while the person worked, is the fallback when the palette
+    /// is gone by then. The clicked item's rectangle gives the frame and arrow of this picture and of the window picture.</summary>
+    void PaletteClickPicture(int n, IntPtr hwnd, IntPtr lParam, PaletteWatch.Spot at, ShotService.Picture? before, bool pictureBox = false, ScreenRect? itemRect = null)
+    {
+        var w = _w;
+        if (w == null) return;
+        if (_shots.Arrows && (itemRect ?? ClickRects.Of(hwnd, lParam, pictureBox)) is { } r) _shots.NoteTarget(n, r.Left, r.Top, r.Right, r.Bottom);
+        int modalAtClick = _modalOpen;   // a modal state that was already open at the click does not cover the palette; one that opened after it does
+        // a click that opens a modal dialog: the palette is under it by then (taken at the EnterModal, or the one from before the click is used)
+        _shots.DeferRect(n, "palette-closeup", "palette", w.ElapsedMs + ShotRules.ClickSettleMs, () => _modalOpen <= modalAtClick && PaletteReveal.PictureRect(at.Page) is { } pr ? (pr.Left, pr.Top, pr.Right, pr.Bottom) : null, before);
     }
 
     /// <summary>A context menu item was chosen (<see cref="MenuWatch"/>): in a tracked dialog it is written as a click of that dialog; in a palette the values changed so far go first, then the

@@ -53,6 +53,7 @@ public sealed class ShotNamer
         var kind = shot.What switch
         {
             "dialog-after" => "dialog-after",
+            "dialog-click" => "dialog-click",
             "dialog" => "dialog-before",
             "palette" => "palette",
             _ => raw.Success && RawKinds.TryGetValue(raw.Groups[1].Value, out var k) ? k : role,

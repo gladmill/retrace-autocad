@@ -164,13 +164,15 @@ public sealed partial class Commands
         $"Word export: {(s.ExportDocx ? "on" : "off")}, Excel export: {(s.ExportXlsx ? "on" : "off")} (RETRACESETTINGS)\n";
 
     /// <summary>Asks for a recording: Enter = file picker, "last" = newest in the Tests folder, or a path.</summary>
-    static string? AskSession(Editor ed)
+    /// <param name="offerLast">in the prompt window, a "Run last test" button (Run test, Step); not for questions where the newest test makes no sense (export)</param>
+    static string? AskSession(Editor ed, bool offerLast = false)
     {
         var tests = RetraceSettings.Load().Tests;
-        var r = Ask.String(ed, "\nRecording (Enter = browse, 'last' = newest test): ", Ask.Of.File, "recording", RecordingFilter, browseFrom: Directory.Exists(tests) ? tests : null);
+        var r = Ask.String(ed, "\nRecording (Enter = browse, 'last' = newest test): ", Ask.Of.File, "recording", RecordingFilter, browseFrom: Directory.Exists(tests) ? tests : null,
+            lastTest: offerLast ? () => TestFolders.Newest(tests) : null, recordingRunning: Recorder.Instance.IsRecording);
         if (r.Status != PromptStatus.OK && r.Status != PromptStatus.None) return null;
         var s = r.StringResult?.Trim().Trim('"') ?? "";
-        if (s.Equals("last", StringComparison.OrdinalIgnoreCase)) return TestFolders.Newest(tests);
+        if (s.Equals("last", StringComparison.OrdinalIgnoreCase)) return TestFolders.Newest(tests, Recorder.Instance.Writer?.Path);   // never the recording being written
         if (s.Length > 0) return s;
         if (Ask.ScriptKnown()) return null;   // a script has nobody to use a file dialog: its answer above was the whole answer ("No recording chosen." if empty)
         var dlg = new Microsoft.Win32.OpenFileDialog { Title = "Choose recording.jsonl in a test folder", Filter = RecordingFilter, InitialDirectory = Directory.Exists(tests) ? tests : null };
@@ -184,7 +186,7 @@ public sealed partial class Commands
         var ed = Ed; if (ed == null) return;
         try
         {
-            var path = AskSession(ed);
+            var path = AskSession(ed, offerLast: true);
             if (path == null || !File.Exists(path)) { ed.WriteMessage("\nNo recording chosen.\n"); return; }
             var k = new PromptKeywordOptions("\nReplay mode [Auto/Step] <Step>: ", "Auto Step") { AllowNone = true };
             k.Keywords.Default = "Step";

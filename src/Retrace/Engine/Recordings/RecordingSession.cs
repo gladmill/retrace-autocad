@@ -170,8 +170,24 @@ public sealed class RecordingDialogClick
     /// <summary>A context menu choice instead of a button (`context_menu` with `for`): <see cref="Button"/> is then the menu path.</summary>
     public Retrace.Core.MenuChoice? Menu { get; init; }
     public List<RecordingDialogValue> Values { get; } = new();
+    /// <summary>The pictures of this click (what "dialog-click"): the dialog as it was when the button was pressed, or once it had settled after it.</summary>
+    public List<RecordingShot> Shots { get; } = new();
     /// <summary>The dialogs this click opened, in order (steps of kind "dialog" that are not in <see cref="RecordingSession.Steps"/>).</summary>
     public List<RecordingStep> Nested { get; } = new();
+}
+
+/// <summary>A click on a tree item, a list item or a list box item in a dialog (a `dialog_pick` event): not a step of the replay (the value it set is in the `fields` of the next click or of the
+/// dialog's close); it only carries the picture of the dialog as it looked once the click had settled. <see cref="Kind"/>: tree | listview | list.</summary>
+public sealed class RecordingDialogPick
+{
+    public string Kind { get; init; } = "";
+    public string Label { get; init; } = "";
+    /// <summary>The item's text; for a tree its path (`Root › Child`).</summary>
+    public string Item { get; init; } = "";
+    /// <summary>The 1-based row of a list view / list box item (0 = not recorded); names the item when its text could not be read.</summary>
+    public int Row { get; init; }
+    public long T { get; init; }
+    public List<RecordingShot> Shots { get; } = new();
 }
 
 /// <summary>One thing the tester did: a ribbon click, a typed command, a dialog, a checkpoint note...</summary>
@@ -222,6 +238,8 @@ public sealed class RecordingStep
     /// <summary>dialog: the push buttons clicked in it, in order; <see cref="Values"/> then holds the changes made after the last click. Empty when the
     /// recording has no `dialog_click` event for this dialog.</summary>
     public List<RecordingDialogClick> Clicks { get; } = new();
+    /// <summary>dialog: the tree / list items clicked in it that have a picture (`dialog_pick`), in order. Empty for a recording from before they were recorded.</summary>
+    public List<RecordingDialogPick> Picks { get; } = new();
     /// <summary>command / ribbon / lisp: dialogs opened while it ran (see <see cref="OpenedIn"/>).</summary>
     public List<RecordingStep> InnerDialogs { get; } = new();
     /// <summary>palette: what was done in a native palette (AutoCAD's own, such as the Project Manager); null for .NET palettes.</summary>
@@ -373,6 +391,7 @@ public static class RecordingReader
         var nativeDialogs = new HashSet<RecordingStep>();   // dialog steps opened right after a native palette action
         string? firstDoc = null, lastDoc = null;
         var targets = new Dictionary<long, List<RecordingShot>>();
+        List<RecordingShot>? clickShots = null;   // the pictures list of the dialog click / pick the current event wrote
         var startup = DrawingOpen.StartupEvents(s.Events.Select(x => x.Raw));   // LISP AutoCAD ran by itself while a drawing opened: not steps
         // the same rule as the replay's plan (Core/Plan.ScriptChain): a ribbon click whose LISP runs a SCRIPT file owns the commands the script types, so steps.md and the replay number the steps alike
         bool hasInputFlags = Retrace.Core.Plan.HasInputFlags(s.Events.Select(x => x.Raw));
@@ -386,6 +405,7 @@ public static class RecordingReader
         {
             idx++;
             ownedEvent = false;
+            clickShots = null;
             if (e.N is { } en && startup.Contains(en)) continue;
             if (collapsed[idx].TryGetProperty("type", out var collapsedType) && collapsedType.GetString() == Retrace.Core.DragRuns.DroppedType) continue;   // a drag sample that is not the answer
             if (windowless.Contains(idx)) continue;   // a modal state with no dialog window: not a dialog step
@@ -542,6 +562,15 @@ public static class RecordingReader
                         var click = new RecordingDialogClick { Button = e.Str("button") ?? "", Kind = Retrace.Core.DialogClickKinds.Of(e.Str("kind")), Path = e.Str("path") ?? "", TreeLabel = e.Str("treeLabel") ?? "", T = e.T, Tab = e.Str("tab") ?? "" };
                         if (e.Raw.TryGetProperty("fields", out var cfs)) AddValues(click.Values, cfs);
                         clicked.Clicks.Add(click);
+                        clickShots = click.Shots;
+                    }
+                    break;
+                case "dialog_pick":
+                    if (e.Raw.TryGetProperty("for", out var pickFor) && pickFor.ValueKind == JsonValueKind.Number && pickFor.TryGetInt64(out var pickN) && modalByN.TryGetValue(pickN, out var picked))
+                    {
+                        var pick = new RecordingDialogPick { Kind = e.Str("kind") ?? "", Label = e.Str("label") ?? "", Item = e.Str("item") ?? "", Row = e.Raw.TryGetProperty("row", out var rowEl) && rowEl.ValueKind == JsonValueKind.Number && rowEl.TryGetInt32(out var rowN) ? rowN : 0, T = e.T };
+                        picked.Picks.Add(pick);
+                        clickShots = pick.Shots;
                     }
                     break;
                 case "context_menu":
@@ -635,6 +664,7 @@ public static class RecordingReader
             // which list a later `shot` event for this event number goes to
             var tgt = e.Type switch
             {
+                "dialog_click" or "dialog_pick" => clickShots,
                 "ribbon" when IsOwnRibbon(e.Str("id"), e.Str("tabId")) => null,   // its picture is not a step's: it ends up in unused
                 "ribbon" or "cmd_start" or "cmd_unknown" or "lisp_start" => cur?.Shots,
                 "cmd_end" or "cmd_cancel" or "cmd_fail" or "lisp_end" or "lisp_cancel" => cur?.EndShots,
@@ -655,6 +685,12 @@ public static class RecordingReader
             if (!targets.TryGetValue(target, out var list)) continue;
             var norm = file.Replace('\\', '/');
             list.Add(new RecordingShot(norm, e.Str("what") ?? "window", Path.Combine(dir, norm.Replace('/', Path.DirectorySeparatorChar))));
+        }
+        // a palette click's pictures are listed click first, then the palette close-up, whichever was written first (a message box the click opens delays the window picture until it is closed)
+        foreach (var st in s.Steps.Where(x => x.Kind == "palette" && x.Shots.Count > 1))
+        {
+            var ordered = st.Shots.OrderBy(x => x.What == "palette" ? 1 : 0).ToList();   // OrderBy is stable
+            st.Shots.Clear(); st.Shots.AddRange(ordered);
         }
         // In AutoCAD Electrical something requests a point on every mouse move while a command waits; the recorder flags
         // results that a click or key press led to. Where a step has such flags, the unflagged results are that noise.

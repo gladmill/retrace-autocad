@@ -50,6 +50,8 @@ public sealed class Step
     public bool ChainClick;
     /// <summary>ChainClick: when the chain's first event happened.</summary>
     public long ChainFromT = long.MaxValue;
+    /// <summary>ChainClick: the command the script started last before the first dialog opened (the one that shows it and asks for the rest); null = none. Only the Tdoc names its prompts step after it.</summary>
+    public string? ChainCommand;
     /// <summary>ChainClick: the answers a person gave inside the script (from the time of its first event); the step's own answers (SCRIPT's file name) are before it.</summary>
     public IEnumerable<Answer> ChainAnswers => Answers.Where(a => a.T >= ChainFromT);
     /// <summary>command: the recorder's `script` flag of its `cmd_start` (CMDACTIVE bit 4: a script was active), null = the recording has none.</summary>
@@ -209,7 +211,7 @@ public static class Plan
     static bool IsNeutral(JsonElement e)
     {
         var ty = Str(e, "type");
-        if (ty is "shot" or "view_stale" or "state" or "end_counts" or "mark" or "doc_active" or "modal_enter" or "modal_title" or "modal_leave" or "modal_alias" or "modal_nowindow" or "dialog_values" or "dialog_click" or DragRuns.DroppedType) return true;
+        if (ty is "shot" or "view_stale" or "state" or "end_counts" or "mark" or "doc_active" or "modal_enter" or "modal_title" or "modal_leave" or "modal_alias" or "modal_nowindow" or "dialog_values" or "dialog_click" or "dialog_pick" or DragRuns.DroppedType) return true;
         return ty == "context_menu" && e.TryGetProperty("for", out var f) && f.ValueKind == JsonValueKind.Number;
     }
 
@@ -401,6 +403,7 @@ public static class Plan
         var startup = DrawingOpen.StartupEvents(list);   // LISP AutoCAD ran by itself while a drawing opened: not steps
         bool hasInputFlags = HasInputFlags(list);
         var windowless = MainWindowModal.Windowless(list);
+        var chainDepth = new Dictionary<Step, int>();   // per script-chain click: how many commands of its script are open before its first dialog
         var chains = ScriptChain(list as IReadOnlyList<JsonElement> ?? list.ToList(), startup);   // event index -> the event index of the ribbon click that owns it
         Step? lispStep = null;   // the LISP step still running (its end time)
         var ribbonAt = new Dictionary<int, Step>();   // event index of a step's first event (a click, a command, a LISP) -> the step; the owner of a script chain is found here
@@ -418,6 +421,14 @@ public static class Plan
                 if (!ownerStep.ChainClick) { ownerStep.ChainClick = true; ownerStep.ChainFromT = t; }
                 if (type == "lisp_start" && ownerStep.Kind == "ribbon" && ownerStep.Lisp == null) ownerStep.Lisp = Str(e, "firstLine");   // the click's own LISP: typed when the click starts nothing and the button has no macro
                 if (type is "lisp_end" or "lisp_cancel") inLisp = false;
+                // the command the script started (depth 0 -> 1) that is still open when the first dialog opens: it shows the dialog and asks for the rest. A command it runs itself (depth > 1) never names the step,
+                // and one that ended before the dialog opened is not it (a later one may be)
+                if (!ownerStep.HadDialog)
+                {
+                    chainDepth.TryGetValue(ownerStep, out var cd);
+                    if (type == "cmd_start") { if (cd == 0 && Str(e, "command") is { Length: > 0 } chainCmd && !string.Equals(chainCmd, "SCRIPT", StringComparison.OrdinalIgnoreCase)) ownerStep.ChainCommand = chainCmd; chainDepth[ownerStep] = cd + 1; }
+                    else if (type is "cmd_end" or "cmd_cancel" or "cmd_fail") { chainDepth[ownerStep] = Math.Max(0, cd - 1); if (cd <= 1) ownerStep.ChainCommand = null; }
+                }
                 if (IsPersonPrompt(e, hasInputFlags)) AddAnswer(ownerStep, e, staleViews);
                 cur = ownerStep;
                 continue;

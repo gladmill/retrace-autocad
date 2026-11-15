@@ -12,6 +12,10 @@ namespace Retrace.Samples
         [CommandMethod("DRAWINSERT")]
         public void DrawInsert() => Run(low: false);
 
+        /// <summary>The same with a list of large icons (cabinets) between the tree and the buttons, and no label on either: the recording names them by id. The dialog a Tdoc's item arrows are checked with.</summary>
+        [CommandMethod("DRAWINSERTLIST")]
+        public void DrawInsertList() => Run(low: false, list: true);
+
         /// <summary>The same, with the dialog opened partly below the screen.</summary>
         [CommandMethod("DRAWINSERTLOW")]
         public void DrawInsertLow() => Run(low: true);
@@ -40,7 +44,7 @@ namespace Retrace.Samples
             Draw(doc, name, pt.Value, ang.Status == PromptStatus.OK ? ang.Value : 0);
         }
 
-        private static void Run(bool low)
+        private static void Run(bool low, bool list = false)
         {
             var doc = Application.DocumentManager.MdiActiveDocument;
             var ed = doc.Editor;
@@ -48,7 +52,7 @@ namespace Retrace.Samples
             InsertDialog.Low = low;
             try
             {
-                using var dialog = new InsertDialog();
+                using var dialog = new InsertDialog(withList: list);
                 if (Application.ShowModalDialog(dialog) != System.Windows.Forms.DialogResult.OK) return;
                 name = dialog.PartName;
             }

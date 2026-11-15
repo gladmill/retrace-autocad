@@ -27,3 +27,17 @@
   (command "_.SCRIPT" "C:/temp/retrace-chain/slowdialog.scr")
   (princ)
 )
+
+;; INSERTADD: its script (insertlist.scr) types DRAWINSERTLIST: the Insert list dialog (a tree, a list of large icons, Add / Quick add), then its prompts for a point and a rotation (a person's).
+(defun C:INSERTADD ()
+  (command "_.UCS" "_W")
+  (command "_.SCRIPT" "C:/temp/retrace-chain/insertlist.scr")
+  (princ)
+)
+
+;; INSERTTWOADD: its script (inserttwo.scr) types DRAWINSERTTWO: a dialog, "Insertion point:", a second dialog, "Rotation angle:" (a person's answers): a script chain with two dialogs.
+(defun C:INSERTTWOADD ()
+  (command "_.UCS" "_W")
+  (command "_.SCRIPT" "C:/temp/retrace-chain/inserttwo.scr")
+  (princ)
+)

@@ -44,6 +44,10 @@ public static class TestFolders
     public static DateTime? ParseStarted(string? started) =>
         DateTimeOffset.TryParse(started, CultureInfo.InvariantCulture, DateTimeStyles.None, out var d) ? d.DateTime : null;
 
+    /// <summary>The same instant as a UTC time, for ordering: the clock time alone sorts wrongly across a time-zone or DST change.</summary>
+    public static DateTime? ParseStartedUtc(string? started) =>
+        DateTimeOffset.TryParse(started, CultureInfo.InvariantCulture, DateTimeStyles.None, out var d) ? d.UtcDateTime : null;
+
     /// <summary>`yyyy-MM-dd_HH-mm-ss`: a result file's stamp.</summary>
     public static string Stamp(DateTime t) => t.ToString("yyyy-MM-dd_HH-mm-ss", CultureInfo.InvariantCulture);
 
@@ -56,8 +60,13 @@ public static class TestFolders
     /// <summary>`steps.md` next to a recording.jsonl.</summary>
     public static string ScriptPath(string recordingPath) => Path.Combine(Path.GetDirectoryName(recordingPath) ?? "", StepsFile);
 
-    /// <summary>When the recording started: the header's `started`, else the file's time.</summary>
-    public static DateTime StartedOf(string recordingPath)
+    /// <summary>When the recording started: the header's `started` (clock time as written), else the file's time.</summary>
+    public static DateTime StartedOf(string recordingPath) => ReadStarted(recordingPath, utc: false);
+
+    /// <summary>When the recording started as a UTC time (for ordering): the header's `started`, else the file's time.</summary>
+    public static DateTime StartedUtcOf(string recordingPath) => ReadStarted(recordingPath, utc: true);
+
+    static DateTime ReadStarted(string recordingPath, bool utc)
     {
         try
         {
@@ -68,11 +77,11 @@ public static class TestFolders
             {
                 using var d = System.Text.Json.JsonDocument.Parse(first);
                 if (d.RootElement.TryGetProperty("started", out var s) && s.ValueKind == System.Text.Json.JsonValueKind.String
-                    && ParseStarted(s.GetString()) is { } t) return t;
+                    && (utc ? ParseStartedUtc(s.GetString()) : ParseStarted(s.GetString())) is { } t) return t;
             }
         }
         catch (Exception) { }
-        try { return File.GetLastWriteTime(recordingPath); } catch (Exception) { return DateTime.MinValue; }
+        try { return utc ? File.GetLastWriteTimeUtc(recordingPath) : File.GetLastWriteTime(recordingPath); } catch (Exception) { return DateTime.MinValue; }
     }
 
     /// <summary>`root\*\recording.jsonl` (one level down), newest first: by the header's `started`, then the file's time, then path. Never throws.</summary>
@@ -82,13 +91,23 @@ public static class TestFolders
         {
             if (!Directory.Exists(root)) return [];
             return Directory.EnumerateDirectories(root).Where(d => !Skip(d)).Select(d => Path.Combine(d, RecordingFile)).Where(File.Exists)
-                .OrderByDescending(StartedOf).ThenByDescending(f => f, StringComparer.OrdinalIgnoreCase).ToList();
+                .OrderByDescending(StartedUtcOf).ThenByDescending(f => f, StringComparer.OrdinalIgnoreCase).ToList();
         }
         catch (Exception) { return []; }
     }
 
     /// <summary>The recording that started last, or null.</summary>
     public static string? Newest(string root) => FindRecordings(root).FirstOrDefault();
+
+    /// <summary>The tooltip of the prompt window's "Run last test" button: the test it runs, or why it is off.</summary>
+    public static string RunLastTip(string? recording, bool recordingRunning) =>
+        recordingRunning ? "A recording is running: stop it first."
+        : recording == null ? "There is no recorded test yet."
+        : $"Runs the test recorded most recently, at once:\n{NameOf(recording)}";
+
+    /// <summary>The recording that started last, leaving out <paramref name="except"/> (the recording being written right now), or null.</summary>
+    public static string? Newest(string root, string? except) =>
+        FindRecordings(root).FirstOrDefault(f => except == null || !string.Equals(Path.GetFullPath(f), Path.GetFullPath(except), StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Every recording of a folder: its test folders. If <paramref name="root"/> is itself a test folder, its recording.</summary>
     public static List<string> FindAll(string root)
