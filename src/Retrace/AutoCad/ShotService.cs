@@ -21,10 +21,88 @@ sealed class ShotService
 
     // ---- click arrows in step pictures (setting showClickArrows) ------------------------------------------------------------
     readonly Dictionary<int, (int X, int Y)> _clicks = new();
+    readonly Dictionary<int, Core.PxRect> _rects = new();
+    readonly HashSet<int> _suppressed = new();
     bool _arrows;
 
-    /// <summary>Step pictures get the green click arrow (setting <c>showClickArrows</c>): drawn into the saved image, never captured from the live overlay.</summary>
-    public bool Arrows { get => _arrows; set { _arrows = value; _clicks.Clear(); } }
+    /// <summary>Step pictures get a green rectangle and arrow where the click was (setting <c>testDocArrows</c>): drawn into the saved image, never captured from the live overlay.</summary>
+    public bool Arrows { get => _arrows; set { _arrows = value; _clicks.Clear(); _rects.Clear(); } }
+
+    /// <summary>The screen rectangle of what the person clicked for event <paramref name="n"/> (an item's row, a button, the ribbon button): its picture gets a green frame around it and an arrow ending on it.
+    /// Not noted when the rectangle is empty; a picture the rectangle is not in gets neither (never a guessed spot).</summary>
+    public void NoteTarget(int n, int left, int top, int right, int bottom) { if (_arrows && n > 0 && right > left && bottom > top) _rects[n] = new Core.PxRect(left, top, right, bottom); }
+
+    /// <summary>The window picture the scheduler would take for event <paramref name="n"/> (the ribbon click's) is not needed: a picture was taken at the click itself.</summary>
+    public void Suppress(int n) { if (n > 0) _suppressed.Add(n); }
+
+    /// <summary>The frame and the arrow for event <paramref name="n"/>'s picture of the screen rectangle <paramref name="src"/> saved at <paramref name="w"/> x <paramref name="h"/>: around its noted rectangle, else
+    /// the arrow at its noted point.</summary>
+    (AnnotationBox? Box, Func<byte[], ArrowLine?>? Arrow) MarksFor(int n, Core.PxRect src, int w, int h)
+    {
+        if (!_arrows) return (null, null);
+        if (_rects.TryGetValue(n, out var r))
+        {
+            var box = Annotate.ToPicture(r.Left, r.Top, r.Right, r.Bottom, src.Left, src.Top, src.Width, src.Height, w, h, 0);
+            if (box == null) return (null, null);
+            var pb = new Core.PxRect(box.Value.Left, box.Value.Top, box.Value.Left + box.Value.Width, box.Value.Top + box.Value.Height);
+            return (box, px => ClickArrow.ForBoxQuiet(pb, src, w, h, px));   // ends at the rectangle's corner, from the side of the picture that is least busy there
+        }
+        var point = ArrowFor(n, src, w, h);
+        return (null, point == null ? null : _ => point);
+    }
+
+    // ---- pictures taken after the click has settled -------------------------------------------------------------------------
+    sealed record Deferred(int N, string Kind, string What, long DueMs, Func<(int L, int T, int R, int B)?> Area, Picture? Held, Func<(int L, int T, int R, int B)?>? Reread = null);
+    readonly List<Deferred> _deferred = new();
+
+    /// <summary>A picture of a screen area for event <paramref name="n"/>, taken when <paramref name="dueMs"/> has come (the click's reaction has been painted by then), or at once on <see cref="FlushDeferred"/>.
+    /// <paramref name="area"/> is asked then: null (the window is gone or something is over it) means <paramref name="held"/>, the picture taken when the click was pressed, is written instead; no held picture, none written.</summary>
+    public void DeferRect(int n, string kind, string what, long dueMs, Func<(int L, int T, int R, int B)?> area, Picture? held, Func<(int L, int T, int R, int B)?>? reread = null)
+    {
+        if (_enabled && n > 0) _deferred.Add(new Deferred(n, kind, what, dueMs, area, held, reread));
+    }
+
+    /// <summary>The dialog window's picture of a click, as <see cref="DeferRect"/>; <paramref name="held"/> from <see cref="CaptureDialogNow"/>. Settled means the dialog still exists, shows and is enabled (no window over it).</summary>
+    public void DeferDialog(int n, IntPtr dialog, long dueMs, Picture? held, Func<(int L, int T, int R, int B)?>? reread = null) =>
+        DeferRect(n, "dialog-click", "dialog-click", dueMs, () =>
+        {
+            if (!Native.Exists(dialog) || !Win.IsWindowVisible(dialog) || Win.IsIconic(dialog) || !Native.IsEnabled(dialog)) return null;
+            var b = Win.Bounds(dialog);
+            return b.Width > 0 && b.Height > 0 ? (b.Left, b.Top, b.Right, b.Bottom) : null;
+        }, held, reread);
+
+    /// <summary>A picture of the dialog window as it is now (the press-time picture of a button that may close it); null when it cannot be taken. UI thread.</summary>
+    public Picture? CaptureDialogNow(IntPtr dialog) => _enabled ? CaptureWindow(dialog)?.Pic : null;
+
+    /// <summary>Takes the pictures that are due (<paramref name="force"/>: all of them now).</summary>
+    void PumpDeferred(long nowMs, bool force)
+    {
+        if (_deferred.Count == 0) return;
+        foreach (var d in _deferred.Where(x => force || x.DueMs <= nowMs).ToList())
+        {
+            _deferred.Remove(d);
+            try
+            {
+                Picture? pic = null;
+                if (d.Area() is { } a)
+                {
+                    pic = CaptureRect(a.L, a.T, a.R, a.B);
+                    // the click may have scrolled or opened the item: where it is now (the press-time rectangle stays when it cannot be read)
+                    if (pic != null && d.Reread != null)
+                    {
+                        if (d.Reread() is { } rr) NoteTarget(d.N, rr.L, rr.T, rr.R, rr.B);
+                        else _rects.Remove(d.N);   // the item cannot be confirmed where it was (scrolled away, gone, another item now): no frame and no arrow rather than a wrong one
+                    }
+                }
+                pic ??= d.Held;
+                if (pic != null) Write(d.N, d.Kind, pic, d.What);
+            }
+            catch (Exception ex) { Log.Error($"shot {d.N} {d.Kind}", ex); }
+        }
+    }
+
+    /// <summary>Takes the deferred pictures now: another click is about to be handled (the dialog shows what the click before it did), or the dialog is about to close.</summary>
+    public void FlushDeferred() => PumpDeferred(long.MaxValue, true);
 
     /// <summary>The screen point where the person clicked for event <paramref name="n"/>: its picture points at it.</summary>
     public void NoteClick(int n, int x, int y) { if (_arrows && n > 0) _clicks[n] = (x, y); }
@@ -54,7 +132,7 @@ sealed class ShotService
         _sched.Clear();
         _tasks.Clear();
         _afterTaken.Clear();
-        _clicks.Clear();
+        _clicks.Clear(); _rects.Clear(); _suppressed.Clear(); _deferred.Clear();
         _sessionPath = sessionPath;
         _folder = Path.Combine(Path.GetDirectoryName(sessionPath) ?? "", ShotNaming.FolderFor(sessionPath));
         _enabled = enabled;
@@ -74,6 +152,7 @@ sealed class ShotService
     /// <summary>Fulfils what is due. <paramref name="force"/>: everything pending now (recording is stopping).</summary>
     public void Pump(long nowMs, bool force = false)
     {
+        if (_enabled) PumpDeferred(nowMs, force);
         if (!_enabled || _sched.Pending == 0) return;
         List<ShotRequest> ready;
         try { ready = _sched.TakeReady(nowMs, force); }
@@ -89,6 +168,7 @@ sealed class ShotService
     {
         IntPtr hwnd;
         string what;
+        if (r.Kind == "ribbon" && _suppressed.Contains(r.N)) return;   // the picture was taken when the button was clicked
         if (r.Target == ShotTarget.Dialog)
         {
             if (!_modalOpen()) return;                       // the dialog is already gone: the screen shows something else
@@ -150,15 +230,19 @@ sealed class ShotService
         var path = Path.Combine(_folder, ShotNaming.FileName(n, kind));
         var rel = ShotNaming.RelativePathFor(_sessionPath, n, kind);
         var onShot = _onShot;
-        var arrow = p.HasOrigin ? ArrowFor(n, new Core.PxRect(p.Left, p.Top, p.Left + p.Width, p.Top + p.Height), p.Width, p.Height) : null;
+        var (nw, nh) = what == "window" ? ShotImage.FitSize(p.Width, p.Height) : (p.Width, p.Height);
+        var (box, arrow) = p.HasOrigin ? MarksFor(n, new Core.PxRect(p.Left, p.Top, p.Left + p.Width, p.Top + p.Height), nw, nh) : (null, null);
         var t = Task.Run(() =>
         {
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-                var data = p.Pixels;
-                if (arrow is { } a) { data = (byte[])data.Clone(); Annotate.DrawArrow(data, p.Width, p.Height, a); }
-                Png.Write(path, p.Width, p.Height, data); onShot(n, rel, what);
+                var data = nw == p.Width && nh == p.Height ? p.Pixels : ShotImage.Scale(p.Pixels, p.Width, p.Height, nw, nh);
+                if (box != null || arrow != null) { if (ReferenceEquals(data, p.Pixels)) data = (byte[])data.Clone(); }
+                var a = arrow?.Invoke(data);   // decided on the picture as it is, before the frame is drawn on it
+                if (box is { } bx) Annotate.Draw(data, nw, nh, new[] { bx });
+                if (a is { } al) Annotate.DrawArrow(data, nw, nh, al);
+                Png.Write(path, nw, nh, data); onShot(n, rel, what);
             }
             catch (Exception ex) { Log.Error($"shot {n} write", ex); }
         });
@@ -175,14 +259,16 @@ sealed class ShotService
         int w = b.Width, h = b.Height;
         var onShot = _onShot;
         var (nw, nh) = what == "window" ? ShotImage.FitSize(w, h) : (w, h);
-        var arrow = ArrowFor(n, new Core.PxRect(b.Left, b.Top, b.Right, b.Bottom), nw, nh);
+        var (box, arrow) = MarksFor(n, new Core.PxRect(b.Left, b.Top, b.Right, b.Bottom), nw, nh);
         var t = Task.Run(() =>
         {
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
                 var data = nw == w && nh == h ? px : ShotImage.Scale(px, w, h, nw, nh);
-                if (arrow is { } a) Annotate.DrawArrow(data, nw, nh, a);
+                var a = arrow?.Invoke(data);   // decided on the picture as it is, before the frame is drawn on it
+                if (box is { } bx) Annotate.Draw(data, nw, nh, new[] { bx });
+                if (a is { } al) Annotate.DrawArrow(data, nw, nh, al);
                 Png.Write(path, nw, nh, data);
                 if (announce) onShot(n, rel, what);
             }
@@ -201,7 +287,7 @@ sealed class ShotService
 
     public void End()
     {
-        _clicks.Clear();
+        _clicks.Clear(); _rects.Clear(); _suppressed.Clear(); _deferred.Clear();
         _sched.Clear();
         _enabled = false;
         _onShot = (_, _, _) => { };

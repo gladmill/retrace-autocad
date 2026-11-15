@@ -61,6 +61,20 @@ public static class Annotate
         }
     }
 
+    /// <summary>The place of the number tag of box <paramref name="b"/> (picture pixels), as <see cref="Draw"/> puts it; empty when the number gets no tag. For keeping other things off it.</summary>
+    public static PxRect TagArea(AnnotationBox b, int width, int height)
+    {
+        if (b.Number is < 1 or > 99) return default;
+        long l = Math.Max(0L, b.Left), t = Math.Max(0L, b.Top);
+        int L = (int)l, T = (int)t;
+        int ol = L >= Frame ? L - Frame : L, ot = T >= Frame ? T - Frame : T;
+        var text = b.Number.ToString();
+        int scale = width >= 1600 ? 3 : 2;
+        int tw = text.Length * GlyphW * scale + (text.Length - 1) * scale + 2 * Pad, th = GlyphH * scale + 2 * Pad;
+        int ty = ot >= th ? ot - th : ot;
+        return new PxRect(ol, ty, ol + tw, ty + th);
+    }
+
     static void Tag(byte[] px, int w, int h, int x, int y, int number)
     {
         var text = number.ToString();

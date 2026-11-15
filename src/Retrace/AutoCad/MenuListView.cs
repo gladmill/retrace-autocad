@@ -112,10 +112,17 @@ static class MenuListView
         public void Dispose() { Marshal.FreeHGlobal(_item); Marshal.FreeHGlobal(_text); }
     }
 
+    /// <summary>The first-column text of one item (the one a click hit), "" when it cannot be read. Only this item is read.</summary>
+    public static string ItemText(IntPtr list, int index)
+    {
+        try { using var r = new Texts(list); return r.Of(index).Trim(); }
+        catch (Exception ex) { Log.Error("list view item text", ex); return ""; }
+    }
+
     static int Count(IntPtr list) => Math.Min(Ask(list, LVM_GETITEMCOUNT, IntPtr.Zero, IntPtr.Zero).ToInt32(), MaxItems);
     static bool IsSelected(IntPtr list, int index) => (Ask(list, LVM_GETITEMSTATE, (IntPtr)index, (IntPtr)LVIS_SELECTED).ToInt64() & LVIS_SELECTED) != 0;
 
-    static int HitTest(IntPtr list, int x, int y)
+    internal static int HitTest(IntPtr list, int x, int y)
     {
         var info = Marshal.AllocHGlobal(24);
         try
@@ -332,6 +339,32 @@ static class MenuListView
                 if (!scroll && (!GetClientRect(list, out var cr) || p.X < 0 || p.Y < 0 || p.X >= cr.Width || p.Y >= cr.Height)) return null;
                 ClientToScreen(list, ref p);
                 return (p.X, p.Y);
+            }
+            return null;
+        }
+        finally { Marshal.FreeHGlobal(rect); }
+    }
+
+    /// <summary>Tdoc: the screen rectangle of row <paramref name="index"/>, cut to the list's client area: icon and label together in the icon views (what a person clicks), else the label; the row is scrolled into view first
+    /// (<paramref name="scroll"/>). Null when the list does not show it (never a guessed rectangle).</summary>
+    public static (int Left, int Top, int Right, int Bottom)? RowRect(IntPtr list, int index, bool scroll = true)
+    {
+        var rect = Marshal.AllocHGlobal(16);
+        try
+        {
+            if (scroll) Ask(list, LVM_ENSUREVISIBLE, (IntPtr)index, IntPtr.Zero);
+            bool icons = ViewOf(list) is "icon" or "smallicon";
+            foreach (var part in icons ? new[] { 0, 2 } : new[] { 2, 0 })   // LVIR_BOUNDS (icon and label), LVIR_LABEL
+            {
+                Marshal.WriteInt32(rect, 0, part);
+                if (Ask(list, LVM_GETITEMRECT, (IntPtr)index, rect) == IntPtr.Zero) continue;
+                int l = Marshal.ReadInt32(rect, 0), t = Marshal.ReadInt32(rect, 4), r = Marshal.ReadInt32(rect, 8), b = Marshal.ReadInt32(rect, 12);
+                if (!GetClientRect(list, out var cr)) return null;
+                l = Math.Max(l, 0); t = Math.Max(t, 0); r = Math.Min(r, cr.Width); b = Math.Min(b, cr.Height);
+                if (r - l < 2 || b - t < 2) continue;
+                var tl = new POINT { X = l, Y = t }; var br = new POINT { X = r, Y = b };
+                ClientToScreen(list, ref tl); ClientToScreen(list, ref br);
+                return (tl.X, tl.Y, br.X, br.Y);
             }
             return null;
         }

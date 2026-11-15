@@ -81,7 +81,7 @@ sealed class TdocCapture : IDisposable
     sealed record Continuation(int Doc, Step Shown, int Group, int GroupEnd, bool Last);
     readonly Dictionary<int, Continuation> _after = new();   // dialog step -> the answers given after it
     readonly HashSet<int> _typed = new();                    // dialog steps after which the replay typed the answers of their command
-    bool Typed(Continuation c) => _typed.Any(d => d >= c.Group && d <= c.GroupEnd);
+    bool Typed(Continuation c) => TdocSplit.IsTyped(_typed, c.Group, c.GroupEnd);
 
     /// <summary>The replay typed the answers a command's person gave after its dialogs (it is at the dialog step <paramref name="dialog"/>, the first of the command, or a later one when the next dialog opened at once).</summary>
     public void AnswersTyped(int dialog) => _typed.Add(dialog);
@@ -226,7 +226,7 @@ sealed class TdocCapture : IDisposable
                 }
                 else targets.Add((p.Text, p.Role == CalloutRole.CommandLine ? TdocTargets.CommandLineRect(_main) : null));
             }
-        Save(i, w.Value.Pic, w.Value.Left, w.Value.Top, targets, TdocPlan.Caption(s), arrowAt);
+        Save(i, w.Value.Pic, w.Value.Left, w.Value.Top, targets, TdocPlan.Caption(s), arrowAt is { } ra ? [new ArrowAt(ra, false, _annotate ? 0 : -1)] : null);
     }
 
     void ShootPalette(int i, Step s)
@@ -236,15 +236,25 @@ sealed class TdocCapture : IDisposable
         if (page != IntPtr.Zero && PaletteReveal.PictureRect(page) is { } r && ShotService.CaptureRect(r.Left, r.Top, r.Right, r.Bottom) is { } pic)
         {
             var targets = new List<(string Text, ScreenRect? Rect)>();
-            ScreenRect? arrowAt = null;
+            var arrows = new List<ArrowAt>();
             if (_annotate || _arrows)
             {
                 var boxes = PaletteFill.TdocBoxes(s);
-                foreach (var b in boxes) if (_annotate) targets.Add((b.Text, TdocTargets.Of(b)));
+                foreach (var b in boxes)
+                {
+                    if (_annotate) targets.Add((b.Text, TdocTargets.Of(b)));
+                    if (_arrows && b.Arrow && TdocTargets.Of(b) is { } ir) arrows.Add(new ArrowAt(ir, true, _annotate ? targets.Count - 1 : -1));   // the item a tree / list selection is on
+                }
                 // the button the step presses, found the way the replay finds it (a WPF button, a button taken by position too); a step without a button, the first control it fills; a button that was not found gets no arrow
-                if (_arrows) arrowAt = !string.IsNullOrEmpty(s.Button) || Retrace.Core.PaletteClickKinds.IsIntermediate(s.ClickKind) ? PaletteFill.TdocButtonRect(s) : boxes.Count > 0 ? TdocTargets.Of(boxes[0]) : null;
+                bool byButton = !string.IsNullOrEmpty(s.Button) || Retrace.Core.PaletteClickKinds.IsIntermediate(s.ClickKind);
+                if (_arrows && (byButton ? PaletteFill.TdocButtonRect(s) : boxes.Count > 0 && !boxes[0].Arrow ? TdocTargets.Of(boxes[0]) : null) is { } pr)
+                {
+                    // the box of the control the arrow points at (the button's, which TdocBoxes adds last; else the first field's): its own box and number tag are not in the arrow's way
+                    int own = !_annotate ? -1 : byButton ? (boxes.Count > 0 && boxes[^1].Text == "Click " + s.Button ? boxes.Count - 1 : -1) : 0;
+                    arrows.Add(new ArrowAt(pr, false, own));
+                }
             }
-            Save(i, pic, r.Left, r.Top, targets, TdocPlan.Caption(s), arrowAt);
+            Save(i, pic, r.Left, r.Top, targets, TdocPlan.Caption(s), arrows);
             return;
         }
         var w = ShotService.CaptureWindow(_main);
@@ -299,15 +309,22 @@ sealed class TdocCapture : IDisposable
                 foreach (var b in shot.Filled) targets.Add((b.Text, Rect(b)));
                 if (shot.Close != null) targets.Add((shot.Close.Text, Rect(shot.Close)));
             }
-            // the button that closes the dialog (no arrow when it was not found: never a guess), else the last field it fills; a rectangle that is not a control of the dialog (the dialog itself, its title bar) gets none
-            ScreenRect? arrowAt = null;
+            // an arrow on each tree item / list item that was selected, and on the button that closes the dialog (no arrow when it was not found: never a guess), else on the last field it fills; a rectangle that is not a control of the dialog (the dialog itself, its title bar) gets none
+            var arrows = new List<ArrowAt>();
             if (_arrows)
             {
-                var pick = shot.Close != null ? Rect(shot.Close) : shot.Filled.Count > 0 ? Rect(shot.Filled[^1]) : null;
                 var client = TdocTargets.ClientOf(shot.Dialog);
-                arrowAt = pick is { } pr && client is { } cr && TdocGeometry.IsControlOf(pr.Left, pr.Top, pr.Right, pr.Bottom, cr.Left, cr.Top, cr.Right, cr.Bottom) ? pick : null;
+                bool Control(ScreenRect pr) => client is { } cr && TdocGeometry.IsControlOf(pr.Left, pr.Top, pr.Right, pr.Bottom, cr.Left, cr.Top, cr.Right, cr.Bottom);
+                int index = 0;   // the box's place among the targets (the legend's order), when boxes are drawn
+                foreach (var b in shot.Filled)
+                {
+                    if (b.Arrow && Rect(b) is { } ir && Control(ir)) arrows.Add(new ArrowAt(ir, true, _annotate ? index : -1));
+                    index++;
+                }
+                var pick = shot.Close != null ? Rect(shot.Close) : shot.Filled.Count > 0 && !shot.Filled[^1].Arrow ? Rect(shot.Filled[^1]) : null;
+                if (pick is { } pk && Control(pk)) arrows.Add(new ArrowAt(pk, false, !_annotate ? -1 : shot.Close != null ? shot.Filled.Count : shot.Filled.Count - 1));
             }
-            Save(_m[i], w.Value.Pic, w.Value.Left, w.Value.Top, targets, TdocPlan.Caption(_steps[i]), arrowAt);
+            Save(_m[i], w.Value.Pic, w.Value.Left, w.Value.Top, targets, TdocPlan.Caption(_steps[i]), arrows);
             // the instruction names the button as it reads ("Click OK." for a LISP alert, whose only button has Cancel's id)
             if (shot.Close != null && Test.Steps[_m[i]].Instructions is { Count: > 0 } ins)
                 ins[^1] = Rx.Replace(ins[^1], @"click (OK|Cancel)\.$", m => (char.IsUpper(m.Value[0]) ? "Click " : "click ") + shot.Close.Text + ".", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
@@ -337,7 +354,7 @@ sealed class TdocCapture : IDisposable
     /// <summary>Adds the picture to the step and writes it on a pool thread. <paramref name="targets"/>: the legend lines in the order they are
     /// numbered, each with its rectangle on the screen (null = not found; the line is left out). The picture shows the screen area at
     /// (<paramref name="sx"/>, <paramref name="sy"/>) the size of <paramref name="pic"/>, scaled down to fit.</summary>
-    void Save(int i, ShotService.Picture pic, int sx, int sy, IReadOnlyList<(string Text, ScreenRect? Rect)> targets, string? caption, ScreenRect? arrowAt = null)
+    void Save(int i, ShotService.Picture pic, int sx, int sy, IReadOnlyList<(string Text, ScreenRect? Rect)> targets, string? caption, IReadOnlyList<ArrowAt>? arrowsAt = null)
     {
         var (nw, nh) = ShotImage.FitSize(pic.Width, pic.Height);
         var candidates = targets.Select(t => t.Rect is { } r ? Annotate.ToPicture(r.Left, r.Top, r.Right, r.Bottom, sx, sy, pic.Width, pic.Height, nw, nh, 1) : null).ToList();
@@ -352,21 +369,51 @@ sealed class TdocCapture : IDisposable
             Callouts = numbered.Select(n => new TrainingCallout { Number = n.Number, Text = n.Text }).ToList(),
         });
         var px = pic.Pixels; int w = pic.Width, h = pic.Height;
-        // the green click arrow (setting showClickArrows), drawn into the image at the middle of the control, translated to the picture's pixels
-        var arrow = _arrows && arrowAt is { } ar ? ClickArrow.ForImage((ar.Left + ar.Right) / 2, (ar.Top + ar.Bottom) / 2, new PxRect(sx, sy, sx + pic.Width, sy + pic.Height), nw, nh) : null;
+        // the green click arrows (setting showClickArrows), drawn into the image on the middle of the control (a button) or just inside the edge of the item (a tree item, a list item), translated to the picture's pixels and
+        // placed so that they do not cover the other boxes, their numbers or each other
+        List<ArrowLine> arrows = [];
+        if (_arrows && arrowsAt is { Count: > 0 })
+        {
+            var src = new PxRect(sx, sy, sx + pic.Width, sy + pic.Height);
+            var rects = new List<PxRect>();   // every box and number tag of the picture: what an arrow keeps off
+            var own = new Dictionary<int, List<PxRect>>();
+            foreach (var n in numbered)
+            {
+                var c = candidates[n.Index]!.Value with { Number = n.Number };
+                var r = new PxRect(c.Left, c.Top, c.Left + c.Width, c.Top + c.Height);
+                rects.Add(r);
+                var tag = Annotate.TagArea(c, nw, nh);
+                if (tag.Width > 0) rects.Add(tag);
+                own[n.Index] = [r, tag];
+            }
+            var list = new List<ClickArrow.ArrowTarget>();
+            foreach (var a in arrowsAt)
+            {
+                var ip = Annotate.ToPicture(a.Rect.Left, a.Rect.Top, a.Rect.Right, a.Rect.Bottom, sx, sy, pic.Width, pic.Height, nw, nh, 1);
+                if (ip is not { } b) continue;
+                var pr = new PxRect(b.Left, b.Top, b.Left + b.Width, b.Top + b.Height);
+                // an arrow's own box and tag may be run over by it, except the tag of an item arrow (it ends on the box's edge, next to the tag)
+                var mine = a.Target >= 0 && own.TryGetValue(a.Target, out var o) ? (a.AtEdge ? o.Take(1).ToList() : o) : null;
+                list.Add(new ClickArrow.ArrowTarget(pr, a.AtEdge, mine));
+            }
+            arrows = ClickArrow.Place(list, rects, nw, nh, ClickArrow.ImageLength(src, nw, nh));
+        }
         var task = Task.Run(() =>
         {
             try
             {
                 var data = nw == w && nh == h ? px : ShotImage.Scale(px, w, h, nw, nh);
                 Annotate.Draw(data, nw, nh, boxes);
-                if (arrow is { } a) Annotate.DrawArrow(data, nw, nh, a);
+                foreach (var a in arrows) Annotate.DrawArrow(data, nw, nh, a);
                 WritePng(path, nw, nh, data);
             }
             catch (Exception ex) { Log.Error("tdoc picture", ex); }
         });
         lock (_tasks) { _tasks.RemoveAll(x => x.IsCompleted); _tasks.Add(task); }
     }
+
+    /// <summary>An arrow wanted in a picture: the rectangle it ends on (screen pixels), whether it ends at the rectangle's edge (an item) or on its middle (a button), and which legend target's box it belongs to (-1: none).</summary>
+    readonly record struct ArrowAt(ScreenRect Rect, bool AtEdge = false, int Target = -1);
 
     /// <summary>Through a temp file, so the Word writer never reads half a picture.</summary>
     static void WritePng(string path, int w, int h, byte[] bgra)

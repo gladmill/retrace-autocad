@@ -126,6 +126,7 @@ public static class StepWording
     /// a `dialog_values` event.</summary>
     static void DialogValueLines(StringBuilder sb, RecordingStep dlg, string indent, WordingContext ctx)
     {
+        if (HasPictures(dlg)) { PicturedLines(sb, dlg, indent, ctx); return; }
         if (dlg.Clicks.Count > 0) ClickLines(sb, dlg, indent, ctx);   // a click was done in the dialog, whatever closed it
         if (dlg.ClosedWith == "cancel") return;   // whatever was typed after the last click was thrown away
         var lines = ChangeLines(dlg);
@@ -135,25 +136,89 @@ public static class StepWording
         foreach (var l in lines) sb.Append(indent).Append("- ").Append(l).Append('\n');
     }
 
+    /// <summary>True when the recorder took a picture of a click inside the dialog (a tree / list item, a button): the dialog's changes are then written one bullet per click, each with its picture.</summary>
+    static bool HasPictures(RecordingStep dlg) => dlg.Picks.Any(p => p.Shots.Count > 0) || dlg.Clicks.Any(c => c.Shots.Count > 0);
+
+    /// <summary>One sub-item per click in the order the person made them (a tree or list item they clicked, then the button), each followed by its picture: the dialog as it looked after that click.
+    /// A value that a picked item set is not written a second time with the click after it. The changes after the last click follow.</summary>
+    static void PicturedLines(StringBuilder sb, RecordingStep dlg, string indent, WordingContext ctx)
+    {
+        if (sb.Length > 0 && sb[^1] != '\n') sb.Append('\n');
+        int next = 0;
+        var segment = new List<RecordingDialogPick>();
+        void TakePicks(long upTo, bool all)
+        {
+            segment.Clear();
+            while (next < dlg.Picks.Count && (all || dlg.Picks[next].T <= upTo))
+            {
+                var pick = dlg.Picks[next++];
+                segment.Add(pick);
+                var text = PickText(pick);
+                sb.Append(indent).Append("- ").Append(text).Append('\n');
+                Shots(sb, pick.Shots, Alt(text), ctx, indent + "  ", "dialog-click");
+            }
+        }
+        foreach (var c in dlg.Clicks)
+        {
+            TakePicks(c.T, all: false);
+            var picked = segment.ToList();
+            ClickOne(sb, c, indent, ctx, v => picked.Any(p => Explains(p, v)));
+        }
+        if (dlg.ClosedWith == "cancel") return;   // what was clicked after the last click was thrown away: not written as done (the dialog line says it was closed with Cancel)
+        TakePicks(0, all: true);
+        var rest = segment.ToList();
+        var items = new List<(string Tab, string Text)>();
+        foreach (var v in dlg.Values)
+            if (!rest.Any(p => Explains(p, v)) && ChangeText(v, Md.Cell, Md.Code, bold: true) is { } t) items.Add((v.Tab, t));
+        var lines = TabbedLines(items, join: false);
+        if (lines.Count == 0 && dlg.Clicks.Count == 0 && dlg.Picks.Count == 0 && dlg.ValuesRead is > 0) lines.Add("Leave the values as they are.");
+        foreach (var l in lines) sb.Append(indent).Append("- ").Append(l).Append('\n');
+    }
+
+    /// <summary>The value a picked item set: the same control, and the value it ended on is that very item (a click on A, then an arrow key to B, ends on B: that value is not A's, and stays with the next click).
+    /// A pick whose text could not be read (a row number only) explains the control's value.</summary>
+    static bool Explains(RecordingDialogPick p, RecordingDialogValue v)
+    {
+        if (p.Kind != v.Kind || !string.Equals(p.Label, v.Label, StringComparison.OrdinalIgnoreCase)) return false;
+        if (p.Item.Length == 0) return true;
+        return p.Kind == "listview" ? Retrace.Core.ListSelection.Names(v.After) is { Count: 1 } names && names[0] == p.Item : v.After == p.Item;
+    }
+
+    /// <summary>"Select `Root › Child` in the tree" for a tree item the person clicked, "Select `Bolts` in the list" for a list item; "Select row 3 in the list" when the item's text could not be read.</summary>
+    static string PickText(RecordingDialogPick p)
+    {
+        if (p.Item.Length > 0) return ChangeText(new RecordingDialogValue(p.Label, p.Kind, "", p.Item), Md.Cell, Md.Code, bold: true) ?? $"Click `{Md.Cell(p.Item)}`";
+        var where = Retrace.Core.ControlWords.Name(p.Label, p.Kind, l => $"**{Md.Cell(l)}**");
+        return p.Row > 0 ? $"Select row {p.Row} in {where}" : $"Select an item in {where}";
+    }
+
     /// <summary>One sub-item per click: "Set **Name** to `A`, click **Add**" (changes made since the click before, then the click); a dialog the click opened
     /// follows as a sub-item of it. In a dialog with tabs the changes and the click are grouped by tab, one sub-item per run: "On the **Text** tab: set **Name** to `A`, click **Add**".</summary>
     static void ClickLines(StringBuilder sb, RecordingStep dlg, string indent, WordingContext ctx)
     {
         if (sb.Length > 0 && sb[^1] != '\n') sb.Append('\n');
-        foreach (var c in dlg.Clicks)
+        foreach (var c in dlg.Clicks) ClickOne(sb, c, indent, ctx, null);
+    }
+
+    /// <summary>One click's sub-item(s), its picture(s) and the dialogs it opened. <paramref name="skip"/>: values left out (a picked item already wrote them).</summary>
+    static void ClickOne(StringBuilder sb, RecordingDialogClick c, string indent, WordingContext ctx, Func<RecordingDialogValue, bool>? skip)
+    {
+        var items = new List<(string Tab, string Text)>();
+        foreach (var v in c.Values)
+            if ((skip == null || !skip(v)) && ChangeText(v, Md.Cell, Md.Code, bold: true) is { } t) items.Add((v.Tab, t));
+        items.Add((c.Tab, c.Menu != null ? c.Menu.Wording(true, Md.Cell) : c.Kind == Retrace.Core.DialogClickKinds.DoubleClick
+            ? Retrace.Core.DialogClickKinds.DoubleClickWords(c.Path, c.TreeLabel, Md.Code, t => $"**{Md.Cell(t)}**")
+            : $"Click **{Md.Cell(c.Button)}**"));
+        var lines = TabbedLines(items, join: true);
+        for (int i = 0; i < lines.Count; i++)
         {
-            var items = new List<(string Tab, string Text)>();
-            foreach (var v in c.Values)
-                if (ChangeText(v, Md.Cell, Md.Code, bold: true) is { } t) items.Add((v.Tab, t));
-            items.Add((c.Tab, c.Menu != null ? c.Menu.Wording(true, Md.Cell) : c.Kind == Retrace.Core.DialogClickKinds.DoubleClick
-                ? Retrace.Core.DialogClickKinds.DoubleClickWords(c.Path, c.TreeLabel, Md.Code, t => $"**{Md.Cell(t)}**")
-                : $"Click **{Md.Cell(c.Button)}**"));
-            foreach (var line in TabbedLines(items, join: true)) sb.Append(indent).Append("- ").Append(line).Append('\n');
-            foreach (var nested in c.Nested)
-            {
-                sb.Append(indent).Append("  - ").Append(DialogLine(nested, nested: true)).Append('\n');
-                DialogBody(sb, nested, ctx, indent + "    ");
-            }
+            sb.Append(indent).Append("- ").Append(lines[i]).Append('\n');
+            if (i == lines.Count - 1 && c.Shots.Count > 0) Shots(sb, c.Shots, Alt(lines[i]), ctx, indent + "  ", "dialog-click");
+        }
+        foreach (var nested in c.Nested)
+        {
+            sb.Append(indent).Append("  - ").Append(DialogLine(nested, nested: true)).Append('\n');
+            DialogBody(sb, nested, ctx, indent + "    ");
         }
     }
 
@@ -186,7 +251,7 @@ public static class StepWording
     /// "Choose **Metric**", "Choose `beauty` in **Category**", "Select `A › B` in **Parts** (was `A`)"; null when it says nothing (a radio that became "off").</summary>
     public static string? ChangeText(RecordingDialogValue v, Func<string?, string> text, Func<string?, string> code, bool bold)
     {
-        string B(string s) => bold ? $"**{text(s)}**" : text(s);
+        string B(string s) => Retrace.Core.ControlWords.Name(s, v.Kind, l => bold ? $"**{text(l)}**" : text(l));   // "#1012" (no name of its own) reads "the tree" / "the list"
         switch (v.Kind)
         {
             case "check":

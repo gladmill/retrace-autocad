@@ -20,7 +20,14 @@ public sealed record PaletteHit(
     string Class = "",         // point: the control's window class segment (`panel`, `window`, `static`, ...)
     int ClassIndex = 0,        // point: which control of that class on the page it is (1 = the first)
     string Name = "",          // point: the control's `Name` when it has one (information, and the first thing a replay looks for)
-    double Fx = -1, double Fy = -1)   // the click point as a fraction of the control's width and height (0..1); -1 = not recorded
+    double Fx = -1, double Fy = -1,   // the click point as a fraction of the control's width and height (0..1); -1 = not recorded
+    string Strip = "",         // toolstrip / toolbar: the strip's or toolbar's `Name` ("" when it has none)
+    int StripIndex = 0,        // toolstrip / toolbar: which strip (ToolStrip) or toolbar (ToolbarWindow32) of the page it is, 1 = the first
+    string ItemName = "",      // toolstrip: the item's `Name` (the first thing a replay looks for)
+    int Position = 0,          // toolstrip / toolbar: the item's place among the strip's buttons (separators and hidden items not counted), 1 = the first
+    int Count = 0,             // toolstrip / toolbar: how many buttons the strip had
+    int Cmd = 0,               // toolbar: the button's command id
+    string Menu = "")          // toolstrip: the drop-down item chosen after the click on the item (a path of item texts)
 {
     public bool HasPoint => Fx >= 0 && Fy >= 0;
 
@@ -30,7 +37,8 @@ public sealed record PaletteHit(
         string S(string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
         int N(string k, int d) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var n) ? n : d;
         double D(string k) => e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out var n) ? n : -1;
-        var hit = new PaletteHit(S("list"), S("listLabel"), S("item"), N("itemIndex", -1), N("occurrence", 0), S("view"), S("class"), N("classIndex", 0), S("controlName"), D("x"), D("y"));
+        var hit = new PaletteHit(S("list"), S("listLabel"), S("item"), N("itemIndex", -1), N("occurrence", 0), S("view"), S("class"), N("classIndex", 0), S("controlName"), D("x"), D("y"),
+            S("strip"), N("stripIndex", 0), S("itemName"), N("position", 0), N("count", 0), N("cmd", 0), S("menu"));
         return hit == new PaletteHit() ? null : hit;
     }
 }
@@ -40,10 +48,13 @@ public static class PaletteClickKinds
 {
     public const string Tree = "tree", Expand = "expand", Collapse = "collapse", Image = "image", ListView = "listview", Point = "point";
 
+    /// <summary>A button of a WinForms `ToolStrip` (<see cref="ToolStrip"/>: a windowless item) and of a `ToolbarWindow32` (<see cref="Toolbar"/>: a Win32 toolbar, also the WinForms `ToolBar`). Not the `toolbar` of a `dialog_click`: the two are read apart.</summary>
+    public const string ToolStrip = "toolstrip", Toolbar = "toolbar";
+
     /// <summary>The kind a `kind` property names for a palette click: the kinds of <see cref="DialogClickKinds.Of"/> ("click", "dblclick") and the ones above; anything else (also none: every recording from before) is a button click.</summary>
     public static string Of(string? kind) => kind switch
     {
-        Tree => Tree, Expand => Expand, Collapse => Collapse, Image => Image, ListView => ListView, Point => Point,
+        Tree => Tree, Expand => Expand, Collapse => Collapse, Image => Image, ListView => ListView, Point => Point, ToolStrip => ToolStrip, Toolbar => Toolbar,
         _ => DialogClickKinds.Of(kind),
     };
 
@@ -73,7 +84,7 @@ public static class PaletteClickKinds
     public static bool OnTree(string kind) => kind is Tree or Expand or Collapse or DialogClickKinds.DoubleClick;
 
     /// <summary>Is the click one of the new kinds that is not a press of a push button and has no button text of its own?</summary>
-    public static bool IsIntermediate(string kind) => kind is Tree or Expand or Collapse or Image or ListView or Point;
+    public static bool IsIntermediate(string kind) => kind is Tree or Expand or Collapse or Image or ListView or Point or ToolStrip or Toolbar;
 
     /// <summary>The words of a click, with the caller's markup for names and paths (<paramref name="code"/>: a path or item, <paramref name="bold"/>: a control's name): "Click tree item `A › B` in **Catalog**",
     /// "Expand tree item `A`", "Click list item `Oak` in **Finishes**", "Click Panel no. 2 at 40% × 60%". Null for a plain button (the caller words it).</summary>
@@ -90,6 +101,9 @@ public static class PaletteClickKinds
                 return C("click list item ") + code(hit?.Item.Length > 0 ? hit.Item : "(blank)") + In(hit?.ControlLabel ?? "");
             case Point:
                 return C("click ") + (hit == null ? "a control" : PointName(hit)) + (hit is { HasPoint: true } ? $" at {Percent(hit.Fx)} × {Percent(hit.Fy)}" : "");
+            case ToolStrip:
+            case Toolbar:
+                return PaletteToolbar.Words(button, hit, code, bold, capital);
             default: return null;
         }
     }

@@ -58,6 +58,23 @@ namespace Retrace.Samples
             pickSet.Visible = true;
         }
 
+        private static PaletteSet? toolsSet;
+
+        /// <summary>DRAWTOOLS: a palette set of its own, "Retrace Tools", with the page "Projects" (<see cref="ToolsPage"/>: a ToolStrip and a legacy ToolBar of image-only buttons above a tree; every button draws on a layer named after the selected node).</summary>
+        [CommandMethod("DRAWTOOLS")]
+        public void ShowTools()
+        {
+            if (toolsSet == null)
+            {
+                toolsSet = new PaletteSet("Retrace Tools", new System.Guid("6d2f4c90-1b7e-4a53-8e0c-93a7d5b2c1f4"));
+                toolsSet.Style = PaletteSetStyles.ShowCloseButton;
+                toolsSet.MinimumSize = new System.Drawing.Size(260, 300);
+                toolsSet.Size = new System.Drawing.Size(300, 360);
+                toolsSet.Add("Projects", new ToolsPage());
+            }
+            toolsSet.Visible = true;
+        }
+
         /// <summary>Draws in model space of the active drawing, from a palette button (outside any command).</summary>
         internal static void Draw(System.Func<Transaction, Database, Entity> make, string layer)
         {

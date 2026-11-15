@@ -9,6 +9,9 @@ public static class DialogButtons
     /// spaces and punctuation are ignored; a leading "btn" / "button" and a trailing "button" in an id are ignored too ("btnOk", "OkButton").</summary>
     public static string? Role(string? name, string? automationId = null) => FromName(name) ?? FromName(automationId);
 
+    /// <summary>The role of a button with control id 2 (IDCANCEL): "cancel", except a button whose text says OK. The OK button of a message box that has no other button (MB_OK) has the id IDCANCEL (so that Esc and the title bar's close work), and it is OK, not Cancel.</summary>
+    public static string RoleOfId2(string? name) => FromName(name) == "ok" ? "ok" : "cancel";
+
     /// <summary>The Help button of a dialog (text "Help", mnemonic and dots ignored): it opens a window of its own, so a recording leaves it out.</summary>
     public static bool IsHelp(string? name) => FromLetters(name) == "help";
 

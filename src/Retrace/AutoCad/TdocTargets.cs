@@ -11,8 +11,8 @@ readonly record struct ScreenRect(int Left, int Top, int Right, int Bottom)
 
 /// <summary>A control that gets a numbered box in the Tdoc picture of a dialog or palette. <see cref="Handle"/> (a Win32 control) is read again when the
 /// picture is taken, because the window may have been moved; without one (UI Automation) <see cref="Rect"/> is where it was. <see cref="At"/>: where the dialog's window was when <see cref="Rect"/> was read
-/// (null = when the <see cref="DialogShot"/> was made).</summary>
-sealed record DialogBox(IntPtr Handle, ScreenRect Rect, string Text, ScreenRect? At = null);
+/// (null = when the <see cref="DialogShot"/> was made). <see cref="Arrow"/>: an arrow ends on this box (the item a person clicked in a tree or a list).</summary>
+sealed record DialogBox(IntPtr Handle, ScreenRect Rect, string Text, ScreenRect? At = null, bool Arrow = false);
 
 /// <summary>What a dialog shows when it is filled in and about to be closed: the controls that were filled and the button that closes it.</summary>
 /// <param name="DialogAt">where the dialog's window was when the rectangles were read (null = not known: they are taken as read before the picture's own move onto the screen)</param>
@@ -114,6 +114,65 @@ static class TdocTargets
         var p = new POINT { X = c.Left, Y = c.Top };
         if (!ClientToScreen(h, ref p) || c.Right <= c.Left || c.Bottom <= c.Top) return null;
         return new ScreenRect(p.X, p.Y, p.X + (c.Right - c.Left), p.Y + (c.Bottom - c.Top));
+    }
+
+    /// <summary>The box of a dialog or palette field that was filled. A tree selection, a list view selection of one item and a list box selection get the box on the recorded item itself (the tree item's label, the list
+    /// item's icon and label, the list box row) with an arrow ending on it, found from the recorded value as the replay finds it (<see cref="PaletteClickFill.TreeItemRect"/>, <see cref="MenuListView.RowRect"/>, the row of the list box
+    /// with that text), never from what is selected now: a palette's picture is taken before its step runs. Nothing is opened, selected or scrolled for it; an item that is not in view gets no box of its own. Every other field, and a
+    /// tree or list whose item cannot be found (not in view, a collapsed parent, several items selected, the control is of another thread), gets the box of the whole control and no arrow: never a guessed point. UI thread.</summary>
+    /// <param name="at">where the dialog's window is now (the box has its own place when it is an item, so it moves with the dialog)</param>
+    public static DialogBox FieldBox(Retrace.Core.FieldChange v, IntPtr control, ScreenRect? at)
+    {
+        var text = TdocPlan.FieldCallout(v);
+        try
+        {
+            ScreenRect? item = null;
+            if (v.Kind == "tree" && v.After.Length > 0) item = PaletteClickFill.TreeItemRect(control, v.After);
+            else if (v.Kind == Retrace.Core.ListSelection.Kind && Native.OwnedByThisThread(control) && Retrace.Core.ListSelection.ItemsOf(v) is { Count: 1 } items
+                && MenuListView.AllTexts(control) is { } texts && Retrace.Core.ListSelection.Plan(texts, items, out _) is { Count: 1 } rows
+                && MenuListView.RowRect(control, rows[0], scroll: false) is { } r) item = new ScreenRect(r.Left, r.Top, r.Right, r.Bottom);
+            else if (v.Kind == "list" && v.After.Length > 0) item = ListBoxRowRect(control, v.After);
+            if (item is { } ir && Of(control) is { } cr && ir.Left >= cr.Left - 2 && ir.Top >= cr.Top - 2 && ir.Right <= cr.Right + 2 && ir.Bottom <= cr.Bottom + 2)
+                return new DialogBox(IntPtr.Zero, ir, text, at, Arrow: true);
+        }
+        catch (Exception ex) { Log.Error("tdoc item box", ex); }
+        return new DialogBox(control, default, text);
+    }
+
+    /// <summary>The rectangle (screen) of the first row of a list box whose text is <paramref name="value"/> (LB_GETTEXT, LB_GETITEMRECT); null when there is none or it is not in view.</summary>
+    static ScreenRect? ListBoxRowRect(IntPtr h, string value)
+    {
+        const uint LB_GETCOUNT = 0x018B, LB_GETTEXT = 0x0189, LB_GETTEXTLEN = 0x018A, LB_GETITEMRECT = 0x0198;
+        if (!Native.OwnedByThisThread(h)) return null;
+        Native.SendNum(h, LB_GETCOUNT, IntPtr.Zero, IntPtr.Zero, 2, 1000, out var count);
+        int row = -1;
+        for (int i = 0; i < Math.Min((long)count, 2000L); i++)
+        {
+            Native.SendNum(h, LB_GETTEXTLEN, (IntPtr)i, IntPtr.Zero, 2, 1000, out var len);
+            if ((long)len < 0 || (long)len > 1000) continue;
+            var tb = Marshal.AllocHGlobal(((int)len + 1) * 2);
+            try
+            {
+                Native.SendNum(h, LB_GETTEXT, (IntPtr)i, tb, 2, 1000, out var got);
+                if ((long)got >= 0 && string.Equals(Marshal.PtrToStringUni(tb, (int)(long)got).Trim(), value.Trim(), StringComparison.OrdinalIgnoreCase)) { row = i; break; }
+            }
+            finally { Marshal.FreeHGlobal(tb); }
+        }
+        if (row < 0) return null;
+        var buf = Marshal.AllocHGlobal(16);
+        try
+        {
+            for (int k = 0; k < 4; k++) Marshal.WriteInt32(buf, k * 4, 0);
+            Native.SendNum(h, LB_GETITEMRECT, (IntPtr)row, buf, 2, 1000, out var ok);
+            if ((long)ok == -1) return null;   // LB_ERR (LB_GETITEMRECT answers 0 when it filled the rectangle)
+            var tl = new POINT { X = Marshal.ReadInt32(buf, 0), Y = Marshal.ReadInt32(buf, 4) };
+            var br = new POINT { X = Marshal.ReadInt32(buf, 8), Y = Marshal.ReadInt32(buf, 12) };
+            if (br.X - tl.X < 2 || br.Y - tl.Y < 2 || !GetClientRect(h, out var c)) return null;
+            if (tl.Y < 0 || br.Y > c.Bottom + 1) return null;   // scrolled out of view
+            ClientToScreen(h, ref tl); ClientToScreen(h, ref br);
+            return new ScreenRect(tl.X, tl.Y, br.X, br.Y);
+        }
+        finally { Marshal.FreeHGlobal(buf); }
     }
 
     /// <summary>The rectangle of a box: the control's window now when it has one, else where it was seen, moved by (<paramref name="dx"/>, <paramref name="dy"/>).</summary>

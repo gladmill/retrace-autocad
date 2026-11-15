@@ -234,6 +234,9 @@ public static class NativeParts
     /// <summary>Is this window class a Win32 toolbar (a CToolBar)? Messages of the TB_ family are sent to windows of this class only.</summary>
     public static bool IsToolbarClass(string windowClass) => string.Equals(windowClass, ToolbarClass, StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>Is this a toolbar window of a palette: <see cref="IsToolbarClass"/>, or the class WinForms gives a control that wraps one (<c>WindowsForms10.ToolbarWindow32.app.0.&lt;hash&gt;</c>, a <c>Control</c> whose <c>CreateParams.ClassName</c> is ToolbarWindow32)? The TB_ messages work on both.</summary>
+    public static bool IsToolbarWindow(string windowClass) => IsToolbarClass(windowClass) || windowClass.StartsWith("WindowsForms10.ToolbarWindow32.", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>The class of an MFC window with what is per process cut: every hex or numeric segment of an <c>Afx:</c> name (module handle, style, cursor, brush, icon), wherever it stands. <c>Afx:TabWnd:400000:8:10003:0</c>
     /// becomes <c>Afx:TabWnd</c>, and the unnamed <c>Afx:00007FF7:8:0000000000010003:...</c> (AutoCAD's own windows) <c>Afx</c>. Any other class is as it is.</summary>
     public static string StableClass(string cls)

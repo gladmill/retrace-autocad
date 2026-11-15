@@ -20,15 +20,19 @@ sealed class PromptWindow : Window
     readonly Kind _kind;
     readonly string? _filter, _browseFrom;
 
+    /// <summary>The "Run last test" button's tooltip: names the test it would run, or says there is none.</summary>
+    public static string LastTestTip(string? recording, bool recordingRunning = false) => Retrace.Engine.Recordings.TestFolders.RunLastTip(recording, recordingRunning);
+
     /// <summary>The text typed or the choice clicked; null = cancelled.</summary>
     public string? Result { get; private set; }
 
     /// <param name="message">the prompt, as the command line would show it (its "&lt;default&gt;" and hints included)</param>
     /// <param name="choices">Choice: the keywords; the default first</param>
     /// <param name="recent">File / Folder: recent places, newest first</param>
+    /// <param name="offerLast">File: a "Run last test" button at the lower left; one click answers with <paramref name="lastTest"/> (the recording that was made last). Disabled, with a tooltip, when that is null or <paramref name="recordingRunning"/> (the newest recording is the one being written).</param>
     /// <param name="filter">File: the file dialog's filter, e.g. "Retrace recordings (*.jsonl)|*.jsonl"</param>
     public PromptWindow(string title, string message, Kind kind, string initial = "", IReadOnlyList<string>? choices = null,
-        IReadOnlyList<string>? recent = null, string? filter = null, string? browseFrom = null)
+        IReadOnlyList<string>? recent = null, string? filter = null, string? browseFrom = null, bool offerLast = false, string? lastTest = null, bool recordingRunning = false)
     {
         _kind = kind; _filter = filter; _browseFrom = browseFrom;
         Title = title;
@@ -83,13 +87,24 @@ sealed class PromptWindow : Window
             root.Children.Add(_recent);
         }
 
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 12, 0, 0) };
+        var bottom = new DockPanel { Margin = new Thickness(0, 12, 0, 0), LastChildFill = false };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal };
+        DockPanel.SetDock(buttons, Dock.Right);
+        if (offerLast)
+        {
+            var last = new Button { Content = "Run last test", Padding = new Thickness(12, 3, 12, 3), IsEnabled = lastTest != null && !recordingRunning, ToolTip = LastTestTip(lastTest, recordingRunning) };
+            ToolTipService.SetShowOnDisabled(last, true);
+            last.Click += (_, _) => Done(lastTest);
+            DockPanel.SetDock(last, Dock.Left);
+            bottom.Children.Add(last);
+        }
         var ok = new Button { Content = "OK", Padding = new Thickness(18, 3, 18, 3), IsDefault = true };
         ok.Click += (_, _) => Done(_box.Text);
         var no = new Button { Content = "Cancel", Padding = new Thickness(12, 3, 12, 3), Margin = new Thickness(8, 0, 0, 0), IsCancel = true };
         no.Click += (_, _) => Done(null);
         buttons.Children.Add(ok); buttons.Children.Add(no);
-        root.Children.Add(buttons);
+        bottom.Children.Add(buttons);
+        root.Children.Add(bottom);
         Content = root;
         Loaded += (_, _) => { _box.Focus(); _box.SelectAll(); };
     }

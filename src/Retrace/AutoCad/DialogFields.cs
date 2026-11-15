@@ -402,6 +402,17 @@ static partial class DialogReader
         return sb.ToString();
     }
 
+    /// <summary>The text of item <paramref name="index"/> of a list box (a click on it: the item the person chose before the list box has taken the selection).</summary>
+    internal static string ListBoxItemText(IntPtr h, int index)
+    {
+        if (index < 0) return "";
+        var len = (int)Math.Min(Num(h, 0x018A /* LB_GETTEXTLEN */, index), 4000);
+        if (len <= 0) return "";
+        var sb = new StringBuilder(len + 1);
+        SendText(h, 0x0189 /* LB_GETTEXT */, (IntPtr)index, sb, SMTO_ABORTIFHUNG, TimeoutMs, out _);
+        return sb.ToString();
+    }
+
     static string ListText(IntPtr h, uint getSel, uint getLen, uint getText)
     {
         var i = (int)Num(h, getSel);

@@ -37,6 +37,7 @@ sealed class SettingsWindow : Window
     readonly CheckBox _xlsx = new() { Content = "Also write Excel (.xlsx)", Margin = new Thickness(0, 6, 0, 0), ToolTip = "steps.xlsx next to steps.md: one row per step with a PASS / FAIL column." };
     readonly CheckBox _tdocFront = new() { Content = "Bring the step's windows to the front before each picture", Margin = new Thickness(0, 4, 0, 0), ToolTip = "AutoCAD, the dialog being filled and the palette are put on top (a dialog that is off screen is moved onto it), and Retrace's own replay window stays out of the picture." };
     readonly CheckBox _showClickArrows = new() { Content = "Draw a green arrow at each click while a test replays", Margin = new Thickness(0, 6, 0, 0), ToolTip = "A green arrow points at the control Retrace clicks or fills (buttons, fields, tabs, tree items). It also appears in step pictures and Tdoc pictures. Off: nothing is drawn." };
+    readonly CheckBox _testDocArrows = new() { Content = "Draw a green rectangle and arrow at each click in the test document pictures", Margin = new Thickness(0, 6, 0, 0), ToolTip = "While recording: the pictures under the steps of steps.md show a green rectangle around what was clicked (ribbon button, tree or list item, button) and an arrow pointing at it. Off: the pictures are plain." };
     readonly CheckBox _tdocAnnotate = new() { Content = "Draw green numbered boxes where the reader gives input", Margin = new Thickness(0, 4, 0, 0), ToolTip = "On the ribbon button, the command line, each dialog field that is filled and the button that closes the dialog. The legend under the picture says what each number is." };
     readonly TextBox _tdocDelay = new() { Width = 70, Padding = new Thickness(3), Margin = new Thickness(8, 0, 0, 0), ToolTip = "Milliseconds to wait before each picture and between steps, so tool tips are gone and dialogs are drawn. 0 to 10000." };
     readonly TextBox _suiteTimeout = new() { Width = 70, Padding = new Thickness(3), Margin = new Thickness(8, 0, 0, 0), ToolTip = "RETRACESUITE: a test step that runs longer than this many seconds is cancelled and the test is recorded as ERROR. 5 to 3600." };
@@ -111,6 +112,8 @@ sealed class SettingsWindow : Window
         root.Children.Add(_statusBoard);
         _showClickArrows.IsChecked = current.ShowClickArrows;
         root.Children.Add(_showClickArrows);
+        _testDocArrows.IsChecked = current.TestDocArrows;
+        root.Children.Add(_testDocArrows);
         _docx.IsChecked = current.ExportDocx;
         root.Children.Add(_docx);
         _xlsx.IsChecked = current.ExportXlsx;
@@ -378,6 +381,7 @@ sealed class SettingsWindow : Window
         _allWorkspaces.IsChecked = false;
         _statusBoard.IsChecked = true;
         _showClickArrows.IsChecked = false;
+        _testDocArrows.IsChecked = true;
         _docx.IsChecked = false;
         _xlsx.IsChecked = false;
         _tabPos.SelectedIndex = 0;
@@ -439,6 +443,7 @@ sealed class SettingsWindow : Window
         s.CaptureAllWorkspaces = _allWorkspaces.IsChecked == true;
         s.StatusBoard = _statusBoard.IsChecked == true;
         s.ShowClickArrows = _showClickArrows.IsChecked == true;
+        s.TestDocArrows = _testDocArrows.IsChecked == true;
         s.ExportDocx = _docx.IsChecked == true;
         s.ExportXlsx = _xlsx.IsChecked == true;
         var pos = _tabPos.SelectedIndex >= 0 ? _tabPosValues[_tabPos.SelectedIndex] : RibbonTabPosition.AfterHome;

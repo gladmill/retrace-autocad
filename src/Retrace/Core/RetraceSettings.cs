@@ -72,6 +72,10 @@ public sealed class RetraceSettings
     /// and into the step pictures of a recording and of Tdoc. Off by default; off draws nothing anywhere.</summary>
     [JsonPropertyName("showClickArrows")] public bool ShowClickArrows { get; set; } = false;
 
+    /// <summary>The test document (steps.md and its `screenshots` folder, made while recording) gets a green rectangle and arrow on each picture, showing where the click was (the ribbon button, a tree or list item,
+    /// a push button, a palette control). On by default; off draws nothing on those pictures. Separate from <see cref="ShowClickArrows"/>, which is the training document's (Tdoc) and the live replay arrow.</summary>
+    [JsonPropertyName("testDocArrows")] public bool TestDocArrows { get; set; } = true;
+
     /// <summary>Where the Retrace ribbon tab goes: "" / "afterHome" (right of Home), "first", "last" or "after:&lt;tab id or title&gt;".</summary>
     [JsonPropertyName("ribbonTabPosition")] public string RibbonTabPosition { get; set; } = "";
 

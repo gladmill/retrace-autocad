@@ -102,6 +102,9 @@ namespace Retrace.Samples
             var only = new RibbonRowPanel();
             only.Items.Add(Button("DRAWGRID", "Grid...", "Opens a dialog where you set rows, columns, spacing and layer, then draws a grid of points."));
             only.Items.Add(Button("DRAWINSERT", "Insert part...", "Opens a dialog with a parts tree and the buttons Add and Quick add, then asks for an insertion point and a rotation angle."));
+            only.Items.Add(Button("DRAWINSERTLIST", "Insert list...", "Like Insert part, with a list of cabinet icons between the tree and the buttons."));
+            only.Items.Add(LispButton("INSERTADD", "Insert chain...", "Runs a LISP that runs a script file, which opens the Insert list dialog and then asks for a point and a rotation. Copy samples/Retrace.Samples/chain/ to C:/temp/retrace-chain/ first."));
+            only.Items.Add(LispButton("INSERTTWOADD", "Insert two...", "Runs a LISP that runs a script file, which starts DRAWINSERTTWO: a dialog, a prompt, a second dialog, a prompt. Copy samples/Retrace.Samples/chain/ to C:/temp/retrace-chain/ first."));
             only.Items.Add(ChainButton());
             only.Items.Add(ScriptButton());
             only.Items.Add(DragButton());

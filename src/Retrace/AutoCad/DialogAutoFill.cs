@@ -494,7 +494,7 @@ sealed partial class DialogAutoFiller
         for (int i = 0; i < values.Count; i++)
             if (map[i] >= 0 && results[i].Status == FieldFillResult.Applied && !FillMatcher.IsNoOp(values[i]) && scan.Handles[map[i]].Count > 0
                 && (!TreeChecks.Is(values[i].Kind) || treesBoxed.Add(scan.Handles[map[i]][0])))   // the ticks of one tree get one box
-                filled.Add(new DialogBox(scan.Handles[map[i]][0], default, TdocPlan.FieldCallout(values[i])));
+                filled.Add(ItemBox(values[i], scan.Handles[map[i]][0]));   // a tree or list selection: the box and the arrow are on the item
         // the tabs clicked on the way: a box on the tab (a field on a tab that is not showing now has no box; the instruction sentences name its tab)
         var tabBoxes = new List<DialogBox>();
         foreach (var (tab, item, text) in _tabsShown)
@@ -508,6 +508,16 @@ sealed partial class DialogAutoFiller
         if (closingClick is { } cc) return new DialogShot(_dlg, filled, cc.Box is { } cb ? new DialogBox(IntPtr.Zero, cb, TdocPlan.CloseCallout(ok, cc.Label)) : new DialogBox(cc.Button, default, TdocPlan.CloseCallout(ok, cc.Label)), at);
         int b = FillMatcher.PickButton(scan.Buttons.Select(x => (x.Id, x.Text)).ToList(), ok);
         return new DialogShot(_dlg, filled, b < 0 ? null : new DialogBox(scan.Buttons[b].H, default, TdocPlan.CloseCallout(ok, scan.Buttons[b].Text)), at);
+    }
+
+    readonly Dictionary<(IntPtr, string, string), DialogBox> _itemBoxes = new();
+
+    /// <summary>The box of a filled field (<see cref="TdocTargets.FieldBox"/>), looked up once per field: the Tdoc gate asks again every tick until its picture is taken, and a list's rows are read one by one.</summary>
+    DialogBox ItemBox(FieldChange v, IntPtr control)
+    {
+        var key = (control, v.Kind, v.After);
+        if (!_itemBoxes.TryGetValue(key, out var box)) _itemBoxes[key] = box = TdocTargets.FieldBox(v, control, TdocTargets.Of(_dlg));
+        return box;
     }
 
     /// <summary>What the replay did, segment by segment, for the replay's result file. <paramref name="personFinished"/>: the replay gave up and a person finished the step by hand,

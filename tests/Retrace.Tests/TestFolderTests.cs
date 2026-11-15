@@ -256,6 +256,48 @@ public class TestFolderTests : IDisposable
     }
 
     [Fact]
+    public void Newest_is_the_test_recorded_last_not_the_folder_touched_last()
+    {
+        // an old test replayed just now: its folder and results\ are newer than the newer test's folder
+        var old = TestFolder("2026-10-10_0008_old");
+        var recent = TestFolder("2026-10-11_0900_recent", Lines.Select(l => l.Replace("2026-10-10T00:08:07.1234567+02:00", "2026-10-11T09:00:00+02:00")).ToArray());
+        var results = Path.Combine(old, "results");
+        Directory.CreateDirectory(results);
+        File.WriteAllText(Path.Combine(results, "latest.json"), "{}");
+        File.SetLastWriteTimeUtc(results, DateTime.UtcNow);
+        File.SetLastWriteTimeUtc(old, DateTime.UtcNow);
+        File.SetLastWriteTimeUtc(Path.Combine(old, "recording.jsonl"), DateTime.UtcNow);   // even the old recording file being touched changes nothing: the header decides
+        File.SetLastWriteTimeUtc(recent, DateTime.UtcNow.AddDays(-30));
+        Assert.Equal(Path.Combine(recent, "recording.jsonl"), TestFolders.Newest(_root));
+        Assert.Equal(Path.Combine(recent, "recording.jsonl"), TestFolders.FindRecordings(_root)[0]);
+        Assert.Null(TestFolders.Newest(Path.Combine(_root, "empty-none")));   // no test: the button is disabled
+    }
+
+    [Fact]
+    public void Newest_orders_by_the_instant_not_the_clock_time_and_can_skip_the_recording_in_progress()
+    {
+        // local clock order says "late" is later (10:00 vs 09:30), but 10:00-08:00 is 18:00Z and 09:30+05:00 is 04:30Z: "early" is later in time
+        string With(string started) => Header.Replace("2026-10-10T00:08:07.1234567+02:00", started);
+        var late = TestFolder("2026-11-01_1000_late", Lines.Select((l, i) => i == 0 ? With("2026-11-01T09:30:00+05:00") : Lines[i]).ToArray());
+        var early = TestFolder("2026-11-01_0930_early", Lines.Select((l, i) => i == 0 ? With("2026-11-01T10:00:00-08:00") : Lines[i]).ToArray());
+        Assert.Equal(Path.Combine(early, "recording.jsonl"), TestFolders.Newest(_root));
+        // the recording being written is left out when asked
+        Assert.Equal(Path.Combine(late, "recording.jsonl"), TestFolders.Newest(_root, Path.Combine(early, "recording.jsonl")));
+        Assert.Equal(Path.Combine(early, "recording.jsonl"), TestFolders.Newest(_root, null));
+        // display keeps the clock time as written
+        Assert.Equal(new DateTime(2026, 11, 1, 10, 0, 0), TestFolders.StartedOf(Path.Combine(early, "recording.jsonl")));
+    }
+
+    [Fact]
+    public void Run_last_tip_names_the_test_or_says_why_it_is_off()
+    {
+        Assert.Contains("2026-10-10_0008_a", TestFolders.RunLastTip(Path.Combine(_root, "2026-10-10_0008_a", "recording.jsonl"), false));
+        Assert.Equal("There is no recorded test yet.", TestFolders.RunLastTip(null, false));
+        Assert.Equal("A recording is running: stop it first.", TestFolders.RunLastTip(null, true));
+        Assert.Equal("A recording is running: stop it first.", TestFolders.RunLastTip(Path.Combine(_root, "x", "recording.jsonl"), true));
+    }
+
+    [Fact]
     public void Test_list_strips_the_date_prefix_and_reads_the_latest_verdict()
     {
         var dir = TestFolder("2026-10-10_0008_draw-test");

@@ -94,7 +94,11 @@ static class PaletteFill
     internal static void AddNote(string note) => _note = note;
 
     /// <summary>A problem found when a queued action ran: the replay stops with it.</summary>
-    internal static void FailLater(string why) => _pressFailure = why;
+    internal static void FailLater(string why, bool needsPerson = false) { _pressFailure = why; _failureNeedsPerson = needsPerson; }
+    static bool _failureNeedsPerson;
+
+    /// <summary>true once when the failure just taken is one the test stops for a person on (a toolbar button the replay refused to click), not an error.</summary>
+    public static bool TakeFailureNeedsPerson() { var f = _failureNeedsPerson; _failureNeedsPerson = false; return f; }
 
     /// <summary>A note the last palette step left (a button found by position, because its name changed), once; the replay adds it to the result's warnings.</summary>
     public static string? TakeNote() { var n = _note; _note = null; return n; }
@@ -114,7 +118,7 @@ static class PaletteFill
     public static bool TakeMenuFinal() { var f = _menuFinal; _menuFinal = false; return f; }
 
     /// <summary>A replay starts: nothing of an earlier replay's context menus is left.</summary>
-    public static void Reset() { _activeMenu?.CloseAll(); _activeMenu = null; _lateMenu = null; _menuFinal = false; }
+    public static void Reset() { ToolbarControl.ForgetAsked(); _activeMenu?.CloseAll(); _activeMenu = null; _lateMenu = null; _menuFinal = false; }
 
     /// <summary>The step is given up or replaced, or the replay ends: a context menu it opened is closed (a menu is never left open).</summary>
     public static void Abandon() { _activeMenu?.CloseAll(); _activeMenu = null; }
@@ -257,7 +261,7 @@ static class PaletteFill
             var map = FillMatcher.Match(values, scan.Fields.Select(LiveField.Of).ToList());
             for (int i = 0; i < values.Count; i++)
                 if (map[i] >= 0 && !FillMatcher.IsNoOp(values[i]) && scan.Handles[map[i]].Count > 0)
-                    boxes.Add(new DialogBox(scan.Handles[map[i]][0], default, TdocPlan.FieldCallout(values[i])));
+                    boxes.Add(TdocTargets.FieldBox(values[i], scan.Handles[map[i]][0], null));
             if (!string.IsNullOrEmpty(s.Button) && !Retrace.Core.PaletteClickKinds.IsIntermediate(s.ClickKind))
             {
                 if (DialogReader.FindButton(scan, s.Button, s.ButtonIndex, s.ButtonFrom) is var at and >= 0) boxes.Add(new DialogBox(scan.Buttons[at].H, default, "Click " + s.Button));

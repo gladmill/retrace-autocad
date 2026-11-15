@@ -7,7 +7,7 @@ namespace Retrace.AutoCad;
 /// tree, expand, collapse, image, listview, point). <c>Tree</c>/<c>TreeLabel</c>/<c>Path</c>: the tree kinds; <c>Hit</c>: list view and point (and the click point of an image); <c>AbsorbKey</c>/<c>AbsorbKind</c>/<c>AbsorbValue</c>:
 /// the value of the field the click changes, which is part of the click and is not written as a value (<see cref="PaletteWatch.Flush"/>).</summary>
 sealed record PaletteClickInfo(string Kind, string Button, string? From, int Index, int LegacyIndex, int NoTextCount, string Tree, string TreeLabel, string Path, PaletteHit? Hit,
-    string? AbsorbKey = null, string? AbsorbKind = null, string? AbsorbValue = null)
+    string? AbsorbKey = null, string? AbsorbKind = null, string? AbsorbValue = null, object? Target = null, int TargetIndex = -1, bool Drop = false, ScreenRect? Rect = null)
 {
     /// <summary>The fields of the `palette_click` event after palette / set / button.</summary>
     public (string, object?)[] ToFields()
@@ -19,6 +19,16 @@ sealed record PaletteClickInfo(string Kind, string Button, string? From, int Ind
             f.Add(("buttonFrom", From));
             if (Index > 1) f.Add(("index", Index));
             f.Add(("legacyIndex", LegacyIndex > 0 ? LegacyIndex : null)); f.Add(("noTextCount", NoTextCount > 0 ? NoTextCount : null));
+        }
+        if (Kind is PaletteClickKinds.ToolStrip or PaletteClickKinds.Toolbar)
+        {
+            f.Add(("buttonFrom", From));
+            if (Index > 1) f.Add(("index", Index));
+            if (Hit is { } t)
+            {
+                f.Add(("strip", t.Strip.Length > 0 ? t.Strip : null)); f.Add(("stripIndex", t.StripIndex)); f.Add(("itemName", t.ItemName.Length > 0 ? t.ItemName : null));
+                f.Add(("position", t.Position)); f.Add(("count", t.Count)); f.Add(("cmd", t.Cmd > 0 ? t.Cmd : null)); f.Add(("menu", t.Menu.Length > 0 ? t.Menu : null));
+            }
         }
         if (Hit is { } h)
         {
@@ -47,13 +57,140 @@ static class PaletteClickDetect
             int x = (short)((long)lParam & 0xFFFF), y = (short)(((long)lParam >> 16) & 0xFFFF);
             var seg = DialogReader.Segment(DialogReader.ClassOf(hwnd));
             if (seg == "systreeview32") return Tree(page, hwnd, message == LBUTTONDBLCLK, x, y);
+            // a ToolStrip and a toolbar take the second click of a double-click as a click of its own (the control raises Click again): it is a second step, as the person made it
+            if (seg == "toolbarwindow32") return Toolbar(page, hwnd, x, y);
+            if (seg is "static" or "window" && ToolStripControls.StripOf(hwnd) is { } strip0) return Strip(page, hwnd, strip0, x, y);
             if (message == LBUTTONDBLCLK) return null;
             if (seg == "syslistview32") return List(page, hwnd, x, y);
             if (seg is "static" or "window") return PictureOrPoint(page, hwnd, seg, x, y);
+            if (!KnownQuiet(seg) && !seg.StartsWith("hwndwrapper", StringComparison.Ordinal)) Ignored(hwnd, "no kind of click is recorded for this control class");   // a WPF palette's buttons are recorded by their own path
             return null;
         }
         catch (Exception ex) { Log.Error("palette click", ex); return null; }
     }
+
+    // ---- toolbars -----------------------------------------------------------------------------------------------------------------------
+
+    /// <summary>Window classes whose clicks are the values of the field they edit (or no action at all): a click on one is no step of its own and needs no line in the log.</summary>
+    static bool KnownQuiet(string seg) =>
+        seg is "edit" or "combobox" or "comboboxex32" or "combolbox" or "listbox" or "button" or "systabcontrol32" or "scrollbar" or "msctls_updown32" or "msctls_trackbar32" or "msctls_progress32"
+            or "sysdatetimepick32" or "sysmonthcal32" or "sysipaddress32" or "msctls_hotkey32" or "richedit20w" or "richedit50w" or "systreeview32" or "syslistview32" or "sysheader32" or "msctls_statusbar32" or "tooltips_class32";
+
+    static readonly HashSet<string> Logged = new();
+
+    /// <summary>A recording starts: every control class is logged once again.</summary>
+    public static void NewSession() => Logged.Clear();
+
+    /// <summary>A left click in a followed palette that is no step: one line in retrace.log naming the control, so a user's log says what was clicked (once per control class and reason in a recording).</summary>
+    internal static void Ignored(IntPtr hwnd, string why)
+    {
+        try
+        {
+            var cls = DialogReader.ClassOf(hwnd);
+            var net = WinFormsControls.Control(hwnd)?.GetType().FullName;
+            // once per control class and reason in a recording, not per click
+            if (!Logged.Add(cls + "|" + why)) return;
+            Log.Info($"palette click not recorded: {why}; control class {cls}" + (net != null ? $" ({net})" : ""));
+        }
+        catch (Exception) { }
+    }
+
+    /// <summary>The place of a ToolStrip (or ToolbarWindow32) of the page among those of its kind, 1 = the first, 0 when it is not among them.</summary>
+    static int StripNumber(IntPtr page, IntPtr h, bool toolbar)
+    {
+        var all = Children(page, hidden: true).Where(c => toolbar ? DialogReader.Segment(DialogReader.ClassOf(c)) == "toolbarwindow32" : ToolStripControls.StripOf(c) != null).ToList();
+        int at = all.IndexOf(h);
+        return at < 0 ? 0 : at + 1;
+    }
+
+    static PaletteClickInfo? Strip(IntPtr page, IntPtr hwnd, object strip, int x, int y)
+    {
+        if (ToolStripControls.ItemAt(strip, x, y) is not { } item) { Ignored(hwnd, "a click on the toolbar's empty space"); return null; }
+        if (item.Separator) { Ignored(hwnd, "a click on a toolbar separator"); return null; }
+        if (item.Overflow) { Ignored(hwnd, "the toolbar's overflow button (its menu is not followed)"); return null; }
+        if (!item.Enabled) { Ignored(hwnd, "a click on a disabled toolbar item"); return null; }
+        if (item.Label || item.Host) { Ignored(hwnd, item.Host ? "a click on a control hosted by the toolbar" : "a click on a toolbar label"); return null; }
+        // a drop-down opens its menu (the item chosen there is the step, see DropDownChoice); the main part of a split button is a button of its own
+        if (item.DropDown && (!item.Split || ToolStripControls.OnArrow(item, x, y))) return null;
+        var buttons = ToolStripControls.Buttons(strip);
+        int at = buttons.FindIndex(b => ReferenceEquals(b.Obj, item.Obj));
+        if (at < 0) { Ignored(hwnd, "the toolbar item is not among the strip's buttons"); return null; }
+        var cands = buttons.Select(b => b.Candidate).ToList();
+        var (name, from) = PaletteToolbar.Display(cands[at]);
+        int occurrence = PaletteToolbar.Occurrence(cands, at);
+        string? src = ButtonNames.FromToRecord(from);
+        ScreenRect? rect = WantRects && ToolStripControls.ScreenOf(hwnd, item, arrow: false) is { } sc ? sc.Rect : null;   // the item, never the whole strip
+        return new PaletteClickInfo(PaletteClickKinds.ToolStrip, name, src, occurrence, 0, 0, "", "", "",
+            new PaletteHit(Strip: ToolStripControls.NameOf(strip), StripIndex: StripNumber(page, hwnd, false), ItemName: UniqueName(buttons, item), Position: at + 1, Count: buttons.Count), Target: item.Obj, Rect: rect);
+    }
+
+    /// <summary>The item's `Name` when no other button of the strip has it, else "" (a replay then goes by the display name and its occurrence).</summary>
+    static string UniqueName(List<TsItem> buttons, TsItem item) =>
+        item.Name.Length > 0 && buttons.Count(b => string.Equals(b.Name, item.Name, StringComparison.OrdinalIgnoreCase)) == 1 ? item.Name : "";
+
+    /// <summary>The buttons of a ToolbarWindow32 as the finder lists them: own text, else the tool tip the owner gives (asked once per button), and the command id.</summary>
+    internal static List<ToolCandidate> Candidates(IntPtr tb, List<ToolbarButton> buttons, int askId = -1, bool all = false) =>
+        buttons.Select(b => { var (t, tip) = ToolbarControl.NamesOf(tb, b.Id, ask: all || b.Id == askId, fresh: b.Id == askId); return new ToolCandidate("", t, tip, "", b.Enabled, b.Id); }).ToList();
+
+    /// <summary>Rectangles for the test document's frames are read only when the setting is on (set by the recorder).</summary>
+    public static bool WantRects;
+
+    static PaletteClickInfo? Toolbar(IntPtr page, IntPtr tb, int x, int y)
+    {
+        if (!ToolbarControl.Ok(tb)) { Ignored(tb, "a toolbar of another thread"); return null; }
+        int index = ToolbarControl.HitTest(tb, x, y);
+        if (index < 0) { Ignored(tb, "a click on a toolbar separator or empty space"); return null; }
+        var buttons = ToolbarControl.Buttons(tb);
+        int at = buttons.FindIndex(b => b.Index == index);
+        if (at < 0) { Ignored(tb, "the toolbar button under the click is hidden"); return null; }
+        var b = buttons[at];
+        if (!b.Enabled) { Ignored(tb, "a click on a disabled toolbar button"); return null; }
+        // the arrow of a split drop-down button opens the owner's menu: it is no click of the button (TB_HITTEST does not tell the parts apart; TB_GETITEMDROPDOWNRECT does)
+        if (ToolbarControl.DropDownArrowRect(tb, b) is { } arrow && ToolbarLabel.Inside(x, y, arrow.L, arrow.T, arrow.R, arrow.B)) { Ignored(tb, "toolbar drop-down arrow: not recorded"); return null; }
+        var cands = Candidates(tb, buttons, b.Id, all: true);   // every button's tool tip, asked once per toolbar (an empty answer is remembered), so the occurrence of the name is counted over all of them
+        var (name, from) = PaletteToolbar.Display(cands[at]);
+        int occurrence = PaletteToolbar.Occurrence(cands, at);
+        if (ToolbarPress.StopFor(b.Style, ToolbarControl.ExtendedStyle(tb)) != null) Log.Info($"palette toolbar button {b.Id} opens a menu: the click is recorded, the menu item chosen is not followed");
+        return new PaletteClickInfo(PaletteClickKinds.Toolbar, name, ButtonNames.FromToRecord(from), occurrence, 0, 0, "", "", "",
+            new PaletteHit(Strip: WinFormsControls.NamesOf(tb)?.Name ?? "", StripIndex: StripNumber(page, tb, true), Position: at + 1, Count: buttons.Count, Cmd: b.Id > 0 && buttons.Count(q => q.Id == b.Id) == 1 ? b.Id : 0), TargetIndex: index,
+            Rect: WantRects && ToolbarControl.ItemScreenRect(tb, index) is { } ir ? new ScreenRect(ir.L, ir.T, ir.R, ir.B) : null);   // a duplicate or zero id names nothing
+    }
+
+    /// <summary>A click on a drop-down menu of a toolbar item of a palette (the menu is a window of its own, so the palette's click detection never sees it): the item chosen, as a click of the toolbar item that opened the menu, with
+    /// <c>menu</c> the path of texts. <paramref name="strip"/>: the strip's window, to find the palette. Null when the click is no menu choice.</summary>
+    public static PaletteClickInfo? DropDownChoice(IntPtr hwnd, IntPtr lParam, out IntPtr strip) => DropDownChoice(hwnd, lParam, out strip, out _);
+
+    public static PaletteClickInfo? DropDownChoice(IntPtr hwnd, IntPtr lParam, out IntPtr strip, out object? leaf)
+    {
+        strip = IntPtr.Zero; leaf = null;
+        try
+        {
+            if (!DialogReader.ClassOf(hwnd).StartsWith("WindowsForms", StringComparison.Ordinal) || ToolStripControls.DropDownOf(hwnd) == null) return null;   // every click outside a palette asks: the class alone rules out almost all of them
+            int x = (short)((long)lParam & 0xFFFF), y = (short)(((long)lParam >> 16) & 0xFFFF);
+            var choice = ToolStripControls.DropDownChoice(hwnd, x, y, out var why);
+            if (choice == null)
+            {
+                if (why is not ("no item under the click" or "a sub menu (it only opens)" or "a menu with no owner item")) Ignored(hwnd, "a click in a toolbar drop-down: " + why);
+                return null;
+            }
+            strip = choice.Strip; leaf = choice.Leaf;
+            var root = ToolStripControls.StripOf(strip);
+            var page = Locate(strip);
+            if (root == null || page == null) return null;
+            var item = ToolStripControls.Items(root).FirstOrDefault(i => ReferenceEquals(i.Obj, choice.Root));
+            if (item == null) { Ignored(hwnd, "the toolbar item that opened the menu is not on the strip"); return null; }
+            var buttons = ToolStripControls.Buttons(root);
+            int at = buttons.FindIndex(b => ReferenceEquals(b.Obj, item.Obj));
+            if (at < 0) return null;
+            var cands = buttons.Select(b => b.Candidate).ToList();
+            var (name, from) = PaletteToolbar.Display(cands[at]);
+            return new PaletteClickInfo(PaletteClickKinds.ToolStrip, name, ButtonNames.FromToRecord(from), PaletteToolbar.Occurrence(cands, at), 0, 0, "", "", "",
+                new PaletteHit(Strip: ToolStripControls.NameOf(root), StripIndex: StripNumber(page.Page, strip, false), ItemName: UniqueName(buttons, item), Position: at + 1, Count: buttons.Count, Menu: TreePath.Join(choice.Path)), Target: choice.Leaf, Drop: true, Rect: WantRects ? ToolStripControls.WholeItemRect(strip, item) : null);   // the button that owns the menu: the menu has closed by the time the picture is taken, so a frame on its item would be blank space
+        }
+        catch (Exception ex) { Log.Error("palette drop-down click", ex); return null; }
+    }
+
+    static PaletteWatch.Spot? Locate(IntPtr h) => PaletteWatch.Locate(h);
 
     static PaletteClickInfo? Tree(IntPtr page, IntPtr tree, bool dbl, int x, int y)
     {
@@ -132,7 +269,8 @@ static class PaletteClickDetect
 
     static PaletteClickInfo? PictureOrPoint(IntPtr page, IntPtr h, string seg, int x, int y)
     {
-        if (WinFormsControls.ClickKindOf(h) is not { } kind || !kind.Clickable) return null;
+        if (WinFormsControls.ClickKindOf(h) is not { } kind) { Ignored(h, "not a WinForms control"); return null; }
+        if (!kind.Clickable) { Ignored(h, "the control has no click handler of its own and is no known clickable kind"); return null; }
         GetClientRect(h, out var rc);
         double fx = PaletteClickKinds.Fraction(x, rc.Right), fy = PaletteClickKinds.Fraction(y, rc.Bottom);
         if (kind.Picture)
@@ -178,7 +316,19 @@ static class RealMouse
     public static Action<int, int, int, int>? AvoidHook;
     public static Action<int, int>? CursorHook;
 
-    readonly record struct Item(string What, IntPtr Control, int X, int Y);
+    /// <summary>One click of the queue. <c>Late</c>: the target is not known until the click before it was made (a menu item of a drop-down that the click before opens); it is asked when the click is due and again every 150 ms until it answers or 40 tries have passed.</summary>
+    sealed class Item
+    {
+        public Item(string what, IntPtr control, int x, int y, LateTarget? late = null, Func<string?>? check = null, Action? onFail = null, bool person = false) { What = what; Control = control; X = x; Y = y; Late = late; Check = check; OnFail = onFail; Person = person; }
+        /// <summary>A failure of this click ends the test as needs-a-person (a toolbar button the replay may not click), as a button that is not found does.</summary>
+        public readonly bool Person;
+        public string What; public IntPtr Control; public int X, Y; public readonly LateTarget? Late; public int Tries;
+        /// <summary>Asked just before the click: null = go on, else why this click must not be made (the point is not on the recorded item).</summary>
+        public readonly Func<string?>? Check;
+        /// <summary>Runs when this click or one queued after it failed (a menu the clicks opened is closed, so a retry starts clean).</summary>
+        public readonly Action? OnFail;
+    }
+    public delegate (IntPtr Window, int X, int Y, Func<string?>? Check)? LateTarget(out string why);
     static readonly Queue<Item> Queued = new();
     static bool _scheduled;
     static long _lastAt;
@@ -219,21 +369,28 @@ static class RealMouse
     }
 
     /// <summary>Queues a click on <paramref name="control"/> at screen point (x, y); it is sent after the ones queued before it, from the dispatcher (a tree waits for the mouse inside a button-down, and a handler may open a sub form).</summary>
-    public static void Enqueue(string what, IntPtr control, int x, int y)
+    public static void Enqueue(string what, IntPtr control, int x, int y, Func<string?>? check = null, Action? onFail = null, bool person = false)
     {
-        Queued.Enqueue(new Item(what, control, x, y));
+        Queued.Enqueue(new Item(what, control, x, y, null, check, onFail, person));
         Pump();
     }
 
     static bool Near(Item i) =>
-        i.Control == _lastControl || (Math.Abs(i.X - _lastX) <= Math.Max(2, GetSystemMetrics(36 /* SM_CXDOUBLECLK */) / 2) && Math.Abs(i.Y - _lastY) <= Math.Max(2, GetSystemMetrics(37) / 2));
+        i.Late == null && (i.Control == _lastControl || (Math.Abs(i.X - _lastX) <= Math.Max(2, GetSystemMetrics(36 /* SM_CXDOUBLECLK */) / 2) && Math.Abs(i.Y - _lastY) <= Math.Max(2, GetSystemMetrics(37) / 2)));
 
-    static void Pump()
+    /// <summary>Queues a click whose target is found when it is due (<see cref="LateTarget"/>).</summary>
+    public static void EnqueueLate(string what, LateTarget late, Action? onFail = null, bool person = false)
+    {
+        Queued.Enqueue(new Item(what, IntPtr.Zero, 0, 0, late, null, onFail, person));
+        Pump();
+    }
+
+    static void Pump(long? waitOverride = null)
     {
         if (_scheduled || Queued.Count == 0) return;
         _scheduled = true;
         var next = Queued.Peek();
-        long wait = PaletteClickKinds.SpacingWaitMs(_lastAt, Environment.TickCount64, GetDoubleClickTime(), Near(next));
+        long wait = waitOverride ?? PaletteClickKinds.SpacingWaitMs(_lastAt, Environment.TickCount64, GetDoubleClickTime(), Near(next));
         if (wait <= 0) { int g = _gen; DialogFill.Later("palette click", () => { if (g == _gen) Fire(); }); return; }
         int gen = _gen;
         var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(wait) };
@@ -246,25 +403,50 @@ static class RealMouse
     {
         _scheduled = false;
         if (Queued.Count == 0) return;
-        var i = Queued.Dequeue();
+        var i = Queued.Peek();
+        Func<string?>? lateCheck = null;
+        if (i.Late != null)
+        {
+            var found = i.Late(out var lateWhy);
+            if (found == null)
+            {
+                if (++i.Tries < 40) { Pump(150); return; }
+                Fail($"could not click {i.What}: {lateWhy}"); return;
+            }
+            i.Control = found.Value.Window; i.X = found.Value.X; i.Y = found.Value.Y; lateCheck = found.Value.Check;
+        }
+        Queued.Dequeue();
         try
         {
-            if (Send(i.Control, i.X, i.Y) is { } why) { PaletteFill.FailLater($"could not click {i.What}: {why}"); Queued.Clear(); return; }
+            if ((i.Check ?? lateCheck)?.Invoke() is { } bad) { Fail($"did not click {i.What}: {bad}", i); return; }
+            if (Send(i.Control, i.X, i.Y, activate: i.Late == null && i.Check != null) is { } why) { Fail($"could not click {i.What}: {why}", i); return; }
             _lastAt = Environment.TickCount64; _lastX = i.X; _lastY = i.Y; _lastControl = i.Control;
         }
         catch (Exception ex)
         {
             // the step is already marked done: a click that threw is a failure of the replay, never a pass
             Log.Error("palette click", ex);
-            PaletteFill.FailLater($"could not click {i.What}: {ex.Message}"); Queued.Clear();
+            Fail($"could not click {i.What}: {ex.Message}", i);
         }
         finally { Pump(); }
     }
 
+    /// <summary>A click failed: the step fails with the reason, the clicks queued after it are dropped, and whatever menu they opened is closed.</summary>
+    static void Fail(string why, Item? current = null)
+    {
+        PaletteFill.FailLater(why, needsPerson: current?.Person ?? (Queued.Count > 0 && Queued.Peek().Person));
+        current?.OnFail?.Invoke();
+        foreach (var q in Queued) q.OnFail?.Invoke();
+        Queued.Clear();
+    }
+
     /// <summary>The click: the point is looked at again (a window may have come over it), the cursor moves there (through the replay, which puts it back; and the click arrow, when the setting is on), the button goes down and up. Null when sent, else why not.</summary>
-    static string? Send(IntPtr control, int x, int y)
+    static string? Send(IntPtr control, int x, int y, bool activate = false)
     {
         if (Prepare(control, x, y) is { } why) return why;
+        // a WinForms ToolStrip in a window that is not the active one takes the first click only to activate it (it does nothing else): the window comes to the front first (a Tdoc picture brings AutoCAD's main window up
+        // between two steps, so the palette's own frame was not the active window any more)
+        if (activate && GetAncestor(control, 2 /* GA_ROOT */) is var root && root != IntPtr.Zero) Native.Front(root);
         ClickArrows.At(x, y);
         if (CursorHook != null) CursorHook(x, y); else SetCursorPos(x, y);
         // SendInput says which physical button: with the buttons swapped (SM_SWAPBUTTON) the physical right one is the primary button
@@ -276,7 +458,7 @@ static class RealMouse
 }
 
 /// <summary>Where a replayed intermediate click goes: the control, the screen point, a rectangle round it (the Tdoc arrow), a note for the result (added when the click was queued, never on a retry), and, for a node of a tree that shows no +/- button, what to do instead.</summary>
-sealed record ClickTarget(IntPtr Control, int X, int Y, ScreenRect Rect, string What, string? Note = null, Action? Instead = null, bool Nothing = false);
+sealed record ClickTarget(IntPtr Control, int X, int Y, ScreenRect Rect, string What, string? Note = null, Action? Instead = null, bool Nothing = false, object? MenuRoot = null, List<string>? MenuPath = null, Func<string?>? Check = null);
 
 /// <summary>Replay side: does a recorded intermediate click of a WinForms palette with a real mouse click on the control found by name, path or place. Everything that can be checked is checked on the tick (the control is there, shown, not covered):
 /// the click itself is queued (<see cref="RealMouse"/>). A control that is not found, or not clickable, is a problem the replay retries and then gives to a person; never a pass. <see cref="Resolve"/> is the one finder, also for the Tdoc arrow. UI thread only.</summary>
@@ -294,7 +476,11 @@ static class PaletteClickFill
             if (t.Nothing) { if (t.Note != null) PaletteFill.AddNote(t.Note); return null; }
             if (t.Instead != null) { if (t.Note != null) PaletteFill.AddNote(t.Note); DialogFill.Later("tree toggle", t.Instead); return null; }
             if (RealMouse.Prepare(t.Control, t.X, t.Y) is { } why) return why;
-            RealMouse.Enqueue(t.What, t.Control, t.X, t.Y);
+            // a drop-down that is open already (a retry of this step, or opened by hand) is not clicked again: that would close it
+            bool open = t.MenuRoot != null && ToolStripControls.IsOpen(t.MenuRoot);
+            bool person = t.Check != null;   // a toolbar click (it alone has a check): a refusal at the click ends the test as needs-a-person, like a button that is not found
+            if (!open) RealMouse.Enqueue(t.What, t.Control, t.X, t.Y, t.Check, t.MenuRoot != null ? () => ToolStripControls.Close(t.MenuRoot) : null, person);
+            if (t.MenuRoot != null && t.MenuPath != null) QueueMenu(t);
             if (t.Note != null) PaletteFill.AddNote(t.Note);   // once the click is queued: a step that is tried again does not repeat it
             return null;
         }
@@ -320,6 +506,8 @@ static class PaletteClickFill
         PaletteClickKinds.ListView => ResolveList(s, page, hidden, mutate),
         PaletteClickKinds.Image => ResolveImage(s, page, hidden),
         PaletteClickKinds.Point => ResolvePoint(s, page, hidden),
+        PaletteClickKinds.ToolStrip => ResolveToolStrip(s, page, hidden),
+        PaletteClickKinds.Toolbar => ResolveToolbar(s, page, hidden),
         _ => (null, $"unknown palette click kind {s.ClickKind}"),
     };
 
@@ -334,6 +522,31 @@ static class PaletteClickFill
 
     // ---- trees -----------------------------------------------------------------------------------------------------------------------
 
+    /// <summary>The item at <paramref name="levels"/> (a blank item is "(blank)" on both sides); <paramref name="expand"/> opens the parents on the way (a replay), else only looks.</summary>
+    static TreeFound<IntPtr> FindTreeItem(IntPtr tree, IReadOnlyList<string> levels, bool expand) =>
+        TreePath.Find(levels, IntPtr.Zero, p => TreeControl.Children(tree, p), it => PaletteClickKinds.LevelText(TreeControl.Text(tree, it)), expand ? p => TreeControl.Expand(tree, p) : null);
+
+    /// <summary>Tdoc: the screen rectangle of the label of the tree item at <paramref name="path"/>, found as the replay finds it. Only looks: nothing is opened, selected or scrolled (a palette's picture is taken before its step
+    /// runs, and opening a node runs the owner's handlers). Null when the item is not there, a parent is collapsed, or the item is not inside the tree's client area.</summary>
+    public static ScreenRect? TreeItemRect(IntPtr tree, string path)
+    {
+        try
+        {
+            var levels = PaletteClickKinds.ClickLevels(path);
+            if (levels.Count == 0 || !Native.OwnedByThisThread(tree)) return null;
+            var found = FindTreeItem(tree, levels, expand: false);
+            if (found.Problem != null) return null;
+            for (int k = 0; k < found.Items.Count - 1; k++)   // every parent open: TVM_GETITEMRECT would answer for a hidden item otherwise
+                if ((TreeControl.State(tree, found.Items[k], TreeControl.TVIS_EXPANDED) & TreeControl.TVIS_EXPANDED) == 0) return null;
+            var item = found.Items[^1];
+            if (TreeControl.TextRect(tree, item) is not { } r || !GetClientRect(tree, out var rc)) return null;
+            if (r.L < 0 || r.T < 0 || r.R > rc.Right + 1 || r.B > rc.Bottom + 1 || r.R - r.L < 2 || r.B - r.T < 2) return null;
+            var (l, t) = Screen(tree, r.L, r.T); var (rr, b) = Screen(tree, r.R, r.B);
+            return new ScreenRect(l, t, rr, b);
+        }
+        catch (Exception ex) { Log.Error("tdoc tree item rect", ex); return null; }
+    }
+
     static (ClickTarget?, string?) ResolveTree(Step s, DialogReader.Win32Scan win32, bool mutate)
     {
         var at = FillMatcher.Match(new[] { new FieldChange(s.ClickTree, s.ClickTreeLabel, "tree", "", "") }, win32.Fields.Select(LiveField.Of).ToList())[0];
@@ -343,7 +556,7 @@ static class PaletteClickFill
         var levels = PaletteClickKinds.ClickLevels(s.ClickPath);
         if (levels.Count == 0) return (null, "the recorded click names no tree item (an empty path)");
         // a replay opens every parent on the way, so the item is there to click; Tdoc only looks (a blank item is "(blank)" on both sides)
-        var found = TreePath.Find(levels, IntPtr.Zero, p => TreeControl.Children(tree, p), it => PaletteClickKinds.LevelText(TreeControl.Text(tree, it)), mutate ? p => TreeControl.Expand(tree, p) : null);
+        var found = FindTreeItem(tree, levels, mutate);
         if (found.Problem != null) return (null, found.Problem);
         var item = found.Items[^1];
         if (mutate) Native.SendNum(tree, TreeControl.TVM_ENSUREVISIBLE, IntPtr.Zero, item, 2, 2000, out _);
@@ -409,6 +622,102 @@ static class PaletteClickFill
         if (row < 0) return (null, problem ?? $"no item \"{hit.Item}\" in the list");
         if (MenuListView.RowClickPoint(list, row, scroll: mutate) is not { } p) return (null, $"the item \"{hit.Item}\" is not in view");
         return (new ClickTarget(list, p.X, p.Y, Around(p.X, p.Y, 16), "list item " + hit.Item), null);
+    }
+
+    // ---- toolbars -----------------------------------------------------------------------------------------------------------------------
+
+    /// <summary>A WinForms ToolStrip item: the strip by `Name`, else its place among the page's strips; the item by `Name`, the recorded name or its place (<see cref="PaletteToolbar.Find"/>); its bounds in the strip's client
+    /// coordinates, on the screen. A disabled item, an item on the overflow menu and an item that is not there are problems (the replay retries, then gives the step to a person): never a pass.</summary>
+    static (ClickTarget?, string?) ResolveToolStrip(Step s, IntPtr page, bool hidden)
+    {
+        var hit = s.Hit ?? new PaletteHit();
+        var strips = ToolStripControls.StripsOf(page, hidden: true);   // the same rule as the recorder's numbering (StripNumber)
+        int at = hit.Strip.Length > 0 ? strips.FindIndex(t => string.Equals(ToolStripControls.NameOf(t.Strip), hit.Strip, StringComparison.OrdinalIgnoreCase)) : -1;
+        // a strip recorded with a name is found by that name only; the place is for strips that had none
+        if (at < 0 && hit.Strip.Length == 0 && hit.StripIndex >= 1 && hit.StripIndex <= strips.Count) at = hit.StripIndex - 1;
+        if (at < 0) return (null, hit.Strip.Length > 0 ? $"toolbar \"{hit.Strip}\" not found in the {s.DialogTitle} palette (yet)" : $"no toolbar (ToolStrip) in the {s.DialogTitle} palette (yet)");
+        var strip = strips[at].H;
+        var buttons = ToolStripControls.Buttons(strips[at].Strip);
+        var found = PaletteToolbar.Find(buttons.Select(b => b.Candidate).ToList(), s.Button ?? "", s.ButtonIndex, hit.ItemName, hit.Position, hit.Count, 0);
+        if (found.At < 0) return (null, found.Problem);
+        var item = buttons[found.At];
+        var name = PaletteToolbar.Display(item.Candidate).Name;
+        if (item.OnOverflow) return (null, $"the toolbar button \"{name}\" is on the toolbar's overflow menu (the palette is too narrow to show it): make the palette wider");
+        if (!item.Enabled) return (null, $"the toolbar button \"{name}\" is disabled");
+        bool menu = hit.Menu.Length > 0;
+        if (menu && !item.DropDown) return (null, $"the toolbar button \"{name}\" has no drop-down menu now (recorded: {hit.Menu})");
+        if (!menu && item.DropDown && !item.Split) return (null, $"the toolbar button \"{name}\" opens a menu now (recorded as a plain click): not clicked");
+        if (ToolStripControls.ScreenOf(strip, item, arrow: menu) is not { } sc) return (null, $"the toolbar button \"{name}\" is not in view");
+        var obj = item.Obj;
+        return (new ClickTarget(strip, sc.X, sc.Y, sc.Rect, "toolbar button " + name, found.Note, MenuRoot: menu ? item.Obj : null, MenuPath: menu ? TreePath.Split(hit.Menu) : null,
+            Check: () => ToolStripControls.PointIsOn(strip, obj, sc.X, sc.Y, menu)), null);
+    }
+
+    /// <summary>A toolbar (ToolbarWindow32) button: the toolbar by `Name`, else its place; the button by command id, else the recorded name or its place; clicked at the middle of its rectangle. A button whose whole face opens a menu is left to
+    /// a person (its menu cannot be closed again by the replay).</summary>
+    static (ClickTarget?, string?) ResolveToolbar(Step s, IntPtr page, bool hidden)
+    {
+        var hit = s.Hit ?? new PaletteHit();
+        var bars = PaletteClickDetect.Children(page, hidden: true).Where(h => DialogReader.Segment(DialogReader.ClassOf(h)) == "toolbarwindow32" && ToolbarControl.Ok(h)).ToList();
+        int at = hit.Strip.Length > 0 ? bars.FindIndex(h => string.Equals(WinFormsControls.NamesOf(h)?.Name, hit.Strip, StringComparison.OrdinalIgnoreCase)) : -1;
+        if (at < 0 && hit.Strip.Length == 0 && hit.StripIndex >= 1 && hit.StripIndex <= bars.Count) at = hit.StripIndex - 1;
+        if (at < 0 && hit.Strip.Length == 0 && hit.Cmd > 0) at = bars.FindIndex(h => ToolbarControl.Find(h, hit.Cmd) != null);
+        if (at < 0) return (null, hit.Strip.Length > 0 ? $"toolbar \"{hit.Strip}\" not found in the {s.DialogTitle} palette (yet)" : $"no toolbar in the {s.DialogTitle} palette (yet)");
+        var tb = bars[at];
+        var buttons = ToolbarControl.Buttons(tb);
+        // a tool tip is asked of the program for the button the id names only; every button's only when the id found nothing
+        var found = PaletteToolbar.Find(PaletteClickDetect.Candidates(tb, buttons, hit.Cmd), s.Button ?? "", s.ButtonIndex, "", hit.Position, hit.Count, hit.Cmd);
+        if (found.At < 0) found = PaletteToolbar.Find(PaletteClickDetect.Candidates(tb, buttons, -1, all: true), s.Button ?? "", s.ButtonIndex, "", hit.Position, hit.Count, hit.Cmd);
+        if (found.At < 0) return (null, found.Problem);
+        var b = buttons[found.At];
+        var name = s.Button is { Length: > 0 } n && n != ButtonNames.Unnamed ? n : "no. " + (found.At + 1);
+        if (!b.Enabled) return (null, $"the toolbar button \"{name}\" is disabled");
+        if (ToolbarPress.StopFor(b.Style, ToolbarControl.ExtendedStyle(tb)) is { } stop) return (null, stop);
+        if (ToolbarControl.ItemScreenRect(tb, b.Index) is not { } r || r.R <= r.L) return (null, $"the toolbar button \"{name}\" is not in view");
+        // a click goes to the main part of the button: of a split drop-down button the part left of its arrow
+        int cx = (r.L + r.R) / 2, cy = (r.T + r.B) / 2, bi = b.Index, bid = b.Id;
+        var arrowPart = ToolbarControl.DropDownArrowRect(tb, b);
+        var rect = new ScreenRect(r.L, r.T, r.R, r.B);
+        if (arrowPart is { } ar && ToolbarControl.ButtonRect(tb, b.Index) is { } br)
+        {
+            var o = new Win32.POINT { X = br.L, Y = br.T }; Win32.ClientToScreen(tb, ref o);
+            int mainRight = o.X + (ar.L - br.L);
+            if (mainRight <= r.L) return (null, $"the toolbar button \"{name}\" has no main part to click");
+            cx = (r.L + mainRight) / 2; rect = new ScreenRect(r.L, r.T, mainRight, r.B);
+        }
+        return (new ClickTarget(tb, cx, cy, rect, "toolbar button " + name, found.Note,
+            Check: () =>
+            {
+                // at the click: the point is on that button (by index AND command id: the toolbar may have been rebuilt while the click waited) and not on its arrow
+                var p = new Win32.POINT { X = cx, Y = cy }; Win32.ScreenToClient(tb, ref p);
+                int hit = ToolbarControl.HitTest(tb, p.X, p.Y);
+                if (hit != bi || !ToolbarControl.Buttons(tb).Any(q => q.Index == hit && q.Id == bid)) return "the click point is on another toolbar button";
+                var now = ToolbarControl.Buttons(tb).FirstOrDefault(q => q.Index == hit);
+                return ToolbarControl.DropDownArrowRect(tb, now) is { } a2 && ToolbarLabel.Inside(p.X, p.Y, a2.L, a2.T, a2.R, a2.B) ? "the click point is on the drop-down arrow of the button" : null;
+            }), null);
+    }
+
+    /// <summary>The menu choices of a drop-down: one queued click per level, each found when it is due (the menu opens when the click before it was made).</summary>
+    static void QueueMenu(ClickTarget t)
+    {
+        Func<object?> parent = () => t.MenuRoot;
+        foreach (var level in t.MenuPath!)
+        {
+            var text = level;
+            var from = parent;
+            object? chosen = null;
+            RealMouse.EnqueueLate($"menu item {text} of {t.What}", (out string why) =>
+            {
+                why = "the menu item that opens this menu was not found";
+                if (from() is not { } p) return null;
+                var m = ToolStripControls.MenuItemTarget(p, text, out why);
+                if (m == null) return null;
+                chosen = m.Value.Item;
+                var menuItem = m.Value.Item; var ddWindow = m.Value.Window; int mx = m.Value.X, my = m.Value.Y;
+                return (ddWindow, mx, my, () => ToolStripControls.MenuPointIsOn(ddWindow, menuItem, mx, my));   // just before the click: the point is on THAT menu item
+            }, () => ToolStripControls.Close(t.MenuRoot!), person: true);
+            parent = () => chosen;
+        }
     }
 
     // ---- images and unnamed controls ----------------------------------------------------------------------------------------------------

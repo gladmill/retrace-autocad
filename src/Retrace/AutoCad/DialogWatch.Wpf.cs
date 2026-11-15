@@ -165,7 +165,7 @@ sealed partial class DialogWatch
         SettleIfPending(e, null);
         e.LastReadMs = now;
         WpfRead(e, now, statics: true, taken: scan);   // the read for the input that closes the dialog: the scan this handler took before the button's own handlers
-        if (role == "ok") Confirmed?.Invoke(e.ForN, e.Hwnd, viaMouse ? WpfDialogs.CursorPos() : null);   // a key press that closes the dialog has no point
+        if (role == "ok") Confirmed?.Invoke(e.ForN, e.Hwnd, viaMouse ? WpfDialogs.CursorPos() : null, null);   // a key press that closes the dialog has no point
     }
 
     /// <summary>The press is a click: the fields and static texts of <paramref name="scan"/> (read in the Click class handler, before the button's handlers), the click goes out, and the baseline moves to

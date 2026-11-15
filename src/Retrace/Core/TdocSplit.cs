@@ -25,18 +25,31 @@ public static class TdocSplit
             var s = steps[i];
             int last = i;
             while (last + 1 < steps.Count && steps[last + 1].Kind == "dialog") last++;
-            if (last == i || s.Kind is not ("ribbon" or "command" or "lisp") || s.ChainClick) { list.Add(new TdocEntry(s, i, false)); continue; }
+            if (last == i || s.Kind is not ("ribbon" or "command" or "lisp") || (s.ChainClick && s.Kind != "ribbon")) { list.Add(new TdocEntry(s, i, false)); continue; }
 
             // the answers by the dialog they follow: slot 0 = before the first dialog, slot k = after dialog k (by the time each dialog step opened, as InputAroundDialog splits at the first)
             int n = last - i;
             var slots = new List<Answer>[n + 1];
             for (int k = 0; k <= n; k++) slots[k] = [];
-            foreach (var a in s.Answers)
+            if (s.ChainClick)
             {
-                int k = 0;
-                while (k < n && a.T >= steps[i + 1 + k].T) k++;
-                slots[k].Add(a);
+                // a script-chain click: the replay types what a person gave before the first dialog opened with the click, and after each dialog (from its close to the next one's opening) when
+                // that one is done (ReplayRules.ChainAnswersAfter). What was given while a dialog was open (a pick-point button) is not typed by the replay but was given: the document lists it with the
+                // prompts after that dialog, so it is in some step
+                slots[0].AddRange(s.Answers.Where(a => a.T < steps[i + 1].T));
+                for (int k = 1; k <= n; k++)
+                {
+                    long to = ReplayRules.NextDialogT(steps, i + k);
+                    slots[k].AddRange(s.Answers.Where(a => a.T >= steps[i + k].T && a.T < to && a.Input != false));
+                }
             }
+            else
+                foreach (var a in s.Answers)
+                {
+                    int k = 0;
+                    while (k < n && a.T >= steps[i + 1 + k].T) k++;
+                    slots[k].Add(a);
+                }
             bool Printable(List<Answer> l) => l.Count > 0 && TdocPlan.AnswerLines(l).Any();
             if (!Enumerable.Range(1, n).Any(k => Printable(slots[k]))) { list.Add(new TdocEntry(s, i, false)); continue; }
 
@@ -46,7 +59,8 @@ public static class TdocSplit
             {
                 list.Add(new TdocEntry(steps[i + k], i + k, false));
                 if (!Printable(slots[k])) continue;
-                list.Add(new TdocEntry(s.WithAnswers(slots[k]), i + k, true, Group: i + 1, Last: k == n, Full: s, Lead: lead, GroupEnd: last));
+                // a command's own dialogs: the replay types the answers once any of them is done; a chain types them dialog by dialog, so each is typed when its own dialog is
+                list.Add(new TdocEntry(s.WithAnswers(slots[k]), i + k, true, Group: s.ChainClick ? i + k : i + 1, Last: k == n, Full: s, Lead: lead, GroupEnd: s.ChainClick ? i + k : last));
                 lead = false;
             }
             i = last;
@@ -54,9 +68,13 @@ public static class TdocSplit
         return list;
     }
 
+    /// <summary>Has the replay typed (or a person given, after a pause) the answers of a step that follows dialogs <paramref name="group"/> to <paramref name="groupEnd"/>? A command's own dialogs: once any of them is done
+    /// the replay types all the answers; a script chain (<see cref="TdocEntry.Group"/> = <see cref="TdocEntry.GroupEnd"/>) types them dialog by dialog.</summary>
+    public static bool IsTyped(IEnumerable<int> typedDialogs, int group, int groupEnd) => typedDialogs.Any(d => d >= group && d <= groupEnd);
+
     /// <summary>The heading of the step that holds the answers after a dialog.</summary>
     public static string ContinuationTitle(Step s) =>
-        string.IsNullOrWhiteSpace(s.Command) ? "Answer the prompts" : $"{s.Command.Trim().ToUpperInvariant()}: answer the prompts";
+        (string.IsNullOrWhiteSpace(s.Command) ? s.ChainCommand : s.Command) is { } c && !string.IsNullOrWhiteSpace(c) ? $"{c.Trim().ToUpperInvariant()}: answer the prompts" : "Answer the prompts";
 
     /// <summary>The sentences of the continuation step: the prompts, with no "Click" or "Type" start.</summary>
     public static List<string> ContinuationInstructions(TdocEntry e) => TdocPlan.AnswerLines(e.Shown.Answers, e.Lead ? e.Full : null, e.Full?.Answers).ToList();

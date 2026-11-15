@@ -114,7 +114,7 @@ public static class TdocPlan
         // no dialog_values for it: what was set is not known, but the clicks the recorder saw are (a dialog with no click of its own is "fill in the fields")
         if (s.Values == null && s.Clicks.Count == 0) { yield return $"In {t}, fill in the fields, then click OK."; yield break; }
         var changes = cancel || s.Values == null ? new List<(string Tab, string Line)>()
-            : s.Values.Select(v => (Tab: FillMatcher.TabOfChange(v), Line: DialogFieldsCore.Describe(v))).Where(x => x.Line != null).Select(x => (x.Tab, x.Line!.TrimEnd('.') + ".")).ToList();
+            : s.Values.Select(v => (Tab: FillMatcher.TabOfChange(v), Line: Describe(v))).Where(x => x.Line != null).Select(x => (x.Tab, x.Line!.TrimEnd('.') + ".")).ToList();
         if (changes.Count == 0 && s.Clicks.Count == 0)
         {
             yield return s.ValuesRead > 0 ? $"In {t}, leave the values as they are and click OK." : $"In {t}, click OK.";
@@ -127,9 +127,9 @@ public static class TdocPlan
         foreach (var click in s.Clicks)
         {
             foreach (var v in click.Values)
-                if (DialogFieldsCore.Describe(v) is { } d)
+                if (Describe(v) is { } d)
                     foreach (var line in tabs.Add(FillMatcher.TabOfChange(v), d.TrimEnd('.') + ".")) yield return line;
-            foreach (var line in tabs.Add(click.Tab, click.Menu != null ? click.Menu.Wording(false) + "." : click.Kind == DialogClickKinds.DoubleClick ? DialogClickKinds.DoubleClickWords(click.Path, click.TreeLabel, x => x, x => x) + "." : $"Click {click.Button}.")) yield return line;
+            foreach (var line in tabs.Add(click.Tab, click.Menu != null ? click.Menu.Wording(false) + "." : click.Kind == DialogClickKinds.DoubleClick ? DialogClickKinds.DoubleClickWords(click.Path, ControlName(click.TreeLabel, "the tree"), x => x, x => x) + "." : $"Click {click.Button}.")) yield return line;
             foreach (var nested in click.Nested)
                 foreach (var line in DialogLines(nested)) yield return line;
             if (click.Nested.Count > 0) tabs.Reset();
@@ -150,16 +150,16 @@ public static class TdocPlan
             if (s.Drawing != null) yield return $"{FileName(s.Drawing)} opens.";
             yield break;
         }
-        var changes = (s.Values ?? []).Select(v => (Tab: FillMatcher.TabOfChange(v), Line: DialogFieldsCore.Describe(v))).Where(x => x.Line != null).Select(x => (x.Tab, x.Line!.TrimEnd('.') + ".")).ToList();
+        var changes = (s.Values ?? []).Select(v => (Tab: FillMatcher.TabOfChange(v), Line: Describe(v))).Where(x => x.Line != null).Select(x => (x.Tab, x.Line!.TrimEnd('.') + ".")).ToList();
         var button = string.IsNullOrWhiteSpace(s.Button) ? (PaletteClickKinds.IsIntermediate(s.ClickKind) ? "(blank)" : null) : s.Button.Trim();   // a click with an empty name (an older recording) is still a click
         var press = s.Menu != null ? s.Menu.Wording(false, null, "the palette") + "." : $"Click {button}.";
         if (changes.Count == 0 && button == null) { yield return $"Look at the {name}."; yield break; }
-        if (changes.Count == 0) { yield return s.Menu != null ? $"In the {name}: {press}" : $"In the {name}, " + (s.ClickKind != DialogClickKinds.Click ? PaletteClickKinds.Phrase(s.ClickKind, button, s.ClickPath, s.ClickTreeLabel, s.ButtonIndex, s.ButtonLegacyIndex, s.Hit, x => x, x => x, capital: false) : $"click {button}") + "."; yield break; }
+        if (changes.Count == 0) { yield return s.Menu != null ? $"In the {name}: {press}" : $"In the {name}, " + (s.ClickKind != DialogClickKinds.Click ? PaletteClickKinds.Phrase(s.ClickKind, button, s.ClickPath, ControlName(s.ClickTreeLabel, "the tree"), s.ButtonIndex, s.ButtonLegacyIndex, HitNamed(s.Hit), x => x, x => x, capital: false) : $"click {button}") + "."; yield break; }
         yield return $"In the {name}:";
         var tabs = new TabLines();
         foreach (var (tab, text) in changes)
             foreach (var line in tabs.Add(tab, text)) yield return line;
-        if (button != null) yield return s.Menu != null ? press : s.ClickKind != DialogClickKinds.Click ? PaletteClickKinds.Phrase(s.ClickKind, button, s.ClickPath, s.ClickTreeLabel, s.ButtonIndex, s.ButtonLegacyIndex, s.Hit, x => x, x => x, capital: true) + "." : $"Click {button}.";
+        if (button != null) yield return s.Menu != null ? press : s.ClickKind != DialogClickKinds.Click ? PaletteClickKinds.Phrase(s.ClickKind, button, s.ClickPath, ControlName(s.ClickTreeLabel, "the tree"), s.ButtonIndex, s.ButtonLegacyIndex, HitNamed(s.Hit), x => x, x => x, capital: true) + "." : $"Click {button}.";
     }
 
     // ---- answers at the command line ---------------------------------------------------------------------------------------
@@ -258,10 +258,27 @@ public static class TdocPlan
         return plans;
     }
 
+    static readonly System.Text.RegularExpressions.Regex IdLabel = Engine.Util.Rx.Create(@"^#\d+$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>A control with no label of its own is recorded as "#1012" (its id). A trainee can not use that: the document says <paramref name="plain"/> ("the tree", "the list") instead. Tdoc text only; the recording and the replay's lookup keep the id.</summary>
+    public static string ControlName(string? label, string plain) => label != null && IdLabel.IsMatch(label.Trim()) ? plain : label ?? "";
+
+    /// <summary>What a tree or list is called in the document when it has no label: "the tree", "the list"; null for any other field.</summary>
+    static string? Plain(FieldChange c) => c.Kind == "tree" ? "the tree" : c.Kind is ListSelection.Kind or "list" ? "the list" : null;
+
+    /// <summary>The field with its id label replaced by a plain name (<see cref="ControlName"/>), for the sentences.</summary>
+    static FieldChange Named(FieldChange c) => Plain(c) is { } plain && IdLabel.IsMatch((c.Label ?? "").Trim()) ? c with { Label = plain } : c;
+
+    static PaletteHit? HitNamed(PaletteHit? h) => h != null && h.ControlLabel.Length > 0 ? h with { ControlLabel = ControlName(h.ControlLabel, "the list") } : h;
+
+    /// <summary>The sentence of a changed field ("Select Root › Child in the tree."): <see cref="DialogFieldsCore.Describe"/> with an unlabeled tree or list named plainly.</summary>
+    public static string? Describe(FieldChange c) => DialogFieldsCore.Describe(Named(c));
+
     /// <summary>The legend line of a dialog or palette field: "Name: KitBlock", "Snap: on", "Metric" (a radio button), "Name: (empty)".</summary>
     public static string FieldCallout(FieldChange c)
     {
         var label = DialogFieldsCore.CleanLabel(c.Label);
+        if (Plain(c) is { } plain && IdLabel.IsMatch(label)) label = char.ToUpperInvariant(plain[4]) + plain[5..];   // "Tree: Root > Child", not "#1012: Root > Child"
         string text;
         switch (c.Kind)
         {
