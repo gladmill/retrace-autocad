@@ -76,6 +76,11 @@ public sealed class RetraceSettings
     /// a push button, a palette control). On by default; off draws nothing on those pictures. Separate from <see cref="ShowClickArrows"/>, which is the training document's (Tdoc) and the live replay arrow.</summary>
     [JsonPropertyName("testDocArrows")] public bool TestDocArrows { get; set; } = true;
 
+    /// <summary>Post test: what the model-space view does when a replayed test has run its last step, before the end-of-test pictures: "none" (the default: the view is left as the test left it),
+    /// "extents" (zoom to the drawing extents) or "lastEntity" (zoom to the newest object the test created in model space). Not while recording, not in a layout. An unknown value reads as "none".</summary>
+    [JsonPropertyName("postTestZoom")] public string PostTestZoom { get => _postTestZoom; set => _postTestZoom = PostTestZoomModes.Normalize(value); }
+    string _postTestZoom = PostTestZoomModes.None;
+
     /// <summary>Where the Retrace ribbon tab goes: "" / "afterHome" (right of Home), "first", "last" or "after:&lt;tab id or title&gt;".</summary>
     [JsonPropertyName("ribbonTabPosition")] public string RibbonTabPosition { get; set; } = "";
 

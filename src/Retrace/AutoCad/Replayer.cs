@@ -549,6 +549,7 @@ sealed class Replayer
         CursorBack();
         _timer.Stop();
         if (completed && !errored) BasicCheck();   // the end of the test: the drawing is counted before anything is put back or closed
+        if (!_userStopped && !needsPerson) Log.Safe("Replay post-test zoom", PostTestZoom);   // a no-op when it already ran; any verdict, if the drawing is quiet
         Log.Safe("Replay restore view", () => HandOffView(cancel: _userStopped || errored));
         Log.Safe("Replay SDI end", () =>
         {
@@ -810,6 +811,7 @@ sealed class Replayer
         if (_unknownWaiting) return;   // AutoCAD called a command the replay sent unknown; it may still start (CheckUnknown decides)
         if (!Settled()) return;
         RestoreView();   // the step is done: the person's view comes back
+        if (_i >= _steps.Count) { if (_i > 0) NoteZoomSeed(); PostTestZoom(); }   // setting postTestZoom: before the end-of-test pictures (Tdoc's last picture is taken next)
         if (_tdoc != null && !_tdoc.AfterCommand(_i, DateTime.Now)) return;   // Tdoc: a command's last answers (after its dialog) have run: their picture
         if (_i >= _steps.Count) { Finish(true, false, "finished"); return; }
 
@@ -832,6 +834,7 @@ sealed class Replayer
         if (_mode == ReplayMode.Step && !_userNext) return;
         if (_tdoc != null && !_tdoc.BeforeStep(_i, s, DateTime.Now)) return;   // Tdoc: the picture of the step is taken first
 
+        if (s.Kind != "open") NoteZoomSeed();   // postTestZoom: the drawing this step runs in, before it makes anything (palette steps too)
         if (s.Kind == "palette") { TickPalette(s); return; }
 
         // a dialog step needs a person; unattended (Auto) the run cannot go on
@@ -1343,6 +1346,47 @@ sealed class Replayer
                 return RunStep(s);
         }
         return true;
+    }
+
+    // postTestZoom: one handle seed per drawing the test worked in (read the first time a step was about to run in it; objects made later are the test's), so a test that goes A, B, A keeps A's.
+    readonly List<(IntPtr Db, long Seed)> _zoomSeeds = new();
+    bool _postZoomDone, _postZoomApplied;
+
+    /// <summary>postTestZoom: notes the drawing the next step runs in and, the first time, its handle seed. Called before a step of any kind (not an open step: that one may fail or
+    /// replace the drawing; the step after it notes the new one) and once more when the test has run its last step.</summary>
+    void NoteZoomSeed()
+    {
+        if (_cfg.PostTestZoom == PostTestZoomModes.None || !AcApp.DocumentManager.Cast<Document>().Contains(_doc)) return;
+        var db = SdiDocs.DbId(_doc);
+        foreach (var z in _zoomSeeds) if (SdiDocs.SameDb(db, z.Db)) return;
+        _zoomSeeds.Add((db, PostZoom.Seed(_doc)));
+    }
+
+    /// <summary>Setting postTestZoom, once, when the last step has run: zooms the model-space view (API, no command) so the end-of-test pictures show the result. Not while a command or
+    /// dialog is active (tried again later), not in a layout, not in a drawing the test did not work in, not when no step ran; a failure is logged and changes nothing else.</summary>
+    void PostTestZoom()
+    {
+        if (_postZoomDone || _cfg.PostTestZoom == PostTestZoomModes.None || ViewRestorer.IsShutdown) return;
+        if (!AcApp.DocumentManager.Cast<Document>().Contains(_doc) || !ViewRestorer.Quiet(_doc)) return;   // not yet / not at all: a running command keeps its view
+        var seed = _zoomSeeds.FirstOrDefault(z => SdiDocs.SameDb(SdiDocs.DbId(_doc), z.Db));
+        if (seed.Db == IntPtr.Zero) { _postZoomDone = true; Log.Info("post-test zoom: no step ran in this drawing; the view is left as it is"); return; }
+        var done = PostZoom.Run(_doc, _cfg.PostTestZoom, seed.Seed, out var blocked);
+        if (blocked) return;   // a modal window or another drawing is in front: a later call tries again
+        _postZoomDone = true;
+        Log.Info("post-test zoom (" + _cfg.PostTestZoom + "): " + (done ?? "the view was left as it is"));
+        if (done == null) return;
+        _postZoomApplied = true;
+        if (_savedView != null) { _savedView.Dispose(); _savedView = null; _savedViewDoc = null; _savedViewDb = IntPtr.Zero; }   // the person's own view is not put back over the zoom
+    }
+
+    /// <summary>Tdoc: the last step is a checkpoint whose picture is about to be taken: the post-test zoom now. True when the setting's zoom was applied; false for "none" or when it
+    /// was not applied (layout, nothing created, blocked): the caller then zooms to the extents as before.</summary>
+    internal bool PostTestZoomNow()
+    {
+        if (_cfg.PostTestZoom == PostTestZoomModes.None) return false;
+        NoteZoomSeed();
+        PostTestZoom();
+        return _postZoomApplied;
     }
 
     /// <summary>The basic check (setting `basicCheck`), once, at the end of the test after the last step: counts the active drawing and compares with the end of the

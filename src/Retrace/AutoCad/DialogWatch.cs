@@ -559,7 +559,7 @@ sealed partial class DialogWatch
         var dbl = p.Kind == DialogClickKinds.DoubleClick;
         var click = new Click(e.ForN, p.Text, p.Id, dbl || basis == null || p.Menu != null ? 1 : DialogReader.ButtonIndex(basis, p.Button), snap.Changes, snap.Read, snap.Statics,
             p.Menu != null || p.Kind == DialogClickKinds.Toolbar ? (basis != null && basis.Tabs.Count > 0 ? basis.Showing : "") : dbl ? p.Tab : basis?.TabOf(p.Button) ?? "", p.Kind, p.TreeKey, p.Path, p.TreeLabel, onDown && !dbl, p.Menu,
-            e.Hwnd, p.Menu != null || dbl || !WantRects ? null : p.Kind == DialogClickKinds.Toolbar ? (ToolbarControl.ItemScreenRect(p.Button, (int)p.Item) is { } tb ? new ScreenRect(tb.L, tb.T, tb.R, tb.B) : null) : ClickRects.Window(p.Button));
+            e.Hwnd, p.Menu != null || dbl || !WantRects ? null : p.Kind == DialogClickKinds.Toolbar ? (ToolbarControl.ItemScreenRectInStrip(p.Button, (int)p.Item) is { } tb ? new ScreenRect(tb.L, tb.T, tb.R, tb.B) : null) : ClickRects.Window(p.Button));
         // a diagnostic for a custom control Retrace does not know: a button click that changed no field logs what the window holds, once
         if (snap.Changes.Count == 0 && !e.ClassesLogged && p.Menu == null && !dbl && Native.Exists(e.Hwnd))
         {

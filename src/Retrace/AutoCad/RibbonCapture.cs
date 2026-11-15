@@ -228,11 +228,17 @@ public sealed class RibbonCapture
         var origin = _ribbon.PointToScreen(new Point(0, 0));
         int w = (int)Math.Round(_ribbon.ActualWidth * scale.M11), h = (int)Math.Round(_ribbon.ActualHeight * scale.M22);
         if (w < 50 || h < 30) return "the ribbon is too small (minimized?)";
-        var pic = ShotService.CaptureRect((int)origin.X, (int)origin.Y, (int)origin.X + w, (int)origin.Y + h);
+        var pic = ShotService.CaptureRect((int)origin.X, (int)origin.Y, (int)origin.X + w, (int)origin.Y + h, AcApp.MainWindow.Handle);   // the main window's monitor decides the scale: no recording or Tdoc may have set ScreenSpace.Reference
         if (pic == null) return "the screen could not be read";
 
         var boxes = new Dictionary<object, Rect>(ReferenceEqualityComparer.Instance);
         Walk(_ribbon, boxes, scale);
+        // the picture's pixels are the screen's own: on a scaled screen it has more of them than the ribbon has logical pixels (ScreenSpace), so the rectangles are scaled to the picture
+        if (pic.Width != pic.SrcWidth || pic.Height != pic.SrcHeight)
+        {
+            double kx = (double)pic.Width / pic.SrcWidth, ky = (double)pic.Height / pic.SrcHeight;
+            foreach (var key in boxes.Keys.ToList()) { var b = boxes[key]; boxes[key] = new Rect(b.X * kx, b.Y * ky, b.Width * kx, b.Height * ky); }
+        }
         var stem = "ribbon__" + Slug(tab.Id ?? tab.Title ?? "tab");
         var panels = new List<object>();
         int n = 0;
