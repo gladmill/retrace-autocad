@@ -36,15 +36,15 @@ public class SettingsHeaderTests : IDisposable
     [Fact]
     public void The_header_holds_the_values_in_force_and_the_line_names_those_not_at_default()
     {
-        var s = new RetraceSettings { ScreenshotMode = "smart", RecordZoom = "extents", BasicCheck = true, ShowClickArrows = true, PromptStyle = "ui", SourceFolder = @"C:\private\src", TestsFolder = @"D:\mine" };
+        var s = new RetraceSettings { ScreenshotMode = "classic", RecordZoom = "extents", BasicCheck = true, ShowClickArrows = true, PromptStyle = "ui", SourceFolder = @"C:\private\src", TestsFolder = @"D:\mine" };
         var snap = SettingsHeader.Snapshot(s);
         var hdr = HeaderOf(snap);
         var read = SettingsHeader.FromHeader(hdr)!;
-        Assert.Contains(("screenshotMode", "smart"), read);
+        Assert.Contains(("screenshotMode", "classic"), read);
         Assert.Contains(("recordZoom", "extents"), read);
         Assert.Contains(("promptStyle", "ui"), read);
         Assert.Contains(("basicCheckItems", "modelspace, layers, layouts"), read);
-        Assert.Equal("Settings (not default): screenshotMode smart, showClickArrows true, recordZoom extents, promptStyle ui, basicCheck true", SettingsHeader.Line(read));
+        Assert.Equal("Settings (not default): screenshotMode classic, showClickArrows true, recordZoom extents, promptStyle ui, basicCheck true", SettingsHeader.Line(read));
         Assert.DoesNotContain("private", JsonSerializer.Serialize(snap));   // paths stay out
         Assert.DoesNotContain("mine", JsonSerializer.Serialize(snap));
     }
@@ -79,11 +79,27 @@ public class SettingsHeaderTests : IDisposable
     [Fact]
     public void The_test_document_shows_the_recorded_settings_in_one_line_under_the_title()
     {
-        var snap = SettingsHeader.Snapshot(new RetraceSettings { ScreenshotMode = "smart", PostTestZoom = "extents" });
+        var snap = SettingsHeader.Snapshot(new RetraceSettings { ScreenshotMode = "classic", PostTestZoom = "extents" });
         var header = JsonSerializer.Serialize(new Dictionary<string, object?> { ["type"] = "header", ["schema"] = 3, ["name"] = "new test", ["started"] = "2026-10-10T00:08:07", [SettingsHeader.Field] = snap });
         var md = StepsOf(Path.Combine(_dir, "new"), header);
-        Assert.Contains("*Settings (not default): screenshotMode smart, postTestZoom extents*", md);
+        Assert.Contains("*Settings (not default): screenshotMode classic, postTestZoom extents*", md);
         Assert.True(md.IndexOf("*Settings", StringComparison.Ordinal) < md.IndexOf("**Start with:**", StringComparison.Ordinal));
+    }
+
+    // ---- the screenshot mode of an old recording ----------------------------------------------------------------
+
+    [Fact]
+    public void A_header_without_the_screenshot_mode_was_made_with_classic_not_the_new_default()
+    {
+        Assert.Equal("smart", new RetraceSettings().ScreenshotMode);   // the default for new settings
+        Assert.Equal("classic", SettingsHeader.ModeOf((List<(string Name, string Value)>?)null));   // no settings object at all
+        Assert.Equal("classic", SettingsHeader.ModeOf(new List<(string Name, string Value)> { ("screenshots", "true") }));   // a settings object without the key
+        Assert.Equal("smart", SettingsHeader.ModeOf(new List<(string Name, string Value)> { ("screenshotMode", "smart") }));
+        Assert.Equal("classic", SettingsHeader.ModeOf(new List<(string Name, string Value)> { ("screenshotMode", "classic") }));
+        // the one line says so too: such a recording is not "all at their defaults"
+        Assert.Equal("Settings (not default): screenshotMode classic", SettingsHeader.Line(new List<(string Name, string Value)> { ("screenshots", "true") }));
+        Assert.Equal("Settings: all at their defaults", SettingsHeader.Line(new List<(string Name, string Value)> { ("screenshotMode", "smart") }));
+        Assert.Null(SettingsHeader.Line(null));
     }
 
     // ---- unreadable value in settings.json ---------------------------------------------------------------------

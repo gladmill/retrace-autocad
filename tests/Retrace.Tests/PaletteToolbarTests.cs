@@ -203,10 +203,10 @@ public class PaletteToolbarTests : IDisposable
         var p = Path.Combine(dir, "recording.jsonl");
         File.WriteAllLines(p, new[] { Header }.Concat(Session));
         var md = ScriptWriter.Build(RecordingReader.Load(p), null, _dir, new List<string>());
-        Assert.Contains("click toolbar button **Download**", md);
-        Assert.Contains("click toolbar button **Sync**", md);
-        Assert.Contains("choose **As text** from toolbar button **Export**", md);
-        Assert.Contains("click toolbar button no. 3", md);
+        Assert.Contains("Click toolbar button **Download**", md);
+        Assert.Contains("Click toolbar button **Sync**", md);
+        Assert.Contains("Choose **As text** from toolbar button **Export**", md);
+        Assert.Contains("Click toolbar button no. 3", md);
         Assert.Contains(TdocPlan.Instructions(steps[1]), l => l.Contains("lick toolbar button Download"));
     }
 

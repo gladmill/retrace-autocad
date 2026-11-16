@@ -33,22 +33,29 @@ public static class StepWording
         if (st.Kind == "dialog" && st.OpenedIn != null) return null;
         var sb = new StringBuilder();
         string line;
+        string? where = null;   // script only: the location line under the action ("Ribbon › Home tab › Draw panel")
+        string? tail = null;    // script only: the click that ends a palette step with changes
+        bool script = ctx.Script;
         switch (st.Kind)
         {
             case "ribbon":
-                line = $"Click {RibbonLabel(st, ctx)}";
+                line = script ? $"Click {RibbonLabel(st, ctx, shortLabel: true)}" : $"Click {RibbonLabel(st, ctx)}";
+                if (script) where = RibbonWhere(st);
                 break;
             case "command":
-                line = $"Type {Md.Code((st.Command ?? "?").ToUpperInvariant())} on the command line and press Enter";
+                line = script ? $"Type {Md.Code((st.Command ?? "?").ToUpperInvariant())} and press Enter" : $"Type {Md.Code((st.Command ?? "?").ToUpperInvariant())} on the command line and press Enter";
+                if (script) where = "Command line";
                 break;
             case "lisp":
                 line = $"Run the LISP expression {Md.Code(st.Lisp)}";
+                if (script) where = "Command line";
                 break;
             case "dialog":
-                line = DialogLine(st);
+                line = DialogLine(st, script: script);
                 break;
             case "palette":
-                line = PaletteLine(st);
+                if (script) (line, where, tail) = PaletteScript(st);
+                else line = PaletteLine(st);
                 break;
             case "mark":
                 line = Check(st, ctx.Script);
@@ -60,12 +67,14 @@ public static class StepWording
                 return null;
         }
         sb.Append($"{n}. {line}\n");
+        if (where != null) sb.Append($"\n   *{Md.Inline(where)}*\n\n");
         if (st.Kind == "mark" && !string.IsNullOrWhiteSpace(st.Description)) sb.Append("   - ").Append(Md.Cell(st.Description)).Append('\n');
         var alt = Alt(line);
         if (st.Kind == "dialog") DialogBody(sb, st, ctx, "   ");
         else if (st.Kind == "palette")
         {
-            foreach (var l in ChangeLines(st)) sb.Append("   - ").Append(l).Append('\n');
+            foreach (var l in ChangeLines(st, script)) sb.Append("   - ").Append(l).Append('\n');
+            if (tail != null) sb.Append("   - ").Append(tail).Append('\n');
             Shots(sb, st.Shots, alt, ctx, "   ", "click");
         }
         else Shots(sb, st.Shots, alt, ctx, "   ", st.Kind switch { "ribbon" => "click", "mark" => "check", _ => "command" });
@@ -111,8 +120,14 @@ public static class StepWording
 
     /// <summary>"A dialog opens: **Title**. Make these changes, then confirm:"; <paramref name="nested"/>: "A nested dialog opens: ..." (a dialog a button of another one
     /// opened; the wording differs so the replay's count of "A dialog opens:" lines in a script, <see cref="Retrace.Core.ScriptRef"/>, stays the count of dialog steps).</summary>
-    static string DialogLine(RecordingStep st, bool nested = false)
+    static string DialogLine(RecordingStep st, bool nested = false, bool script = false)
     {
+        if (script)   // the short action line; the changes and the closing click follow as sub-items (DialogValueLines)
+        {
+            // an untitled dialog is "the dialog", not a bold "(untitled dialog)"; the replay's line count still sees it ("Fill in the dialog", "Cancel the dialog")
+            var name = string.IsNullOrWhiteSpace(st.DialogTitle) ? "" : $"**{Md.Cell(st.DialogTitle)}** ";
+            return st.ClosedWith == "cancel" && st.Clicks.Count == 0 ? $"Cancel the {(nested ? "nested " : "")}{name}dialog" : $"Fill in the {(nested ? "nested " : "")}{name}dialog";
+        }
         var head = $"A {(nested ? "nested " : "")}dialog opens: **{Md.Cell(DialogTitle(st))}**. ";
         var cancel = st.ClosedWith == "cancel";
         if (st.Clicks.Count > 0)
@@ -129,10 +144,29 @@ public static class StepWording
     /// a `dialog_values` event.</summary>
     static void DialogValueLines(StringBuilder sb, RecordingStep dlg, string indent, WordingContext ctx)
     {
+        DialogValueLinesCore(sb, dlg, indent, ctx);
+        // the script ends the list with the click that closes the dialog ("Click **OK**"), so the whole list can be followed without looking at the picture
+        if (ctx.Script && CloseLine(dlg) is { } close)
+        {
+            if (sb.Length > 0 && sb[^1] != '\n') sb.Append('\n');
+            sb.Append(indent).Append("- ").Append(close).Append('\n');
+        }
+    }
+
+    /// <summary>"Click **OK**" / "Click **Cancel**"; null when the dialog's last click closed it, or it was cancelled with nothing done in it.</summary>
+    static string? CloseLine(RecordingStep dlg)
+    {
+        if (DialogSegments.LastClickCloses(dlg.ClosedWith, dlg.Clicks.Count)) return null;
+        if (dlg.ClosedWith == "cancel") return dlg.Clicks.Count > 0 ? "Click **Cancel**" : null;
+        return "Click **OK**";
+    }
+
+    static void DialogValueLinesCore(StringBuilder sb, RecordingStep dlg, string indent, WordingContext ctx)
+    {
         if (HasPictures(dlg)) { PicturedLines(sb, dlg, indent, ctx); return; }
         if (dlg.Clicks.Count > 0) ClickLines(sb, dlg, indent, ctx);   // a click was done in the dialog, whatever closed it
         if (dlg.ClosedWith == "cancel") return;   // whatever was typed after the last click was thrown away
-        var lines = ChangeLines(dlg);
+        var lines = ChangeLines(dlg, ctx.Script);
         if (lines.Count == 0 && dlg.ValuesRead is > 0 && dlg.Clicks.Count == 0) lines.Add("Leave the values as they are.");
         if (lines.Count == 0) return;
         if (sb.Length > 0 && sb[^1] != '\n') sb.Append('\n');
@@ -172,7 +206,7 @@ public static class StepWording
         var rest = segment.ToList();
         var items = new List<(string Tab, string Text)>();
         foreach (var v in dlg.Values)
-            if (!rest.Any(p => Explains(p, v)) && ChangeText(v, Md.Cell, Md.Code, bold: true) is { } t) items.Add((v.Tab, t));
+            if (!rest.Any(p => Explains(p, v)) && ChangeText(v, Md.Cell, Md.Code, bold: true, showWas: !ctx.Script) is { } t) items.Add((v.Tab, t));
         var lines = TabbedLines(items, join: false);
         if (lines.Count == 0 && dlg.Clicks.Count == 0 && dlg.Picks.Count == 0 && dlg.ValuesRead is > 0) lines.Add("Leave the values as they are.");
         foreach (var l in lines) sb.Append(indent).Append("- ").Append(l).Append('\n');
@@ -208,7 +242,7 @@ public static class StepWording
     {
         var items = new List<(string Tab, string Text)>();
         foreach (var v in c.Values)
-            if ((skip == null || !skip(v)) && ChangeText(v, Md.Cell, Md.Code, bold: true) is { } t) items.Add((v.Tab, t));
+            if ((skip == null || !skip(v)) && ChangeText(v, Md.Cell, Md.Code, bold: true, showWas: !ctx.Script) is { } t) items.Add((v.Tab, t));
         items.Add((c.Tab, c.Menu != null ? c.Menu.Wording(true, Md.Cell) : c.Kind == Retrace.Core.DialogClickKinds.DoubleClick
             ? Retrace.Core.DialogClickKinds.DoubleClickWords(c.Path, c.TreeLabel, Md.Code, t => $"**{Md.Cell(t)}**")
             : $"Click **{Md.Cell(c.Button)}**"));
@@ -220,7 +254,7 @@ public static class StepWording
         }
         foreach (var nested in c.Nested)
         {
-            sb.Append(indent).Append("  - ").Append(DialogLine(nested, nested: true)).Append('\n');
+            sb.Append(indent).Append("  - ").Append(DialogLine(nested, nested: true, script: ctx.Script)).Append('\n');
             DialogBody(sb, nested, ctx, indent + "    ");
         }
     }
@@ -242,25 +276,26 @@ public static class StepWording
         return lines;
     }
 
-    static List<string> ChangeLines(RecordingStep dlg)
+    static List<string> ChangeLines(RecordingStep dlg, bool script = false)
     {
         var items = new List<(string Tab, string Text)>();
         foreach (var v in dlg.Values)
-            if (ChangeText(v, Md.Cell, Md.Code, bold: true) is { } t) items.Add((v.Tab, t));
+            if (ChangeText(v, Md.Cell, Md.Code, bold: true, showWas: !script) is { } t) items.Add((v.Tab, t));
         return TabbedLines(items, join: false);
     }
 
     /// <summary>One change in words: "Set **Rows** to `5` (was `3`)", "Clear **Name** (was `x`)", "Tick **Snap**", "Untick **Snap**",
     /// "Choose **Metric**", "Choose `beauty` in **Category**", "Select `A › B` in **Parts** (was `A`)"; null when it says nothing (a radio that became "off").</summary>
-    public static string? ChangeText(RecordingDialogValue v, Func<string?, string> text, Func<string?, string> code, bool bold)
+    public static string? ChangeText(RecordingDialogValue v, Func<string?, string> text, Func<string?, string> code, bool bold, bool showWas = true)
     {
+        string Was(string before) => showWas && before.Length > 0 ? $" (was {code(before)})" : "";
         string B(string s) => Retrace.Core.ControlWords.Name(s, v.Kind, l => bold ? $"**{text(l)}**" : text(l));   // "#1012" (no name of its own) reads "the tree" / "the list"
         switch (v.Kind)
         {
             case "check":
                 if (v.After == "on") return $"Tick {B(v.Label)}";
                 if (v.After == "off") return $"Untick {B(v.Label)}";
-                return $"Set {B(v.Label)} to {code(v.After)} (was {code(v.Before)})";
+                return $"Set {B(v.Label)} to {code(v.After)}{Was(v.Before)}";
             case "radio":
                 var chosen = v.After is "on" ? v.Label : v.After is "off" or "" ? null : v.After;   // "on"/"off": one radio on its own; else the text of the checked radio in a group
                 return chosen == null ? null : $"Choose {B(chosen)}";
@@ -271,23 +306,23 @@ public static class StepWording
             }
             case "tree":
                 return v.After.Length == 0
-                    ? $"Clear the selection in {B(v.Label)}" + (v.Before.Length > 0 ? $" (was {code(v.Before)})" : "")
-                    : $"Select {code(v.After)} in {B(v.Label)}" + (v.Before.Length > 0 ? $" (was {code(v.Before)})" : "");
+                    ? $"Clear the selection in {B(v.Label)}" + Was(v.Before)
+                    : $"Select {code(v.After)} in {B(v.Label)}" + Was(v.Before);
             case "listview":
-                return Retrace.Core.ListSelection.Sentence(v.After, v.Label, code, B, v.Items) + (v.Before.Length > 0 ? $" (was {code(v.Before)})" : "");
+                return Retrace.Core.ListSelection.Sentence(v.After, v.Label, code, B, v.Items) + Was(v.Before);
             case "list" or "combo" when v.After.Length > 0:
-                return $"Choose {code(v.After)} in {B(v.Label)}" + (v.Before.Length > 0 ? $" (was {code(v.Before)})" : "");
+                return $"Choose {code(v.After)} in {B(v.Label)}" + Was(v.Before);
             default:
                 return v.After.Length == 0
-                    ? $"Clear {B(v.Label)}" + (v.Before.Length > 0 ? $" (was {code(v.Before)})" : "")
-                    : $"Set {B(v.Label)} to {code(v.After)}" + (v.Before.Length > 0 ? $" (was {code(v.Before)})" : "");
+                    ? $"Clear {B(v.Label)}" + Was(v.Before)
+                    : $"Set {B(v.Label)} to {code(v.After)}" + Was(v.Before);
         }
     }
 
     /// <summary>A dialog inside its command's step: a sub-item with its screenshot (or the context's picture).</summary>
     static void InnerDialog(StringBuilder sb, RecordingStep dlg, WordingContext ctx)
     {
-        sb.Append("   - ").Append(DialogLine(dlg)).Append('\n');
+        sb.Append("   - ").Append(DialogLine(dlg, script: ctx.Script)).Append('\n');
         DialogBody(sb, dlg, ctx, "     ");
     }
 
@@ -296,18 +331,21 @@ public static class StepWording
     static void DialogBody(StringBuilder sb, RecordingStep dlg, WordingContext ctx, string indent)
     {
         var title = DialogTitle(dlg);
+        // the script lists what to change right under the step, before the pictures (unless a picture belongs to each click)
+        bool listFirst = ctx.Script && !HasPictures(dlg);
+        if (listFirst) DialogValueLines(sb, dlg, indent, ctx);
         var before = dlg.Shots.Where(s => s.What != "dialog-after").ToList();
         var after = dlg.Shots.Where(s => s.What == "dialog-after").Take(1).ToList();
         // the picture "as it looked when OK was pressed": not for a dialog thrown away with Cancel, nor one its last click closed (no OK was pressed)
-        var changed = dlg.ClosedWith != "cancel" && !DialogSegments.LastClickCloses(dlg.ClosedWith, dlg.Clicks.Count) && (ChangeLines(dlg).Count > 0 || dlg.Clicks.Count > 0);
+        var changed = dlg.ClosedWith != "cancel" && !DialogSegments.LastClickCloses(dlg.ClosedWith, dlg.Clicks.Count) && (ChangeLines(dlg, ctx.Script).Count > 0 || dlg.Clicks.Count > 0);
         ctx.ShotRole = "dialog-before";
         var showAfter = changed && after.Any(s => ctx.ShotHref(s) != null);
         var pair = showAfter && before.Any(s => ctx.ShotHref(s) != null);
         if (pair) sb.Append($"\n{indent}Before:\n");
-        Shots(sb, before, pair ? Alt($"{title} as it opens") : Alt(DialogLine(dlg)), ctx, indent, "dialog-before");
+        Shots(sb, before, pair ? Alt($"{title} as it opens") : Alt(DialogLine(dlg, script: ctx.Script)), ctx, indent, "dialog-before");
         if (before.Count == 0 && ctx.DialogPicture(dlg) is { } pic)
             sb.Append($"\n{indent}![{Md.Cell(pic.Alt)}]({pic.Href})\n\n");
-        DialogValueLines(sb, dlg, indent, ctx);
+        if (!listFirst) DialogValueLines(sb, dlg, indent, ctx);
         if (!showAfter) return;   // the after picture is shown even when the before picture is missing
         sb.Append($"\n{indent}After (what it should look like before you press OK):\n");
         Shots(sb, after, Alt($"{title} with the changes"), ctx, indent, "dialog-after");
@@ -333,13 +371,66 @@ public static class StepWording
     /// <summary>"Home › Draw › Line" (without markup).</summary>
     public static string RibbonPath(RecordingStep st)
     {
-        var path = string.Join(" › ", new[] { st.Tab, st.Panel, st.Text ?? st.Join?.Entry.Title ?? st.ItemId }.Where(x => !string.IsNullOrWhiteSpace(x)));
+        var path = string.Join(" › ", new[] { st.Tab, st.Panel, FirstNamed(st) }.Where(x => !string.IsNullOrWhiteSpace(x)));
         return path.Length == 0 ? "(unnamed button)" : path;
     }
 
-    private static string RibbonLabel(RecordingStep st, WordingContext ctx)
+    /// <summary>The button's own text ("Line"), without its tab and panel.</summary>
+    public static string RibbonItem(RecordingStep st)
     {
-        var label = $"**{Md.Cell(RibbonPath(st))}**";
+        return FirstNamed(st) ?? "(unnamed button)";
+    }
+
+    /// <summary>The first of the button's text, the joined title and the item id that is not blank (an icon-only button records `"text":""`).</summary>
+    static string? FirstNamed(RecordingStep st) =>
+        new[] { st.Text, st.Join?.Entry.Title, st.ItemId }.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x))?.Trim();
+
+    /// <summary>The location line of a ribbon click in a script: "Ribbon › Home tab › Draw panel" ("Ribbon › Home tab" when the panel was not recorded, "Ribbon" with neither).</summary>
+    public static string RibbonWhere(RecordingStep st) =>
+        string.Join(" › ", new[] { "Ribbon", Named(st.Tab, "tab"), Named(st.Panel, "panel") }.Where(x => x != null));
+
+    static string? Named(string? name, string noun) => string.IsNullOrWhiteSpace(name) ? null : $"{name.Trim()} {noun}";
+
+    /// <summary>"Pick palette": the palette a step happens in, without markup (the palette set is left out: it names nothing a tester sees).</summary>
+    static string PaletteName(RecordingStep st) => string.IsNullOrWhiteSpace(st.DialogTitle) ? "Palette" : $"{st.DialogTitle.Trim()} palette";
+
+    /// <summary>A palette step in a script: the short action, the location line, and the click that ends a step with changes (the changes come between, as sub-items).
+    /// "Click **B12**" / "Pick palette › Catalog tree › Cabinets › Base"; "Fill in the **Box** palette" / "Box palette" with "Click **Draw box**" last.</summary>
+    static (string Line, string? Where, string? Tail) PaletteScript(RecordingStep st)
+    {
+        var palette = PaletteName(st);
+        var name = $"**{Md.Cell(string.IsNullOrWhiteSpace(st.DialogTitle) ? "(untitled)" : st.DialogTitle)}**";
+        if (st.Native != null)
+        {
+            var d = st.Native.Describe(Md.Cell, x => $"**{x}**");
+            return (char.ToUpperInvariant(d[0]) + d[1..] + (st.OpensDrawing != null ? $". It opens {Md.Code(st.OpensDrawing)}" : ""), palette, null);
+        }
+        bool changes = ChangeLines(st, true).Count > 0;
+        string? click = null, clickWhere = null;
+        if (st.Menu != null) click = st.Menu.Wording(true, Md.Cell, "the palette");
+        else if (!string.IsNullOrWhiteSpace(st.Text) || Retrace.Core.PaletteClickKinds.IsIntermediate(st.ClickKind))
+        {
+            string Bold(string t) => $"**{Md.Inline(t)}**";
+            if (Retrace.Core.PaletteClickKinds.OnTree(st.ClickKind))
+            {
+                var levels = Retrace.Core.PaletteClickKinds.ClickLevels(st.ClickPath).Select(l => l.Trim()).ToList();
+                var verb = st.ClickKind switch { Retrace.Core.PaletteClickKinds.Expand => "Expand", Retrace.Core.PaletteClickKinds.Collapse => "Collapse", Retrace.Core.DialogClickKinds.DoubleClick => "Double-click", _ => "Click" };
+                click = $"{verb} {Bold(levels.Count > 0 ? levels[^1] : (string.IsNullOrWhiteSpace(st.Text) ? Retrace.Core.PaletteClickKinds.BlankItem : st.Text!))}";
+                var tree = Retrace.Core.TreeWording.Label(st.ClickTreeLabel);
+                clickWhere = string.Join(" › ", new[] { palette, tree.Length > 0 ? tree + " tree" : "tree" }.Concat(levels.Take(Math.Max(0, levels.Count - 1))));
+            }
+            else if (st.ClickKind != Retrace.Core.DialogClickKinds.Click)
+                click = Retrace.Core.PaletteClickKinds.Phrase(st.ClickKind, st.Text ?? "", st.ClickPath, st.ClickTreeLabel, st.ClickIndex, st.ClickLegacyIndex, st.Hit, Md.Code, Bold, capital: true, plain: Md.Inline);
+            else click = $"Click {Bold(st.Text ?? "")}";
+        }
+        if (changes) return ($"Fill in the {name} palette", clickWhere ?? palette, click);   // a closing tree click keeps its path in the location line
+        if (click == null) return ($"Leave the {name} palette as it is", palette, null);
+        return (click, clickWhere ?? palette, null);
+    }
+
+    private static string RibbonLabel(RecordingStep st, WordingContext ctx, bool shortLabel = false)
+    {
+        var label = $"**{Md.Cell(shortLabel ? RibbonItem(st) : RibbonPath(st))}**";
         return ctx.RibbonHref(st) is { } href ? $"[{label}]({href})" : label;
     }
 

@@ -314,8 +314,8 @@ public class DialogClickTests : IDisposable
         Assert.Equal(new[] { "In the Text Style dialog:", "Click New....", "In the New Text Style dialog:", "Set Style Name to Notes.", "Click OK.", "Set Height to 2.5.", "Click Apply.", "Click Close." },
             TdocPlan.Instructions(dlg));
         var md = Script(StyleClose);
-        Assert.Contains("   - A dialog opens: **Text Style**. Make these changes (the last click closes the dialog):\n", md);
-        Assert.Contains("     - Set **Height** to `2.5` (was `0.0000`), click **Apply**\n", md);
+        Assert.Contains("   - Fill in the **Text Style** dialog\n", md);
+        Assert.Contains("     - Set **Height** to `2.5`, click **Apply**\n", md);
         Assert.Contains("     - Click **Close**\n", md);
         // a dialog whose OK was pressed after clicks is not one, and neither is one the recorder did not tell was closed by its last click (no guessing)
         Assert.False(DialogSegments.LastClickCloses(Build(Style).Single(s => s.Kind == "dialog")));
@@ -380,12 +380,12 @@ public class DialogClickTests : IDisposable
             """{"t":4000,"n":11,"type":"dialog_values","for":3,"title":"Items","source":"win32","fields":[{"key":"id:5","label":"Snap","kind":"check","before":"off","after":"on"}],"read":4,"closedWith":"ok","statics":[{"id":1,"text":"2 items"}]}""",
             """{"t":4010,"n":12,"type":"modal_leave"}""",
             """{"t":4020,"n":13,"type":"cmd_end","command":"DRAWITEMS"}""");
-        Assert.Contains("   - A dialog opens: **Items**. Make these changes, then confirm:\n", md);
+        Assert.Contains("   - Fill in the **Items** dialog\n", md);
         int At(string x) { var i = md.IndexOf(x, StringComparison.Ordinal); Assert.True(i >= 0, x + "\n" + md); return i; }
-        Assert.True(At("     - Set **Name** to `A`, click **Add**\n") < At("     - Set **Name** to `B` (was `A`), click **Add**\n"));
-        Assert.True(At("(was `A`), click **Add**") < At("     - Click **Options...**\n"));
-        Assert.True(At("     - Click **Options...**\n") < At("       - A nested dialog opens: **Options**. Make these changes, then confirm:\n"));
-        Assert.True(At("**Options**. Make these") < At("         - Set **Scale** to `2` (was `1`)\n"));
+        Assert.True(At("     - Set **Name** to `A`, click **Add**\n") < At("     - Set **Name** to `B`, click **Add**\n"));
+        Assert.True(At("     - Set **Name** to `B`, click **Add**\n") < At("     - Click **Options...**\n"));
+        Assert.True(At("     - Click **Options...**\n") < At("       - Fill in the nested **Options** dialog\n"));
+        Assert.True(At("Fill in the nested **Options** dialog") < At("         - Set **Scale** to `2`\n"));
         Assert.True(At("Set **Scale**") < At("     - Tick **Snap**\n"));
         // static texts stay in the machine-readable files
         Assert.DoesNotContain("items", md.Replace("DRAWITEMS", "").Replace("Items", ""), StringComparison.Ordinal);
@@ -398,11 +398,13 @@ public class DialogClickTests : IDisposable
     public void A_dialog_closed_with_Cancel_after_clicks_lists_the_clicks_and_not_the_last_values()
     {
         var md = Script(Style);
-        Assert.Contains("   - A dialog opens: **Text Style**. Make these changes, then close it with Cancel:\n", md);
+        Assert.Contains("   - Fill in the **Text Style** dialog\n", md);
         Assert.Contains("     - Click **New...**\n", md);
-        Assert.Contains("       - A nested dialog opens: **New Text Style**. Make these changes, then confirm:\n", md);
-        Assert.Contains("         - Set **Style Name** to `Notes` (was `style1`)\n", md);
-        Assert.Contains("     - Choose `Notes` in **Styles** (was `Standard`), click **Set Current**\n", md);
+        Assert.Contains("       - Fill in the nested **New Text Style** dialog\n", md);
+        Assert.Contains("         - Set **Style Name** to `Notes`\n", md);
+        Assert.Contains("     - Choose `Notes` in **Styles**, click **Set Current**\n", md);
+        Assert.Contains("     - Click **Cancel**\n", md);   // closed with Cancel after clicks: the list ends with that click
+        Assert.DoesNotMatch(new System.Text.RegularExpressions.Regex(@"(?m)^     - Click \*\*OK\*\*$"), md);   // (the nested dialog's own OK is one level deeper)
         Assert.DoesNotContain("Leave the values", md);
     }
 

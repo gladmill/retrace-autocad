@@ -524,9 +524,9 @@ public class TabFieldTests : IDisposable
     public void Steps_md_groups_the_changes_of_a_dialog_by_tab()
     {
         var md = Script(Sheet);
-        Assert.Contains("A dialog opens: **Dimension Style Manager**. Make these changes, then confirm:", md);
-        Assert.Contains("- On the **Text** tab: set **Text height** to `3.5` (was `2.5`)", md);
-        Assert.Contains("- On the **Primary Units** tab: choose `0.000` in **Precision** (was `0.00`)", md);
+        Assert.Contains("Fill in the **Dimension Style Manager** dialog", md);
+        Assert.Contains("- On the **Text** tab: set **Text height** to `3.5`", md);
+        Assert.Contains("- On the **Primary Units** tab: choose `0.000` in **Precision**", md);
     }
 
     [Fact]
@@ -537,7 +537,7 @@ public class TabFieldTests : IDisposable
             """{"t":110,"n":2,"type":"modal_enter","title":"AutoCAD"}""",
             """{"t":200,"n":3,"type":"modal_title","title":"Dim"}""",
             """{"t":900,"n":4,"type":"dialog_values","for":3,"title":"Dim","source":"win32","fields":[{"key":"tab:Text|id:1","label":"Height","kind":"edit","before":"2","after":"3","tab":"Text"},{"key":"tab:Text|id:2","label":"Draw frame","kind":"check","before":"off","after":"on","tab":"Text"},{"key":"id:9","label":"Name","kind":"edit","before":"","after":"x"}],"read":6,"closedWith":"ok"}""");
-        Assert.Contains("- On the **Text** tab: set **Height** to `3` (was `2`), tick **Draw frame**", md);
+        Assert.Contains("- On the **Text** tab: set **Height** to `3`, tick **Draw frame**", md);
         Assert.Contains("- Set **Name** to `x`", md);   // a field outside the tabs: a line of its own, as before
     }
 
@@ -559,7 +559,7 @@ public class TabFieldTests : IDisposable
             """{"t":500,"n":4,"type":"dialog_click","for":3,"button":"Add","id":1,"index":1,"fields":[{"key":"id:1","label":"Name","kind":"edit","before":"","after":"A"}],"read":3}""",
             """{"t":900,"n":5,"type":"dialog_values","for":3,"title":"Draw grid","source":"win32","fields":[{"key":"id:2","label":"Rows","kind":"edit","before":"3","after":"5"},{"key":"id:3","label":"Snap","kind":"check","before":"off","after":"on"}],"read":4,"closedWith":"ok"}""");
         Assert.Contains("- Set **Name** to `A`, click **Add**", md);
-        Assert.Contains("- Set **Rows** to `5` (was `3`)", md);
+        Assert.Contains("- Set **Rows** to `5`", md);
         Assert.Contains("- Tick **Snap**", md);
         Assert.DoesNotContain(" tab", md);
     }
@@ -611,7 +611,8 @@ public class TabFieldTests : IDisposable
     public void A_native_tab_click_reads_in_steps_md_as_a_palette_step()
     {
         var md = Script(TabClick);
-        Assert.Contains("In the **Project Manager** palette (Project), open the **Details** tab", md);
+        Assert.Contains("Open the **Details** tab", md);
+        Assert.Contains("   *Project Manager palette*", md);
         Assert.Equal(new[] { "In the Project Manager palette, open the Details tab." }, TdocPlan.Instructions(Build(TabClick).Single()));
     }
 

@@ -55,7 +55,8 @@ public class NativePaletteTests : IDisposable
     public void Steps_md_says_what_to_double_click_and_what_it_opens()
     {
         var md = StepsMd(OpenFromTree);
-        Assert.Contains("In the **Projects** palette (Project Manager), double-click **NFPADEMO › SCHEMATIC › demo01.dwg** in the tree. It opens `C:\\Projects\\Demo\\DEMO01.DWG`", md);
+        Assert.Contains("   *Projects palette*", md);   // where it happens
+        Assert.Contains("Double-click **NFPADEMO › SCHEMATIC › demo01.dwg** in the tree. It opens `C:\\Projects\\Demo\\DEMO01.DWG`", md);
         Assert.DoesNotContain("Open drawing", md);
         Assert.DoesNotContain("s::startup", md);
     }
@@ -88,7 +89,7 @@ public class NativePaletteTests : IDisposable
         var p = Path.Combine(_dir, "b.jsonl");
         File.WriteAllLines(p, new[] { Header }.Concat(lines));
         Assert.Equal("checkpoint1_projects_project_task_list", Assert.Single(Checkpoints.Read(p)).Name);
-        Assert.Contains("click the **Project Task List** button", StepsMd(lines));
+        Assert.Contains("Click the **Project Task List** button", StepsMd(lines));
     }
 
     [Fact]
@@ -104,7 +105,7 @@ public class NativePaletteTests : IDisposable
         var lines = new[] { $$"""{"t":1000,"n":1,"type":"native_select",{{Pm}},"control":"combo","action":"select","index":1,"id":1001,"value":"IECDEMO"}""" };
         var step = Assert.Single(Build(lines));
         Assert.Equal("Palette \"Projects\": pick IECDEMO in the drop-down list", step.Title);
-        Assert.Contains("pick **IECDEMO** in the drop-down list", StepsMd(lines));
+        Assert.Contains("Pick **IECDEMO** in the drop-down list", StepsMd(lines));
     }
 
     [Fact]
@@ -174,7 +175,7 @@ public class NativePaletteTests : IDisposable
         Assert.Equal("AEMTRELOAD", p.Command);
         Assert.Equal("Palette \"Projects\": pick IECDEMO in the drop-down list", p.Title);
         var md = StepsMd(PickProject);
-        Assert.Contains("pick **IECDEMO** in the drop-down list", md);
+        Assert.Contains("Pick **IECDEMO** in the drop-down list", md);
         Assert.DoesNotContain("Updating", md);
     }
 

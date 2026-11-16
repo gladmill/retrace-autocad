@@ -102,6 +102,7 @@ public static class TrainingDocx
         void Step(TrainingStep s, Body body)
         {
             body.Append(Para("Heading2", $"Step {s.Number}: {s.Title}"));
+            if (!string.IsNullOrWhiteSpace(s.Where)) body.Append(WherePara(s.Where));
             // the step's text stays with its first picture: the title (keep with next by its style) and the last two lines before the picture are kept with it; a long run of field lines may
             // break across pages (keeping them all would move the whole block and leave most of a page blank). Lines never break inside.
             var lines = s.Instructions.ToList();
@@ -176,6 +177,11 @@ public static class TrainingDocx
                     new Run(ExportDocx.TextOf("•"), new TabChar()),
                     new Run(ExportDocx.TextOf(d))));
         }
+
+        /// <summary>The location line under a step's heading: smaller, grey, italic, kept with the lines and the picture after it.</summary>
+        static Paragraph WherePara(string text) => new(
+            new ParagraphProperties(new KeepNext(), new KeepLines(), new SpacingBetweenLines { After = "60" }),
+            new Run(new RunProperties(new Italic(), new Color { Val = "6B6B6B" }, new FontSize { Val = "18" }), ExportDocx.TextOf(text)));
 
         /// <summary>A paragraph; property order follows the schema (style, keep next, page break, shading, spacing).</summary>
         static Paragraph Para(string? style, string text, bool bold = false, bool italic = false, bool pageBreakBefore = false, bool keepNext = false, string? shade = null, bool keepLines = false)

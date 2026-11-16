@@ -29,6 +29,8 @@ sealed class ShotService
     readonly Dictionary<int, (int X, int Y)> _clicks = new();
     readonly Dictionary<int, Core.PxRect> _rects = new();
     readonly HashSet<int> _suppressed = new();
+    readonly PictureFallback _fallback = new();
+    readonly Dictionary<int, Picture> _held = new();
     bool _arrows;
 
     /// <summary>Step pictures get a green rectangle and arrow where the click was (setting <c>testDocArrows</c>): drawn into the saved image, never captured from the live overlay.</summary>
@@ -37,6 +39,25 @@ sealed class ShotService
     /// <summary>The screen rectangle of what the person clicked for event <paramref name="n"/> (an item's row, a button, the ribbon button): its picture gets a green frame around it and an arrow ending on it.
     /// Not noted when the rectangle is empty; a picture the rectangle is not in gets neither (never a guessed spot).</summary>
     public void NoteTarget(int n, int left, int top, int right, int bottom) { if (_arrows && n > 0 && right > left && bottom > top) _rects[n] = new Core.PxRect(left, top, right, bottom); }
+
+    /// <summary>Classic: palette step <paramref name="n"/> gets its window picture from the scheduler (request due at <paramref name="requestDueMs"/>); <paramref name="held"/>, the palette's close-up from the press, is written
+    /// instead only when that picture does not come (the request was dropped, or the window is minimized): a step always ends with one picture.</summary>
+    public void ExpectWindowPicture(int n, long requestDueMs, Picture? held)
+    {
+        if (!_enabled || n <= 0 || held == null) return;
+        _held[n] = held; _fallback.Expect(n, requestDueMs);
+    }
+
+    void PumpFallbacks(long nowMs, bool force)
+    {
+        if (_fallback.Pending == 0) return;
+        foreach (var n in _fallback.Due(nowMs, force))
+        {
+            if (!_held.Remove(n, out var pic)) continue;
+            Log.Info($"shot {n}: the window picture did not come (request dropped or AutoCAD's window not shown); the palette close-up taken at the click is written instead");
+            Write(n, "palette-closeup", pic, "palette");
+        }
+    }
 
     /// <summary>The window picture the scheduler would take for event <paramref name="n"/> (the ribbon click's) is not needed: a picture was taken at the click itself.</summary>
     public void Suppress(int n) { if (n > 0) _suppressed.Add(n); }
@@ -72,13 +93,13 @@ sealed class ShotService
         if (_rects.TryGetValue(n, out var r))
         {
             // never a mark that is not inside the picture and on the click (a rectangle read in another coordinate space, a stale one)
-            if (!Core.MarkGuard.Accept(src, r, haveClick ? click : null, reach: Core.MarkGuard.RowReach)) return (null, null);
+            if (!Core.MarkGuard.Accept(src, r, haveClick ? click : null, reach: Core.MarkGuard.RowReach)) { Log.Info($"shot {n}: green box and arrow left out: the clicked rectangle {r} is not inside the picture {src} (or not on the click point)"); return (null, null); }
             var box = Annotate.ToPicture(r.Left, r.Top, r.Right, r.Bottom, src.Left, src.Top, src.Width, src.Height, w, h, 0);
-            if (box == null) return (null, null);
+            if (box == null) { Log.Info($"shot {n}: green box and arrow left out: the rectangle {r} does not map into the picture {src}"); return (null, null); }
             var pb = new Core.PxRect(box.Value.Left, box.Value.Top, box.Value.Left + box.Value.Width, box.Value.Top + box.Value.Height);
             return (box, px => ClickArrow.ForBoxQuiet(pb, src, w, h, px));   // ends at the rectangle's corner, from the side of the picture that is least busy there
         }
-        if (haveClick && !Core.MarkGuard.Accept(src, null, click)) return (null, null);
+        if (haveClick && !Core.MarkGuard.Accept(src, null, click)) { Log.Info($"shot {n}: green arrow left out: the click point {click} is outside the picture {src}"); return (null, null); }
         var point = ArrowFor(n, src, w, h);
         return (null, point == null ? null : _ => point);
     }
@@ -166,7 +187,7 @@ sealed class ShotService
         _sched.Clear(); _blankLogged.Clear();
         _tasks.Clear();
         _afterTaken.Clear();
-        _clicks.Clear(); _rects.Clear(); _suppressed.Clear(); _deferred.Clear();
+        _clicks.Clear(); _rects.Clear(); _suppressed.Clear(); _deferred.Clear(); _fallback.Clear(); _held.Clear();
         _sessionPath = sessionPath;
         _folder = Path.Combine(Path.GetDirectoryName(sessionPath) ?? "", ShotNaming.FolderFor(sessionPath));
         _enabled = enabled;
@@ -226,6 +247,7 @@ sealed class ShotService
     public void Pump(long nowMs, bool force = false)
     {
         if (_enabled) PumpDeferred(nowMs, force);
+        if (_enabled && _sched.Pending == 0) PumpFallbacks(nowMs, force);
         if (!_enabled || _sched.Pending == 0) return;
         List<ShotRequest> ready;
         try { ready = _sched.TakeReady(nowMs, force, Hold == null ? null : _ => !Hold()); }
@@ -235,6 +257,7 @@ sealed class ShotService
             try { if (!Capture(r, force)) _sched.Untake(r, nowMs); }   // not painted yet: asked again (until the request is too old)
             catch (Exception ex) { Log.Error($"shot {r.N} {r.Kind}", ex); }
         }
+        PumpFallbacks(nowMs, force);
     }
 
     /// <summary>True while a dialog that may be a flash (see <see cref="FlashDialog"/>) is on screen: no picture is taken then (not of the dialog, not of the window, which would show it).</summary>
@@ -328,6 +351,7 @@ sealed class ShotService
     public void Write(int n, string kind, Picture p, string what, bool keepSize = false)
     {
         if (!_enabled || n <= 0) return;
+        _fallback.Written(n); _held.Remove(n);
         var path = Path.Combine(_folder, ShotNaming.FileName(n, kind));
         var rel = ShotNaming.RelativePathFor(_sessionPath, n, kind);
         var onShot = _onShot;
@@ -359,6 +383,7 @@ sealed class ShotService
         if (cap == null) return true;
         if (skipBlank && ShotImage.IsBlank(cap.Pixels, cap.Width, cap.Height)) { if (_blankLogged.Add(n)) Log.Info($"dialog picture {n} not taken yet: the dialog shows nothing (not painted); asked again until it does"); return false; }
         var px = cap.Pixels;
+        if (announce) { _fallback.Written(n); _held.Remove(n); }
         var path = Path.Combine(_folder, ShotNaming.FileName(n, kind));
         var rel = ShotNaming.RelativePathFor(_sessionPath, n, kind);
         int w = cap.Width, h = cap.Height;
@@ -393,7 +418,7 @@ sealed class ShotService
 
     public void End()
     {
-        _clicks.Clear(); _rects.Clear(); _suppressed.Clear(); _deferred.Clear();
+        _clicks.Clear(); _rects.Clear(); _suppressed.Clear(); _deferred.Clear(); _fallback.Clear(); _held.Clear();
         _sched.Clear();
         _enabled = false;
         _onShot = (_, _, _) => { };

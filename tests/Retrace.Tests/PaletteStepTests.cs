@@ -32,8 +32,8 @@ public class PaletteStepTests : IDisposable
     public void Values_and_the_button_that_applies_them_are_one_step()
     {
         var md = Script(Values, Click, """{"t":1400,"n":5,"type":"shot","for":3,"file":"screenshots/003-palette.png","what":"window"}""");
-        Assert.Contains("1. In the **Box** palette (Samples), make these changes, then click **Draw box**:", md);
-        Assert.Contains("   - Set **Width** to `35` (was `20`)", md);
+        Assert.Contains("1. Fill in the **Box** palette\n\n   *Box palette*", md);
+        Assert.Contains("   - Set **Width** to `35`", md);
         Assert.Contains("   - Untick **Closed**", md);
         Assert.Contains("](screenshots/003-palette.png)", md);   // the picture belongs to the step
         Assert.DoesNotContain("2. ", md);
@@ -42,10 +42,10 @@ public class PaletteStepTests : IDisposable
     [Fact]
     public void A_click_alone_and_values_alone_read_as_such()
     {
-        Assert.Contains("1. In the **Box** palette (Samples), click **Draw box**", Script(Click));
+        Assert.Contains("1. Click **Draw box**\n\n   *Box palette*", Script(Click));
         var md = Script(Values);
-        Assert.Contains("1. In the **Box** palette (Samples), make these changes:", md);
-        Assert.Contains("   - Set **Width** to `35` (was `20`)", md);
+        Assert.Contains("1. Fill in the **Box** palette", md);
+        Assert.Contains("   - Set **Width** to `35`", md);
     }
 
     [Fact]
@@ -53,8 +53,8 @@ public class PaletteStepTests : IDisposable
     {
         var other = """{"t":1010,"n":4,"type":"palette_click","palette":"Circle","set":"Samples","button":"Draw circle"}""";
         var md = Script(Values, other);
-        Assert.Contains("1. In the **Box** palette (Samples), make these changes:", md);
-        Assert.Contains("2. In the **Circle** palette (Samples), click **Draw circle**", md);
+        Assert.Contains("1. Fill in the **Box** palette", md);
+        Assert.Contains("2. Click **Draw circle**\n\n   *Circle palette*", md);
     }
 
     [Fact]
@@ -93,7 +93,7 @@ public class PaletteStepTests : IDisposable
     public void A_command_started_by_a_palette_button_is_part_of_its_step()
     {
         var md = Script(Place, PlaceStart, PlacePoint, PlaceEnd);
-        Assert.Contains("1. In the **Search** palette (Parts Finder), click **Place...**", md);
+        Assert.Contains("1. Click **Place...**\n\n   *Search palette*", md);
         Assert.Contains("\n   - ", md[md.IndexOf("Place...")..]);   // the point answer is a sub-item of the palette step
         Assert.Contains("50", md[md.IndexOf("Place...")..]);
         Assert.DoesNotContain("PARTSPLACE` on the command line", md);

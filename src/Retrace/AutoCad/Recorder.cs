@@ -90,6 +90,7 @@ public sealed class Recorder
     string? _lastPaletteButton;
     uint _downMsgTime;        // the system time (ms) the last left button-down was posted: when the person pressed, not when the UI thread got round to it
     int _downX, _downY;       // the screen point of the last left button-down, when and in which window (setting showClickArrows)
+    bool _downInWpf;          // the last left button-down was in a WPF window (the ribbon, a drop-down menu), not in the drawing or a dialog: a ribbon click counts it as its press only then
 
     bool _lastPaletteConsumed = true;
 
@@ -567,6 +568,8 @@ public sealed class Recorder
             // the picture of the click is taken now, with the button under the cursor and before the command's dialog covers the screen; the picture the scheduler would take 200 ms later is then not needed
             ShotService.Picture? clickPic = null;
             bool smartPic = false;
+            // where the mouse was pressed for this click, read before the picture is taken (a drop-down closes, a palette opens)
+            var down = Core.RibbonMark.FreshDown(_downX, _downY, _downMsgTime, unchecked((uint)Environment.TickCount), _downInWpf);
             if (_shots.Enabled)
             {
                 var main = MainWindowHandle();
@@ -584,10 +587,40 @@ public sealed class Recorder
             if (n0 > 0 && clickPic != null)
             {
                 _shots.Suppress(n0);
-                if (_shots.Arrows && (smartPic ? SmartShots.ItemRect(item.Id, e.Parent?.Id, markOnly: true) : TdocTargets.RibbonItemRect(item.Id) is { Panel: false } hit0 ? new Core.PxRect(hit0.Rect.Left, hit0.Rect.Top, hit0.Rect.Right, hit0.Rect.Bottom) : null) is { } hit) _shots.NoteTarget(n0, hit.Left, hit.Top, hit.Right, hit.Bottom);   // the button itself; none when it is not shown
+                if (_shots.Arrows) NoteRibbonMark(n0, item, e.Parent, down, clickPic.HasOrigin ? new Core.PxRect(clickPic.Left, clickPic.Top, clickPic.Left + clickPic.SrcWidth, clickPic.Top + clickPic.SrcHeight) : null);
                 _shots.Write(n0, "ribbon", clickPic, "window", keepSize: smartPic);
             }
         });
+    }
+
+    /// <summary>The green box and arrow of a ribbon click's picture (<see cref="Core.RibbonMark"/>): the clicked item's own rectangle, read now (the object the click ran, wherever it shows), else the button that holds it, else an
+    /// arrow at the mouse-down point; when none is known nothing is drawn and retrace.log says why.</summary>
+    void NoteRibbonMark(int n, RibbonItem item, RibbonItem? parent, (int X, int Y)? down, Core.PxRect? picture)
+    {
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        Core.PxRect? Rect(RibbonItem? it)
+        {
+            if (it == null) return null;
+            var r = TdocTargets.ItemRectAnywhere(it, down);
+            if (r == null && !string.IsNullOrEmpty(it.Id) && TdocTargets.RibbonItemRect(it.Id) is { Panel: false } byId) r = byId.Rect;   // the lookup by id, as before
+            return r is { } s ? new Core.PxRect(s.Left, s.Top, s.Right, s.Bottom) : null;
+        }
+        // the button that holds the item is looked up only when the item's own rectangle is not used, and only when it is a button-like item (a row panel's rectangle is the whole row)
+        var parentType = parent?.GetType().Name;
+        var choice = Core.RibbonMark.Choose(Rect(item), () => parent != null && Core.RibbonMark.IsButtonLike(parentType) ? Rect(parent) : null, down, picture);
+        switch (choice.Kind)
+        {
+            case Core.RibbonMarkKind.Box:
+                _shots.NoteTarget(n, choice.Box.Left, choice.Box.Top, choice.Box.Right, choice.Box.Bottom);
+                break;
+            case Core.RibbonMarkKind.Point:
+                _shots.NoteClick(n, choice.X, choice.Y);
+                break;
+        }
+        // one line per ribbon click: what was marked, why not, how long the lookup took (the walk is over the visual trees of the ribbon and open pop-ups)
+        var ms = clock.ElapsedMilliseconds;
+        if (choice.Kind != Core.RibbonMarkKind.Box || ms > 30 || parent != null) Log.Info($"ribbon click {n} ({item.Id}): mark {choice.Kind.ToString().ToLowerInvariant()} ({choice.Reason}); mark lookup {ms} ms{(ms > 30 ? " (slow)" : "")}; item {item.GetType().Name}, parent {parentType ?? "none"}");
+        else Log.Info($"ribbon click {n} ({item.Id}): mark box; mark lookup {ms} ms");
     }
 
     // ---- documents and commands --------------------------------------------------------------
@@ -966,7 +999,7 @@ public sealed class Recorder
         var m = e.Message.message;
         if (m == 0x0200) { _activity++; return; }   // WM_MOUSEMOVE: somebody is at the mouse (a script that answers by itself moves nothing)
         if (CheckpointKey.TryHandle(m, e.Message.wParam, e.Message.lParam)) { e.Handled = true; return; }   // the shortcut is not user input
-        if (m == 0x0201) { _downX = e.Message.pt_x; _downY = e.Message.pt_y; _downMsgTime = (uint)e.Message.time; }   // where the person clicked, for the arrow of the step's picture
+        if (m == 0x0201) { _downX = e.Message.pt_x; _downY = e.Message.pt_y; _downMsgTime = (uint)e.Message.time; _downInWpf = System.Windows.Interop.HwndSource.FromHwnd(e.Message.hwnd) != null; }   // where the person clicked, for the arrow of the step's picture
         if (m is 0x0100 or 0x0201 or 0x0202 or 0x0203 && _pal.Enabled) PaletteInput(e.Message.hwnd, (uint)m, e.Message.wParam, e.Message.lParam);
         if (m == 0x0100 && _w != null && !_inOwnCmd) { if (Native.TypedChar((uint)(long)e.Message.wParam) is { } typedChar) _sel.Key(typedChar); }   // WM_KEYDOWN (no WM_CHAR reaches this handler)
         if (m is 0x0201 or 0x0202 && _w != null && !_inOwnCmd && Native.IsInside(DrawingWindow(), e.Message.hwnd))
@@ -1058,10 +1091,22 @@ public sealed class Recorder
         int modalAtClick = _modalOpen;   // a modal state that was already open at the click does not cover the palette; one that opened after it does
         // a click that opens a modal dialog: the palette is under it by then (taken at the EnterModal, or the one from before the click is used)
         bool smart = _shots.Smart;
-        // smart zoom: this one picture (the palette and its surroundings) is the click's picture; the window picture the scheduler would take is not needed when this one is certain (the one kept before the click, or the palette shows now)
-        if (smart && (before != null || SmartShots.PaletteArea(at.Page, true) != null)) _shots.Suppress(n);
+        if (!smart && PaletteInsideMain(at.Page))
+        {
+            // classic: one picture of the whole window (the scheduler's, which has the frame and arrow noted above), never a second close-up; the close-up from the press is held and written only if that picture does not come
+            _shots.ExpectWindowPicture(n, w.ElapsedMs + ShotRules.SettleMs, before);
+            return;
+        }
+        // smart zoom: this one picture (the palette and its surroundings) is the click's picture; the window picture the scheduler would take is not needed when this one is certain (the one kept before the click, or the palette shows now).
+        // Classic with a palette floating outside AutoCAD's window: the window picture does not show it, so the palette's own frame is the one picture
+        if (before != null || SmartShots.PaletteArea(at.Page, smart) != null) _shots.Suppress(n);
         _shots.DeferRect(n, "palette-closeup", "palette", w.ElapsedMs + ShotRules.ClickSettleMs, () => _modalOpen <= modalAtClick ? SmartShots.PaletteArea(at.Page, smart) : null, before, null, at.Page);
     }
+
+    /// <summary>Classic mode: the palette's window lies inside AutoCAD's window, so the whole-window picture shows it (<see cref="ClassicPalettePicture"/>); true also when either window cannot be read (the window picture is the rule).</summary>
+    bool PaletteInsideMain(IntPtr page) =>
+        TdocTargets.Of(page) is not { } p || TdocTargets.Of(MainWindowHandle()) is not { } m
+        || Core.ClassicPalettePicture.InsideWindow(new Core.PxRect(p.Left, p.Top, p.Right, p.Bottom), new Core.PxRect(m.Left, m.Top, m.Right, m.Bottom));
 
     /// <summary>A context menu item was chosen (<see cref="MenuWatch"/>): in a tracked dialog it is written as a click of that dialog; in a palette the values changed so far go first, then the
     /// choice, which belongs to the palette step like a button click (a command it starts is linked to it).</summary>
@@ -1073,7 +1118,11 @@ public sealed class Recorder
         EmitPalette(_pal.Flush(w.ElapsedMs, drop: false), withPicture: false);
         var n = Emit("context_menu", CurDoc(), new (string, object?)[] { ("palette", armed.Spot.Palette), ("set", armed.Spot.Set) }.Concat(choice.ToFields()).ToArray());
         _shots.Request(ShotRules.Palette(n, w.ElapsedMs));   // the window, as for a palette click, and the palette's close-up taken at the right-click
-        if (armed.Picture != null) { if (_shots.Smart) _shots.Suppress(n); _shots.Write(n, "palette-closeup", armed.Picture, "palette"); }   // smart zoom: the crop is the one picture
+        if (armed.Picture != null)
+        {
+            if (!_shots.Smart && PaletteInsideMain(armed.Spot.Page)) _shots.ExpectWindowPicture(n, w.ElapsedMs + ShotRules.SettleMs, armed.Picture);   // classic: the window picture; the close-up only if that does not come
+            else { _shots.Suppress(n); _shots.Write(n, "palette-closeup", armed.Picture, "palette"); }   // smart zoom, or classic with a palette outside AutoCAD's window: the close-up is the one picture
+        }   // smart zoom: the crop is the one picture
         _lastPaletteT = w.ElapsedMs; _lastPaletteTick = _inputTick; _lastPaletteButton = choice.ButtonText; _lastPaletteConsumed = false;
     }
 
@@ -1119,7 +1168,11 @@ public sealed class Recorder
         if (v == null) return;
         var fields = FieldsJson(v.Changes);
         var n = Emit("palette_values", CurDoc(), ("palette", v.Where.Palette), ("set", v.Where.Set), ("source", v.Source), ("fields", fields), ("read", v.Read));
-        if (withPicture && v.Picture != null) { if (_shots.Smart) _shots.Suppress(n); _shots.Write(n, "palette-closeup", v.Picture, "palette"); }
+        if (withPicture && v.Picture != null)
+        {
+            if (!_shots.Smart && PaletteInsideMain(v.Where.Page)) _shots.ExpectWindowPicture(n, (_w?.ElapsedMs ?? 0) + ShotRules.SettleMs, v.Picture);   // classic: the window picture; the close-up only if that does not come
+            else { _shots.Suppress(n); _shots.Write(n, "palette-closeup", v.Picture, "palette"); }   // smart zoom, or classic with a palette outside AutoCAD's window: the close-up is the one picture
+        }
     }
 
     /// <summary>true if a click/key press within 500 ms led to this result and no earlier result claimed it. Sets <see cref="_claimedBy"/>.</summary>

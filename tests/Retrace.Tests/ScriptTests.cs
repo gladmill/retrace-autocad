@@ -81,23 +81,23 @@ public class ScriptTests : IDisposable
 
         Assert.StartsWith("# draw test\n", md);
         Assert.Contains("Recorded 2026-10-10, with AutoCAD 2026 25.1.0.0, workspace Drafting.", md);
-        Assert.Contains("**Start with:** a new empty drawing.", md);
-        Assert.Contains("1. Click **Home › Draw › Line**", md);
+        Assert.Contains("**Start with:** a new, empty drawing.", md);
+        Assert.Contains("1. Click **Line**\n\n   *Ribbon › Home tab › Draw panel*", md);
         Assert.Contains("   - Pick the first point (recorded at 0, 0)", md);
         Assert.Contains("   - Pick the next point (recorded at 5, 5)", md);
-        Assert.Contains("2. Type `DRAWGRID` on the command line and press Enter", md);
-        Assert.Contains("   - A dialog opens: **Draw grid**.", md);
+        Assert.Contains("2. Type `DRAWGRID` and press Enter", md);
+        Assert.Contains("   - Fill in the **Draw grid** dialog", md);
         Assert.Contains("3. **Check:** line drawn — the drawing should now have 1 LINE", md);
 
         // each picture sits under its own step, in order; alt text is the step text
-        var ribbon = Idx(md, "![Click Home › Draw › Line](screenshots/step-01-click.png)");
+        var ribbon = Idx(md, "![Click Line](screenshots/step-01-click.png)");
         var pick = Idx(md, "(screenshots/step-01-answer-1.png)");
         var end = Idx(md, "(screenshots/step-01-end.png)");
-        var dialog = Idx(md, "![A dialog opens: Draw grid. Fill it in and confirm.](screenshots/step-02-dialog-before.png)");
+        var dialog = Idx(md, "![Fill in the Draw grid dialog](screenshots/step-02-dialog-before.png)");
         var mark = Idx(md, "(screenshots/step-03-check.png)");
         Assert.True(Idx(md, "1. Click") < ribbon && ribbon < Idx(md, "- Pick the first point"));
         Assert.True(Idx(md, "- Pick the next point") < pick && pick < end && end < Idx(md, "2. Type"));
-        Assert.True(Idx(md, "2. Type") < Idx(md, "- A dialog") && Idx(md, "- A dialog") < dialog && dialog < Idx(md, "3. **Check"));
+        Assert.True(Idx(md, "2. Type") < Idx(md, "- Fill in the **Draw grid**") && Idx(md, "- Fill in the **Draw grid**") < dialog && dialog < Idx(md, "3. **Check"));
         Assert.True(Idx(md, "3. **Check") < mark);
 
         // mouse noise and its picture, and a picture of no event, are absent
@@ -121,7 +121,7 @@ public class ScriptTests : IDisposable
         Assert.DoesNotContain("![", md);
         Assert.DoesNotContain("old owner text", md);
         Assert.DoesNotContain("<!--", md);
-        Assert.Contains("1. Click **Home › Draw › Line**", md);
+        Assert.Contains("1. Click **Line**\n\n   *Ribbon › Home tab › Draw panel*", md);
     }
 
     [Fact]
@@ -131,7 +131,7 @@ public class ScriptTests : IDisposable
         var file = Session("s3", Shots(lines, "s3"));
         Assert.True(EngineRunner.WriteSteps(file).Success);
         var md = File.ReadAllText(Path.Combine(_dir, "s3", "steps.md"));
-        Assert.Contains("1. Click **Home › Draw › Line**", md);
+        Assert.Contains("1. Click **Line**\n\n   *Ribbon › Home tab › Draw panel*", md);
         Assert.DoesNotContain("![", md); // no event numbers: nothing to attach shots to
     }
 
@@ -151,7 +151,7 @@ public class ScriptTests : IDisposable
         var file = Session("s5", Shots(lines, "s5"));
         Assert.True(EngineRunner.WriteSteps(file).Success);
         var md = File.ReadAllText(Path.Combine(_dir, "s5", "steps.md"));
-        Assert.Contains("**Start with:** a drawing like the one recorded at the start (drawing: 2 LINE, 1 CIRCLE; layers: 0, DIM)", md);
+        Assert.Contains("**Start with:** a new drawing, 3 objects (lines and circles). The drawing has 2 layers. Open or build it before the first step.", md);
         Assert.DoesNotContain("new empty drawing", md);
     }
 
@@ -174,18 +174,17 @@ public class ScriptTests : IDisposable
         Writer.WriteAll(m, new EngineOptions { Input = "/in", Output = _out, Sessions = [file] });
         var howto = File.ReadAllText(Path.Combine(_out, "guide", "howto", "draw-test.md"));
 
-        foreach (var line in new[]
-        {
-            "2. Type `DRAWGRID` on the command line and press Enter",
-            "   - Pick the first point (recorded at 0, 0)",
-            "   - Pick the next point (recorded at 5, 5)",
-            "   - A dialog opens: **Draw grid**. Fill it in and confirm.",
-        })
+        // the answers are worded the same in both; the step lines differ: the script's are short, with a location line (item 5), the guide's carry the whole path
+        foreach (var line in new[] { "   - Pick the first point (recorded at 0, 0)", "   - Pick the next point (recorded at 5, 5)" })
         {
             Assert.Contains(line, script);
             Assert.Contains(line, howto);
         }
-        Assert.Contains("Click **Home › Draw › Line**", script);
+        Assert.Contains("2. Type `DRAWGRID` and press Enter\n\n   *Command line*", script);
+        Assert.Contains("   - Fill in the **Draw grid** dialog", script);
+        Assert.Contains("2. Type `DRAWGRID` on the command line and press Enter", howto);
+        Assert.Contains("   - A dialog opens: **Draw grid**. Fill it in and confirm.", howto);
+        Assert.Contains("Click **Line**", script);
         Assert.Contains("Click **Home › Draw › Line**", howto);
     }
 

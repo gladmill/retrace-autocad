@@ -87,11 +87,12 @@ public class PaletteIntermediateClickTests : IDisposable
         var p = Path.Combine(dir, "recording.jsonl");
         File.WriteAllLines(p, new[] { Header }.Concat(Session));
         var md = ScriptWriter.Build(RecordingReader.Load(p), null, _dir, new List<string>());
-        Assert.Contains("Click **B24** under Cabinets › Base, in the Catalog tree of the **Pick** palette", md);
-        Assert.Contains("click image **Door style 3**", md);
-        Assert.Contains("click list item `Oak` in **Finish**", md);
+        Assert.Contains("Click **B24**\n\n   *Pick palette › Catalog tree › Cabinets › Base*", md);
+        Assert.Contains("Click image **Door style 3**", md);
+        Assert.Contains("Click list item `Oak` in **Finish**", md);
         var tree = Build(Session).Where(x => x.Kind == "palette").ElementAt(1);
-        Assert.Contains(TdocPlan.Instructions(tree), l => l == "Click B24 under Cabinets › Base, in the Catalog tree of the Pick palette.");
+        Assert.Contains(TdocPlan.Instructions(tree), l => l == "Click B24.");
+        Assert.Equal("Pick palette › Catalog tree › Cabinets › Base", TdocPlan.Where(tree));
     }
 
     [Fact]
@@ -190,7 +191,8 @@ public class PaletteIntermediateClickTests : IDisposable
         var step = Build(line).Single();
         Assert.True(PaletteClickKinds.IsIntermediate(step.ClickKind));   // the replay dispatches by kind before it looks at the name
         Assert.Contains("click (blank) under Cabinets", step.Title);
-        Assert.Contains(TdocPlan.Instructions(step), l => l.Contains("lick (blank) under Cabinets"));
+        Assert.Contains(TdocPlan.Instructions(step), l => l == "Click (blank).");
+        Assert.EndsWith("tree › Cabinets", TdocPlan.Where(step));
         Assert.Equal("(blank)", PaletteClickKinds.ItemName("  "));
         Assert.Equal("B24", PaletteClickKinds.ItemName(" B24 "));
     }

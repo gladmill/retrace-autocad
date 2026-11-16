@@ -196,7 +196,7 @@ public class ContextMenuTests : IDisposable
     {
         var md = Script(DialogWithMenu);
         Assert.Contains("     - Right-click **Bolts** in **Catalog**, choose **Edit › Rename**\n", md);
-        Assert.Contains("       - A nested dialog opens: **Properties**. Make these changes, then confirm:\n", md);
+        Assert.Contains("       - Fill in the nested **Properties** dialog\n", md);
         var lines = TdocPlan.Instructions(Build(DialogWithMenu).Single(s => s.Kind == "dialog"));
         Assert.Contains("Right-click Bolts in Catalog, choose Edit › Rename.", lines);
         Assert.Contains("In the Properties dialog:", lines);
@@ -227,7 +227,8 @@ public class ContextMenuTests : IDisposable
     public void The_palette_line_of_the_script_and_Tdoc_use_the_menu_wording()
     {
         var md = Script(PaletteMenu);
-        Assert.Contains("In the **Parts** palette (Samples), make these changes, then right-click **Bolts** in **Catalog**, choose **Edit › Rename**:", md);
+        Assert.Contains("1. Fill in the **Parts** palette\n\n   *Parts palette*\n", md);
+        Assert.Contains("   - Right-click **Bolts** in **Catalog**, choose **Edit › Rename**\n", md);
         var lines = TdocPlan.Instructions(Build(PaletteMenu).Single(s => s.Kind == "palette")).ToList();
         Assert.Contains("Right-click Bolts in Catalog, choose Edit › Rename.", lines);
     }

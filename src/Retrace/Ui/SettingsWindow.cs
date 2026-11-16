@@ -47,11 +47,11 @@ sealed class SettingsWindow : Window
         (PostTestZoomModes.Extents, "After a test: zoom to extents"),
         (PostTestZoomModes.LastEntity, "After a test: zoom to the last created object"),
     };
-    readonly ComboBox _shotMode = new() { Margin = new Thickness(0, 4, 0, 0), ToolTip = "Applies to the pictures of the test document (made while recording) and of the training document (Tdoc). Smart zoom: a ribbon click shows the clicked button, its panel and the tab row with its neighbouring tabs; a palette click shows the whole palette with some surroundings; every picture is a true-size crop (never scaled), so text and buttons look the same size throughout. Dialog pictures and pictures of the drawing stay as they are." };
+    readonly ComboBox _shotMode = new() { Margin = new Thickness(0, 4, 0, 0), ToolTip = "Applies to the pictures of the test document (made while recording) and of the training document (Tdoc). Smart zoom (default): a ribbon click shows the clicked button, its panel and the tab row with its neighbouring tabs; a palette click shows the whole palette with some surroundings; every picture is a true-size crop (never scaled), so text and buttons look the same size throughout. Dialog pictures and pictures of the drawing stay as they are. Classic: one picture of the whole AutoCAD window per step (a palette click too, with the green frame and arrow on the clicked item), no close-ups." };
     static readonly (string Value, string Text)[] ShotModeChoices =
     {
-        (ScreenshotModes.Classic, "Pictures: as they are now"),
-        (ScreenshotModes.Smart, "Pictures: smart zoom on what was clicked"),
+        (ScreenshotModes.Classic, "Pictures: classic, the whole AutoCAD window in one picture"),
+        (ScreenshotModes.Smart, "Pictures: smart zoom on what was clicked (default)"),
     };
     readonly CheckBox _docx = new() { Content = "Also write Word (.docx)", Margin = new Thickness(0, 6, 0, 0), ToolTip = "steps.docx next to steps.md, made when a recording is stopped." };
     readonly CheckBox _xlsx = new() { Content = "Also write Excel (.xlsx)", Margin = new Thickness(0, 6, 0, 0), ToolTip = "steps.xlsx next to steps.md: one row per step with a PASS / FAIL column." };
@@ -440,7 +440,7 @@ sealed class SettingsWindow : Window
         _xlsx.IsChecked = false;
         _postZoom.SelectedIndex = 0;
         _recordZoom.SelectedIndex = 0;
-        _shotMode.SelectedIndex = 0;
+        _shotMode.SelectedIndex = Math.Max(0, Array.FindIndex(ShotModeChoices, c => c.Value == new RetraceSettings().ScreenshotMode));
         _tabPos.SelectedIndex = 0;
         var dflt = new RetraceSettings();
         _autoDetect.IsChecked = dflt.AutoDetectBehavior;
@@ -529,7 +529,7 @@ sealed class SettingsWindow : Window
         s.RecordZoom = _recordZoom.SelectedIndex >= 0 ? RecordZoomChoices[_recordZoom.SelectedIndex].Value : PostTestZoomModes.None;
         s.PostTestZoom = _postZoom.SelectedIndex >= 0 ? PostZoomChoices[_postZoom.SelectedIndex].Value : PostTestZoomModes.None;
         s.ExportXlsx = _xlsx.IsChecked == true;
-        s.ScreenshotMode = _shotMode.SelectedIndex >= 0 ? ShotModeChoices[_shotMode.SelectedIndex].Value : ScreenshotModes.Classic;
+        s.ScreenshotMode = _shotMode.SelectedIndex >= 0 ? ShotModeChoices[_shotMode.SelectedIndex].Value : new RetraceSettings().ScreenshotMode;
         var pos = _tabPos.SelectedIndex >= 0 ? _tabPosValues[_tabPos.SelectedIndex] : RibbonTabPosition.AfterHome;
         s.RibbonTabPosition = pos == RibbonTabPosition.AfterHome ? "" : pos;
         s.CheckpointKey = _keyValue;

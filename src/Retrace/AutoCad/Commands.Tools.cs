@@ -386,7 +386,7 @@ public sealed partial class Commands
                 var tdArrows = Ask.Keywords(ed, new PromptKeywordOptions($"\nDraw a green rectangle and arrow at each click in the test document pictures (testDocArrows) [Yes/No] <{(s.TestDocArrows ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
                 if (tdArrows.Status == PromptStatus.Cancel) return;
                 n.TestDocArrows = tdArrows.Status == PromptStatus.OK ? tdArrows.StringResult == "Yes" : s.TestDocArrows;
-                var sm = Ask.String(ed, $"\nPictures of the test and training documents (screenshotMode): classic or smart <{s.ScreenshotMode}>: ");
+                var sm = Ask.String(ed, $"\nPictures of the test and training documents (screenshotMode): smart or classic <{s.ScreenshotMode}>: ");
                 if (sm.Status == PromptStatus.Cancel) return;
                 var smt = (sm.StringResult ?? "").Trim();
                 if (smt.Length > 0)
@@ -471,7 +471,7 @@ public sealed partial class Commands
                $"  Tdoc front       : {(s.TdocBringToFront ? "on" : "off")} (RETRACETDOC brings AutoCAD, the dialog or the palette to the front before each picture)\n" +
                $"  Click arrows     : {(s.ShowClickArrows ? "on" : "off")} (a green arrow at each click of a replay, and in Tdoc pictures)\n" +
                $"  Test doc arrows  : {(s.TestDocArrows ? "on" : "off")} (a green rectangle and arrow at each click in the pictures of steps.md, made while recording)\n" +
-               $"  Screenshot mode  : {s.ScreenshotMode} (classic: the pictures as they always were; smart: zoom on what was clicked, 1:1 crops, in the test and training documents)\n" +
+               $"  Screenshot mode  : {s.ScreenshotMode} (smart, the default: zoom on what was clicked, 1:1 crops; classic: one picture of the whole AutoCAD window per step; in the test and training documents)\n" +
                $"  Post-test zoom   : {s.PostTestZoom} (none, extents, lastEntity: the model-space view after a replayed test's last step, before the end-of-test pictures)\n" +
                $"  Record zoom      : {s.RecordZoom} (none, extents, lastEntity: the model-space view after each command that creates objects, while recording and replaying)\n" +
                $"  Tdoc boxes       : {(s.TdocAnnotate ? "on" : "off")} (green numbered boxes on the pictures where the user gives input)\n" +

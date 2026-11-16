@@ -58,6 +58,15 @@ namespace Retrace.Samples
             pickSet.Visible = true;
         }
 
+        /// <summary>DRAWPICKFLOAT: the DRAWPICK palette, floating (not docked, not auto-hide) with its top left at screen point 760, 80, for checking a palette that lies outside AutoCAD's window (shrink the window first).</summary>
+        [CommandMethod("DRAWPICKFLOAT")]
+        public void ShowPickFloating()
+        {
+            ShowPick();
+            pickSet!.Dock = DockSides.None;
+            pickSet.Location = new System.Drawing.Point(760, 80);
+        }
+
         private static PaletteSet? toolsSet;
 
         /// <summary>DRAWTOOLS: a palette set of its own, "Retrace Tools", with the page "Projects" (<see cref="ToolsPage"/>: a ToolStrip and a legacy ToolBar of image-only buttons above a tree; every button draws on a layer named after the selected node).</summary>

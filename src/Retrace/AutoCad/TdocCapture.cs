@@ -70,7 +70,7 @@ sealed class TdocCapture : IDisposable
         for (int k = 0; k < entries.Count; k++)
         {
             var e = entries[k];
-            test.Steps.Add(new TrainingStep { Number = k + 1, Kind = TdocSplit.Kind(e), Title = TdocSplit.Title(e), Instructions = TdocSplit.Instructions(e) });
+            test.Steps.Add(new TrainingStep { Number = k + 1, Kind = TdocSplit.Kind(e), Title = TdocSplit.Title(e), Instructions = TdocSplit.Instructions(e), Where = TdocSplit.Where(e) });
             if (e.After) { _after[e.Index] = new Continuation(k, e.Shown, e.Group, e.GroupEnd, e.Last); continue; }
             _m[e.Index] = k; _before[e.Index] = e.Shown;
         }
@@ -219,7 +219,18 @@ sealed class TdocCapture : IDisposable
         if (w == null) { Log.Info($"tdoc: no picture of step {i + 1} (AutoCAD's window is hidden or minimized)"); return; }
         var targets = new List<(string Text, ScreenRect? Rect)>();
         ScreenRect? arrowAt = null;
-        if (_arrows && !continuation && s.Kind == "ribbon" && !string.IsNullOrEmpty(s.ItemId)) arrowAt = TdocTargets.RibbonItemRect(s.ItemId)?.Rect;
+        if (_arrows && !continuation && s.Kind == "ribbon")
+        {
+            if (string.IsNullOrEmpty(s.ItemId)) Log.Info($"tdoc: step {i + 1}: the ribbon click has no item id; no green arrow");
+            else
+            {
+                var found = TdocTargets.RibbonItemRect(s.ItemId);
+                arrowAt = found?.Rect;
+                // the id is looked up in the ribbon as it is now (the replay clicked that same item); an item that does not show (another tab, a drop-down or slide-out that is closed) has no rectangle to point at, and the recording holds no click point
+                if (found == null) Log.Info($"tdoc: step {i + 1}: ribbon item {s.ItemId} does not show on the tab now (not on the active tab, inside a closed drop-down or slide-out, or not in the ribbon); no green arrow");
+                else if (found.Value.Panel) Log.Info($"tdoc: step {i + 1}: ribbon item {s.ItemId} sits in a collapsed panel; the arrow points at the panel");
+            }
+        }
         if (_annotate)
             foreach (var p in TdocPlan.StepCallouts(s, continuation))
             {
@@ -237,8 +248,15 @@ sealed class TdocCapture : IDisposable
     void ShootPalette(int i, Step s)
     {
         var page = PaletteFill.FindPage(s);
-        // an open palette: its own frame; hidden (auto-hide) or not found: AutoCAD's window, without boxes
-        if (page != IntPtr.Zero && SmartShots.PaletteArea(page, _smart) is { } r && ShotService.CaptureRect(r.L, r.T, r.R, r.B, page) is { } pic)
+        // an open palette: smart zoom shows the palette with its surroundings, a 1:1 crop. Classic shows the whole AutoCAD window in one picture (never a close-up as well), the boxes and arrows on the palette's controls in it;
+        // a palette that lies outside AutoCAD's window (floating on another screen) is not in that picture, so its own frame is the one picture then. Hidden (auto-hide) or not found: AutoCAD's window, without boxes
+        ShotService.Picture? pic = null; int picL = 0, picT = 0;
+        if (page != IntPtr.Zero && !_smart && TdocTargets.Of(page) is { } pr0 && TdocTargets.Of(_main) is { } mr0 && pr0.Left >= mr0.Left - 2 && pr0.Top >= mr0.Top - 2 && pr0.Right <= mr0.Right + 2 && pr0.Bottom <= mr0.Bottom + 2
+            && ShotService.CaptureWindow(_main, workArea: true) is { } whole)
+            (pic, picL, picT) = (whole.Pic, whole.Left, whole.Top);
+        else if (page != IntPtr.Zero && SmartShots.PaletteArea(page, _smart) is { } r && ShotService.CaptureRect(r.L, r.T, r.R, r.B, page) is { } crop)
+            (pic, picL, picT) = (crop, r.L, r.T);
+        if (pic != null)
         {
             var targets = new List<(string Text, ScreenRect? Rect)>();
             var arrows = new List<ArrowAt>();
@@ -259,7 +277,7 @@ sealed class TdocCapture : IDisposable
                     arrows.Add(new ArrowAt(pr, false, own));
                 }
             }
-            Save(i, pic, r.L, r.T, targets, TdocPlan.Caption(s), arrows, keepSize: _smart);
+            Save(i, pic, picL, picT, targets, TdocPlan.Caption(s), arrows, keepSize: _smart);
             return;
         }
         var w = ShotService.CaptureWindow(_main);

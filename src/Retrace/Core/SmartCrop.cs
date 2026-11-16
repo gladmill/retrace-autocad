@@ -5,15 +5,15 @@ namespace Retrace.Core;
 /// <summary>The values of <see cref="RetraceSettings.ScreenshotMode"/> (setting <c>screenshotMode</c>): how the pictures of a document are cropped.</summary>
 public static class ScreenshotModes
 {
-    /// <summary>The pictures as they always were (the default): the ribbon click shows the whole window, a palette click the palette's frame.</summary>
+    /// <summary>One picture of the whole AutoCAD window per step (not the default any more): the ribbon click shows the whole window, a palette click the whole window too, with the green frame and arrow on the clicked item.</summary>
     public const string Classic = "classic";
-    /// <summary>Smart zoom: a ribbon click shows the button, its panel and the tab row; a palette click the whole palette with some surroundings; every picture is a 1:1 crop.</summary>
+    /// <summary>Smart zoom (the default): a ribbon click shows the button, its panel and the tab row; a palette click the whole palette with some surroundings; every picture is a 1:1 crop.</summary>
     public const string Smart = "smart";
 
     public static readonly string[] All = { Classic, Smart };
 
     /// <summary>The canonical value for a text from a settings file or the command line: matched without case, around spaces and quotes; "1" and a few spellings ("smartzoom", "zoom") also work.
-    /// Anything else, or null, is <see cref="Classic"/>.</summary>
+    /// Anything else, or null, is <see cref="Classic"/> (an old recording's header without the key was made with classic; the settings default is <see cref="Smart"/>, set in RetraceSettings).</summary>
     public static string Normalize(string? text) => Normalize(text, out _);
 
     /// <summary>As <see cref="Normalize(string?)"/>; <paramref name="known"/> is false when the text is none of the spellings (it then reads as classic).</summary>

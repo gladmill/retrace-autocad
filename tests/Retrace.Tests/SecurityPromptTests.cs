@@ -92,7 +92,7 @@ public class SecurityPromptTests : IDisposable
         Assert.Single(steps, s => s.Kind == "dialog");
         var p = Path.Combine(_dir, "w.jsonl");
         File.WriteAllLines(p, new[] { Header }.Concat(lines));
-        Assert.Contains("A dialog opens: **Security - Settings**", ScriptWriter.Build(RecordingReader.Load(p), null, _dir, new List<string>()));
+        Assert.Contains("Fill in the **Security - Settings** dialog", ScriptWriter.Build(RecordingReader.Load(p), null, _dir, new List<string>()));
     }
 
     [Fact]

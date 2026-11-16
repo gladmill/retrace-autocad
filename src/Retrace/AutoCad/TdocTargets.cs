@@ -53,6 +53,36 @@ static class TdocTargets
         return null;
     }
 
+    /// <summary>The screen rectangle of the clicked ribbon item <paramref name="item"/> itself (the object the click ran, not a lookup by its id, which a custom or duplicated id can miss), wherever it shows in this process: the
+    /// ribbon, and also an open drop-down, split-button menu or slide-out, which are windows of their own (every WPF presentation source is searched). Of several shown copies the one that holds
+    /// <paramref name="near"/> (the mouse-down point) wins. UI thread; null when it shows nowhere or on any failure.</summary>
+    public static ScreenRect? ItemRectAnywhere(object item, (int X, int Y)? near)
+    {
+        try
+        {
+            ScreenRect? first = null;
+            var ribbonSource = Autodesk.Windows.ComponentManager.Ribbon is { } rb ? System.Windows.PresentationSource.FromVisual(rb) : null;
+            foreach (System.Windows.PresentationSource src in System.Windows.PresentationSource.CurrentSources)
+            {
+                try
+                {
+                    // a source owned by another dispatcher thread cannot be read from here; only the ribbon's own window and pop-ups (drop-down menus, slide-outs) can hold a ribbon item
+                    if (!src.CheckAccess()) continue;
+                    if (src.RootVisual is not System.Windows.FrameworkElement root || !root.IsVisible) continue;
+                    if (!ReferenceEquals(src, ribbonSource) && root.GetType().Name != "PopupRoot") continue;
+                    // a drop-down menu that has closed (it closes before the item's click is reported) keeps its visual tree for a while: only a source whose window shows counts
+                    if (src is System.Windows.Interop.HwndSource hs && !IsWindowVisible(hs.Handle)) continue;
+                    if (ShownRect(root, item) is not { } r) continue;
+                    if (near is { } p && p.X >= r.Left - 2 && p.X < r.Right + 2 && p.Y >= r.Top - 2 && p.Y < r.Bottom + 2) return r;
+                    first ??= r;
+                }
+                catch (Exception ex) { Log.Error("ribbon item rect (one source)", ex); }
+            }
+            return first;
+        }
+        catch (Exception ex) { Log.Error("ribbon item rect (any source)", ex); return null; }
+    }
+
     /// <summary>Whether a ribbon item collection holds <paramref name="target"/>, also inside rows, split buttons and other item lists.</summary>
     internal static bool Holds(System.Collections.IEnumerable? items, object target, int depth)
     {

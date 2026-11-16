@@ -129,7 +129,7 @@ public class RecordingTests : IDisposable
         var md = ScriptWriter.Build(s, null, Path.GetTempPath(), new List<string>());
         Assert.Contains("   - Type `500,450` for the center point for circle\n", md);
         var grid = md.IndexOf("2. Type `DRAWGRID`", StringComparison.Ordinal);
-        var dialog = md.IndexOf("   - A dialog opens: **Draw grid**. Fill it in and confirm.", StringComparison.Ordinal);
+        var dialog = md.IndexOf("   - Fill in the **Draw grid** dialog", StringComparison.Ordinal);
         var pick = md.IndexOf("   - Pick the Lower-left point of the grid (recorded at 0.5, 2)", StringComparison.Ordinal);
         Assert.True(grid >= 0 && grid < dialog && dialog < pick, md);
         Assert.Contains("3. **Check:** grid drawn", md);

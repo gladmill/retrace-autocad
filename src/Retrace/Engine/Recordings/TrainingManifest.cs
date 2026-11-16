@@ -102,6 +102,8 @@ public sealed class TrainingStep
     public string Title { get; set; } = "";
     /// <summary>Sentences for the reader, in order ("Click Create Block on the Insert tab.").</summary>
     public List<string> Instructions { get; set; } = [];
+    /// <summary>Optional, additive: where the action happens ("Ribbon › Home tab › Draw panel", "Command line", "Pick palette › Catalog tree › Cabinets › Base"). The Word file shows it under the heading in a smaller grey font; "" for none.</summary>
+    public string Where { get; set; } = "";
     public List<TrainingPicture> Pictures { get; set; } = [];
     /// <summary>Set for kind "mark".</summary>
     public TrainingCheckpoint? Checkpoint { get; set; }

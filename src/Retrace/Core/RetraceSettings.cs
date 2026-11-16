@@ -76,10 +76,10 @@ public sealed class RetraceSettings
     /// a push button, a palette control). On by default; off draws nothing on those pictures. Separate from <see cref="ShowClickArrows"/>, which is the training document's (Tdoc) and the live replay arrow.</summary>
     [JsonPropertyName("testDocArrows")] public bool TestDocArrows { get; set; } = true;
 
-    /// <summary>How the pictures of the test document (made while recording) and of the training document (Tdoc) are cropped: "classic" (the default: as they always were) or "smart" (zoom on what was clicked: a ribbon click shows the
-    /// button, its panel and the tab row, a palette click the whole palette with some surroundings, every picture a 1:1 crop; dialog pictures and pictures of the drawing stay as they are). See <see cref="SmartCrop"/>. An unknown value reads as "classic".</summary>
+    /// <summary>How the pictures of the test document (made while recording) and of the training document (Tdoc) are cropped: "smart" (the default: zoom on what was clicked: a ribbon click shows the
+    /// button, its panel and the tab row, a palette click the whole palette with some surroundings, every picture a 1:1 crop; dialog pictures and pictures of the drawing stay as they are) or "classic" (one picture of the whole AutoCAD window per step, never a second close-up). See <see cref="SmartCrop"/>. A value in the file that is none of the spellings reads as "classic"; a file without the key gets the default. A recording whose header has no screenshotMode was made with classic (<see cref="SettingsHeader.ModeOf"/>).</summary>
     [JsonPropertyName("screenshotMode")] public string ScreenshotMode { get => _screenshotMode; set => _screenshotMode = ScreenshotModes.Normalize(value); }
-    string _screenshotMode = ScreenshotModes.Classic;
+    string _screenshotMode = ScreenshotModes.Smart;
 
     /// <summary>Smart zoom is on (<see cref="ScreenshotMode"/> is "smart").</summary>
     [JsonIgnore] public bool SmartShots => _screenshotMode == ScreenshotModes.Smart;

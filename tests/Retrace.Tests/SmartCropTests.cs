@@ -255,11 +255,13 @@ public class SmartCropTests
     }
 
     [Fact]
-    public void The_setting_defaults_to_classic_and_reads_leniently_from_a_file()
+    public void The_setting_defaults_to_smart_and_reads_leniently_from_a_file()
     {
-        Assert.Equal("classic", new RetraceSettings().ScreenshotMode);
-        Assert.False(new RetraceSettings().SmartShots);
-        Assert.Equal("classic", JsonSerializer.Deserialize<RetraceSettings>("{}")!.ScreenshotMode);
+        Assert.Equal("smart", new RetraceSettings().ScreenshotMode);
+        Assert.True(new RetraceSettings().SmartShots);
+        Assert.Equal("smart", JsonSerializer.Deserialize<RetraceSettings>("{}")!.ScreenshotMode);   // a file without the key gets the default
+        Assert.Equal("classic", JsonSerializer.Deserialize<RetraceSettings>("{\"screenshotMode\":\"classic\"}")!.ScreenshotMode);   // a file that holds classic stays classic
+        Assert.False(JsonSerializer.Deserialize<RetraceSettings>("{\"screenshotMode\":\"classic\"}")!.SmartShots);
         var s = JsonSerializer.Deserialize<RetraceSettings>("{\"screenshotMode\":\"SMART\"}")!;
         Assert.Equal("smart", s.ScreenshotMode);
         Assert.True(s.SmartShots);
