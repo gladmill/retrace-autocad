@@ -26,16 +26,19 @@ static class PostZoom
     /// <summary>Zooms as the setting says. Returns a short text of what was done (for the log), or null when nothing was changed. Never throws.</summary>
     /// <param name="blocked">true when the zoom could not be tried now (the drawing is not the active one, a command or a modal window is open): a later try may work.
     /// False with a null result means the zoom does not apply (layout, nothing created, no usable extents, perspective view).</param>
-    public static string? Run(Document doc, string mode, long seed, out bool blocked)
+    /// <param name="atCommandEnd">called from the command-ended event of the command that made the objects: the command is still "in progress" for AutoCAD then, so that check is skipped (a dialog still blocks).</param>
+    /// <param name="requireCreated">setting recordZoom: zoom (extents too) only when a live model-space object has a handle at or above <paramref name="seed"/>; the post-test zoom leaves it off.</param>
+    public static string? Run(Document doc, string mode, long seed, out bool blocked, bool requireCreated = false, bool atCommandEnd = false)
     {
         blocked = false;
         try
         {
             if (mode == PostTestZoomModes.None) return null;
             if (!AcApp.DocumentManager.Cast<Document>().Contains(doc) || !ReferenceEquals(doc, AcApp.DocumentManager.MdiActiveDocument)) { blocked = true; return null; }
-            if (!ViewRestorer.Quiet(doc) || SdiDocs.IsModalOpen()) { blocked = true; return null; }
+            if ((!atCommandEnd && !ViewRestorer.Quiet(doc)) || SdiDocs.IsModalOpen()) { blocked = true; return null; }
             var db = doc.Database;
             if (!db.TileMode) return null;   // a layout is current: the view is left alone
+            if (requireCreated && !AnyCreated(db, seed)) return null;
             using var locked = doc.LockDocument();
             var ed = doc.Editor;
             Point3d lo, hi;
@@ -72,7 +75,17 @@ static class PostZoom
             ed.SetCurrentView(nv);
             return $"{what}, window {w.Width:0.###} x {w.Height:0.###} at {w.CenterX:0.###},{w.CenterY:0.###}";
         }
-        catch (Exception ex) { Log.Error("post-test zoom", ex); return null; }
+        catch (Exception ex) { Log.Error(requireCreated ? "record zoom" : "post-test zoom", ex); return null; }
+    }
+
+    /// <summary>True when a live model-space object has a handle at or above <paramref name="seed"/>. The handle seed is compared first: unchanged means nothing at all was made.</summary>
+    static bool AnyCreated(Database db, long seed)
+    {
+        if (seed <= 0) return false;
+        try { if (db.Handseed.Value == seed) return false; } catch { }
+        using var tr = db.TransactionManager.StartOpenCloseTransaction();
+        var ms = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForRead);
+        return RecordZoomRules.Created(seed, ms.Cast<ObjectId>().Select(id => id.Handle.Value));
     }
 
     /// <summary>The model-space object with the highest handle at or above <paramref name="seed"/> (erased ones are not listed), its extents in WCS. False when the test made
@@ -82,12 +95,9 @@ static class PostZoom
         lo = hi = Point3d.Origin; handle = "";
         using var tr = db.TransactionManager.StartOpenCloseTransaction();
         var ms = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForRead);
-        ObjectId best = ObjectId.Null; long bestH = -1;
-        foreach (ObjectId id in ms)
-        {
-            var h = id.Handle.Value;
-            if (h >= seed && h > bestH) { best = id; bestH = h; }
-        }
+        var ids = ms.Cast<ObjectId>().ToList();
+        var bestH = RecordZoomRules.Newest(seed, ids.Select(id => id.Handle.Value));
+        var best = bestH < 0 ? ObjectId.Null : ids.First(id => id.Handle.Value == bestH);
         if (best.IsNull) return false;
         try
         {

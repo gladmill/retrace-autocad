@@ -54,7 +54,7 @@ static class TdocTargets
     }
 
     /// <summary>Whether a ribbon item collection holds <paramref name="target"/>, also inside rows, split buttons and other item lists.</summary>
-    static bool Holds(System.Collections.IEnumerable? items, object target, int depth)
+    internal static bool Holds(System.Collections.IEnumerable? items, object target, int depth)
     {
         if (items == null || depth > 6) return false;
         foreach (var it in items)

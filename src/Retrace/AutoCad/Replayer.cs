@@ -244,6 +244,8 @@ sealed class Replayer
         }
         AcApp.EnterModal += OnEnterModal;
         AcApp.LeaveModal += OnLeaveModal;
+        _rz.Begin(_cfg.RecordZoom, _runBits);
+        if (RecordZoomRules.DifferenceNote(RecordZoomRules.FromHeader(events ?? Array.Empty<System.Text.Json.JsonElement>()), _cfg.RecordZoom) is { } rzNote) { _warnings.Add(rzNote); Log.Info(rzNote); }
         Hook(_doc);
         AcApp.DocumentManager.DocumentToBeDestroyed += OnDocGone;
         AcApp.DocumentManager.DocumentCreated += OnDocCreated;
@@ -269,6 +271,7 @@ sealed class Replayer
         catch (Exception ex) { Log.Info($"replay message not shown ({ex.Message}): {message.Trim()}"); }
     }
 
+    readonly RecordZoomDriver _rz = new();   // setting recordZoom: the view follows what each step's commands create
     bool _hooked;   // the events are on _doc now (Hook sets it, Unhook clears it)
 
     void Hook(Document d)
@@ -317,7 +320,7 @@ sealed class Replayer
         _promptUnhook.Clear();
     }
 
-    void OnLispStart(object? s, LispWillStartEventArgs e) { _lispRunning++; if (_clicked is { ChainClick: true }) { _pendingStart = false; _clicked = null; } }   // a LISP started: the click did something (its LISP may run for a while, and runs commands later)
+    void OnLispStart(object? s, LispWillStartEventArgs e) { _rz.Start(s as Document ?? _doc); _lispRunning++; if (_clicked is { ChainClick: true }) { _pendingStart = false; _clicked = null; } }   // a LISP started: the click did something (its LISP may run for a while, and runs commands later)
 
     /// <summary>The drawing being replayed in is closing: AutoCAD Electrical closes an untouched new drawing when it opens a project drawing or
     /// switches projects. Unhooked now; the next tick goes on in the active drawing (<see cref="_docGone"/>).</summary>
@@ -375,7 +378,7 @@ sealed class Replayer
         if (!SdiDocs.NeedsRehook(_hooked, SdiDocs.DbId(_doc), _hookedDb)) return;   // (not hooked now, e.g. after OnDocGone: always)
         Unhook(_doc); Hook(_doc);
     }
-    void OnLispEnd(object? s, EventArgs e) { if (_lispRunning > 0) _lispRunning--; }
+    void OnLispEnd(object? s, EventArgs e) { _rz.End(s as Document ?? _doc); RecordZoomAtEnd(s as Document ?? _doc, null); if (_lispRunning > 0) _lispRunning--; }
 
     /// <summary>An "open" step: opens the recorded drawing and replays the rest in it, the way the person went on in the drawing they
     /// opened. Already open and unchanged, it switches to it; open with unsaved changes it stops (they are not what the file holds, and
@@ -548,6 +551,7 @@ sealed class Replayer
         _stoppedForPerson = needsPerson;
         CursorBack();
         _timer.Stop();
+        _rz.Clear();
         if (completed && !errored) BasicCheck();   // the end of the test: the drawing is counted before anything is put back or closed
         if (!_userStopped && !needsPerson) Log.Safe("Replay post-test zoom", PostTestZoom);   // a no-op when it already ran; any verdict, if the drawing is quiet
         Log.Safe("Replay restore view", () => HandOffView(cancel: _userStopped || errored));
@@ -639,9 +643,9 @@ sealed class Replayer
         _dlgWindowNow = Native.ShownForegroundOfThisProcess(main, _win.Handle) != IntPtr.Zero || Native.DialogWindow(main, _win.Handle, _modal.Before) != IntPtr.Zero;
         if (_modal.Observe(_dlgWindowNow, DateTime.Now)) _dialog.ModalEntered();
     }
-    void OnCmdEnded(object? s, CommandEventArgs e) { if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) _dialog.CommandEnded(false, DateTime.Now); }
-    void OnCmdCancelled(object? s, CommandEventArgs e) { if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) _dialog.CommandEnded(true, DateTime.Now); }
-    void OnCmdFailed(object? s, CommandEventArgs e) { if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) _eventError ??= $"command {e.GlobalCommandName} failed"; }
+    void OnCmdEnded(object? s, CommandEventArgs e) { if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) { _rz.End(s as Document ?? _doc); RecordZoomAtEnd(s as Document ?? _doc, e.GlobalCommandName); _dialog.CommandEnded(false, DateTime.Now); } }
+    void OnCmdCancelled(object? s, CommandEventArgs e) { if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) { _rz.End(s as Document ?? _doc); RecordZoomAtEnd(s as Document ?? _doc, e.GlobalCommandName); _dialog.CommandEnded(true, DateTime.Now); } }
+    void OnCmdFailed(object? s, CommandEventArgs e) { if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) { _rz.End(s as Document ?? _doc); RecordZoomAtEnd(s as Document ?? _doc, e.GlobalCommandName); } if (!OwnCommands.IsOwnCommand(e.GlobalCommandName)) _eventError ??= $"command {e.GlobalCommandName} failed"; }
     void OnUnknown(object? s, UnknownCommandEventArgs e) => _unknown.Unknown(e.GlobalCommandName, DateTime.Now);
 
     /// <summary>The run stops for a person: <paramref name="why"/> goes on the step's result line and, after "needs a person: ", is the run's message.</summary>
@@ -677,6 +681,7 @@ sealed class Replayer
     void OnCmdStart(object? s, CommandEventArgs e)
     {
         if (OwnCommands.IsOwnCommand(e.GlobalCommandName)) return;
+        _rz.Start(s as Document ?? _doc);
         _unknown.Started(e.GlobalCommandName, DateTime.Now);
         _pendingStart = false; _clicked = null;
         _lastStarted = e.GlobalCommandName; _lastStartedAt = DateTime.Now;
@@ -811,6 +816,7 @@ sealed class Replayer
         if (_unknownWaiting) return;   // AutoCAD called a command the replay sent unknown; it may still start (CheckUnknown decides)
         if (!Settled()) return;
         RestoreView();   // the step is done: the person's view comes back
+        RecordZoomNow();   // setting recordZoom: after the command that made objects, before this step's picture and the next step
         if (_i >= _steps.Count) { if (_i > 0) NoteZoomSeed(); PostTestZoom(); }   // setting postTestZoom: before the end-of-test pictures (Tdoc's last picture is taken next)
         if (_tdoc != null && !_tdoc.AfterCommand(_i, DateTime.Now)) return;   // Tdoc: a command's last answers (after its dialog) have run: their picture
         if (_i >= _steps.Count) { Finish(true, false, "finished"); return; }
@@ -1362,6 +1368,27 @@ sealed class Replayer
         _zoomSeeds.Add((db, PostZoom.Seed(_doc)));
     }
 
+    /// <summary>Setting recordZoom: the drawing is quiet and the step's commands have ended: zoom if they made model-space objects (the same moments as while recording). The person's saved
+    /// view is not put back over the zoom.</summary>
+    void RecordZoomNow()
+    {
+        if (!_rz.Active) return;
+        if (_rz.Pump()) DropSavedView();
+    }
+
+    /// <summary>Setting recordZoom, from the command-ended event: the last command of a chain has ended, and the zoom is done at once (so it is no undo step of its own: a recorded UNDO still
+    /// undoes the command's work). What cannot be done there is left to <see cref="RecordZoomNow"/>.</summary>
+    void RecordZoomAtEnd(Document? doc, string? ending)
+    {
+        if (_rz.Active && _rz.EndNow(doc, ending, () => _sends.Any(x => x.Pending) || _deferred != null)) DropSavedView();
+    }
+
+    void DropSavedView()
+    {
+        if (_savedView == null) return;
+        _savedView.Dispose(); _savedView = null; _savedViewDoc = null; _savedViewDb = IntPtr.Zero;   // the person's own view is not put back over the zoom
+    }
+
     /// <summary>Setting postTestZoom, once, when the last step has run: zooms the model-space view (API, no command) so the end-of-test pictures show the result. Not while a command or
     /// dialog is active (tried again later), not in a layout, not in a drawing the test did not work in, not when no step ran; a failure is logged and changes nothing else.</summary>
     void PostTestZoom()
@@ -1378,6 +1405,9 @@ sealed class Replayer
         _postZoomApplied = true;
         if (_savedView != null) { _savedView.Dispose(); _savedView = null; _savedViewDoc = null; _savedViewDb = IntPtr.Zero; }   // the person's own view is not put back over the zoom
     }
+
+    /// <summary>Setting recordZoom is on (not none): a checkpoint picture shows the view the last command left, not the extents.</summary>
+    internal bool RecordZoomOn => _rz.Active;
 
     /// <summary>Tdoc: the last step is a checkpoint whose picture is about to be taken: the post-test zoom now. True when the setting's zoom was applied; false for "none" or when it
     /// was not applied (layout, nothing created, blocked): the caller then zooms to the extents as before.</summary>
