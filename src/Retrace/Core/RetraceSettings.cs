@@ -76,10 +76,24 @@ public sealed class RetraceSettings
     /// a push button, a palette control). On by default; off draws nothing on those pictures. Separate from <see cref="ShowClickArrows"/>, which is the training document's (Tdoc) and the live replay arrow.</summary>
     [JsonPropertyName("testDocArrows")] public bool TestDocArrows { get; set; } = true;
 
+    /// <summary>How the pictures of the test document (made while recording) and of the training document (Tdoc) are cropped: "classic" (the default: as they always were) or "smart" (zoom on what was clicked: a ribbon click shows the
+    /// button, its panel and the tab row, a palette click the whole palette with some surroundings, every picture a 1:1 crop; dialog pictures and pictures of the drawing stay as they are). See <see cref="SmartCrop"/>. An unknown value reads as "classic".</summary>
+    [JsonPropertyName("screenshotMode")] public string ScreenshotMode { get => _screenshotMode; set => _screenshotMode = ScreenshotModes.Normalize(value); }
+    string _screenshotMode = ScreenshotModes.Classic;
+
+    /// <summary>Smart zoom is on (<see cref="ScreenshotMode"/> is "smart").</summary>
+    [JsonIgnore] public bool SmartShots => _screenshotMode == ScreenshotModes.Smart;
+
     /// <summary>Post test: what the model-space view does when a replayed test has run its last step, before the end-of-test pictures: "none" (the default: the view is left as the test left it),
     /// "extents" (zoom to the drawing extents) or "lastEntity" (zoom to the newest object the test created in model space). Not while recording, not in a layout. An unknown value reads as "none".</summary>
     [JsonPropertyName("postTestZoom")] public string PostTestZoom { get => _postTestZoom; set => _postTestZoom = PostTestZoomModes.Normalize(value); }
     string _postTestZoom = PostTestZoomModes.None;
+
+    /// <summary>Test record execution: what the model-space view does after each command that created model-space objects, while recording and while replaying: "none" (the default: the view is
+    /// left as it is), "extents" (zoom to the drawing extents) or "lastEntity" (zoom to the newest object that command created). Done when the command (or the whole script or LISP chain) has ended
+    /// and the drawing is quiet, through the view, never a ZOOM command. An unknown value reads as "none".</summary>
+    [JsonPropertyName("recordZoom")] public string RecordZoom { get => _recordZoom; set => _recordZoom = RecordZoomRules.Normalize(value); }
+    string _recordZoom = PostTestZoomModes.None;
 
     /// <summary>Where the Retrace ribbon tab goes: "" / "afterHome" (right of Home), "first", "last" or "after:&lt;tab id or title&gt;".</summary>
     [JsonPropertyName("ribbonTabPosition")] public string RibbonTabPosition { get; set; } = "";

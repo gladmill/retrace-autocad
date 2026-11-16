@@ -102,6 +102,7 @@ public sealed class Recorder
     bool _inOwnCmd;
     int _ownModal;   // dialogs Retrace's own commands opened (Settings, the test picker) that are open now: not part of the test
     Matrix3d _ucs = Matrix3d.Identity;
+    readonly RecordZoomDriver _rz = new();   // setting recordZoom: the view follows what each command creates (zoomed before that command's result picture)
     ViewSpec? _view;   // the command document's active viewport view: read when a command starts and by the timer while a prompt is open (never in a prompt handler); stored with picks and clicks only while still current
     string? _viewKey;  // ViewControl.ViewKey() at that read: a plain system variable read in the result handler tells whether the view on screen is still this one
     Document? _cmdDocument;   // the document of the running command
@@ -134,6 +135,7 @@ public sealed class Recorder
             ["workspace"] = Try(() => AcApp.GetSystemVariable("WSCURRENT")?.ToString()),
             ["plugin"] = "Retrace " + (typeof(Recorder).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false).OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion ?? "?"),
         };
+        header[RecordZoomRules.HeaderField] = RetraceSettings.Load().RecordZoom;   // additive: which view setting this recording was made with (a replay notes a difference)
         // a recording made in a new drawing: the template new drawings start from here, so RETRACERUN can start its drawing from the same one (it holds the layers etc.)
         Log.Safe("header template", () =>
         {
@@ -309,6 +311,7 @@ public sealed class Recorder
         _pal.Clear(); NativePalette.Clear(); PaletteClickDetect.NewSession();
         _pal.Enabled = settings.DialogValues;
         _pal.Pictures = settings.Screenshots;
+        _pal.Smart = _shots.Smart = settings.Screenshots && settings.SmartShots;   // screenshotMode smart: palette crops with surroundings, a ribbon click shows its tab row and panel
         _dlg.Clock = () => _w?.ElapsedMs ?? 0;
         _dlg.Confirmed = (n, h, pt, rect) =>
         {
@@ -332,6 +335,7 @@ public sealed class Recorder
         _menu.Start();
         _dlg.NestedOpened = e => { var n = 0; Log.Safe("nested dialog", () => n = EmitNestedOpened(e)); return n; };
         _dlg.NestedClosed = r => Log.Safe("nested dialog closed", () => { EmitDialogValues(r); Emit("modal_leave", CurDoc()); });
+        _rz.Begin(settings.RecordZoom, Ask.ScriptOrLispBits());
         _shots.Arrows = settings.TestDocArrows;   // the test document's own setting (the training document's showClickArrows is not read here)
         ButtonNaming.NewSession();
         _shots.Begin(w.Path, enabled, MainWindowHandle(), () => _modalOpen > 0, (n, file, what) =>
@@ -374,11 +378,25 @@ public sealed class Recorder
             if (key == null || k == null || k != key) Emit("view_stale", _cmdDoc, ("for", n));
     }
 
+    /// <summary>Setting recordZoom: the zoom of a command that created objects comes before its result picture. The pictures wait for it while it is about to happen (at most a second).</summary>
+    long _holdSince;
+
+    void PumpShots(long nowMs)
+    {
+        if (_rz.Active)
+        {
+            Log.Safe("record zoom", () => _rz.Pump(() => CheckPendingViews(ViewControl.ViewKey())));   // picks still waiting for their view check are judged against the view they were made in
+            if (_rz.Waiting) { if (_holdSince == 0) _holdSince = nowMs; if (nowMs - _holdSince < RecordZoomDriver.HoldMs) return; }   // a picture waits for the zoom a second at most
+            else _holdSince = 0;
+        }
+        _shots.Pump(nowMs);
+    }
+
     void StartShotTimer()
     {
         if (_shotTimer != null) return;
         var t = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(120) };
-        t.Tick += (_, _) => Log.Safe("shot timer", () => { var w = _w; if (w != null) { _shots.Pump(w.ElapsedMs); _dlg.Tick(w.ElapsedMs); _menu.Tick(w.ElapsedMs); _pal.Tick(w.ElapsedMs); NativeTick(false); var vk = _pendingViews.Count > 0 || _kinds.Count > 0 ? ViewControl.ViewKey() : null; CheckPendingViews(vk); RefreshView(vk); } });
+        t.Tick += (_, _) => Log.Safe("shot timer", () => { var w = _w; if (w != null) { PumpShots(w.ElapsedMs); _dlg.Tick(w.ElapsedMs); _menu.Tick(w.ElapsedMs); _pal.Tick(w.ElapsedMs); NativeTick(false); var vk = _pendingViews.Count > 0 || _kinds.Count > 0 ? ViewControl.ViewKey() : null; CheckPendingViews(vk); RefreshView(vk); } });
         _shotTimer = t;
         t.Start();
     }
@@ -429,6 +447,7 @@ public sealed class Recorder
             _modalTimer = null;
             _shotTimer?.Stop();
             _shotTimer = null;
+            _rz.Clear();
             _dlg.Clear(); _modals.Clear(); _episodes.Clear();   // also removes the dialog message hook
             _menu.Stop();
             _pal.Clear(); NativePalette.Clear();
@@ -440,7 +459,7 @@ public sealed class Recorder
         if (_hookedRibbon == null) TryHookRibbon();
         if (_w == null) return;
         if (_shots.NeedsMainWindow) Log.Safe("main window", () => _shots.SetMainWindow(MainWindowHandle()));
-        Log.Safe("shot idle", () => _shots.Pump(_w.ElapsedMs));
+        Log.Safe("shot idle", () => PumpShots(_w.ElapsedMs));
         if (_needSnap.Count > 0) Log.Safe("first behavior snapshot", TakeNeededSnapshot);
     }
 
@@ -542,7 +561,14 @@ public sealed class Recorder
             _lastRibbonConsumed = false;
             // the picture of the click is taken now, with the button under the cursor and before the command's dialog covers the screen; the picture the scheduler would take 200 ms later is then not needed
             ShotService.Picture? clickPic = null;
-            if (_shots.Enabled) { var main = MainWindowHandle(); clickPic = ShotService.CaptureWindow(main)?.Pic; }
+            bool smartPic = false;
+            if (_shots.Enabled)
+            {
+                var main = MainWindowHandle();
+                // smart zoom: the button, its panel and the tab row, as a 1:1 crop (SmartCrop); when its rectangles cannot be read the whole ribbon, and without a ribbon the window as before
+                if (_shots.Smart) { clickPic = SmartShots.RibbonPicture(item.Id, e.Parent?.Id, panel, main); smartPic = clickPic != null; }
+                clickPic ??= ShotService.CaptureWindow(main)?.Pic;
+            }
             var n0 = Emit("ribbon", CurDoc(),
                 ("id", item.Id), ("text", RibbonMap.Label(item)), ("name", item.Name),
                 ("macro", macro), ("itemType", item.GetType().Name),
@@ -553,8 +579,8 @@ public sealed class Recorder
             if (n0 > 0 && clickPic != null)
             {
                 _shots.Suppress(n0);
-                if (_shots.Arrows && TdocTargets.RibbonItemRect(item.Id) is { Panel: false } hit) _shots.NoteTarget(n0, hit.Rect.Left, hit.Rect.Top, hit.Rect.Right, hit.Rect.Bottom);   // the button itself; none when it is not shown
-                _shots.Write(n0, "ribbon", clickPic, "window");
+                if (_shots.Arrows && (smartPic ? SmartShots.ItemRect(item.Id, e.Parent?.Id, markOnly: true) : TdocTargets.RibbonItemRect(item.Id) is { Panel: false } hit0 ? new Core.PxRect(hit0.Rect.Left, hit0.Rect.Top, hit0.Rect.Right, hit0.Rect.Bottom) : null) is { } hit) _shots.NoteTarget(n0, hit.Left, hit.Top, hit.Right, hit.Bottom);   // the button itself; none when it is not shown
+                _shots.Write(n0, "ribbon", clickPic, "window", keepSize: smartPic);
             }
         });
     }
@@ -625,6 +651,7 @@ public sealed class Recorder
         var name = e.GlobalCommandName;
         if (IsOurs(name)) { _sel.OwnCommandStart(_ctxCmdDepth > 0 || _ctxLispDepth > 0); _inOwnCmd = true; return; }   // (typed inside a prompt, the keys of 'RETRACEMARK are in the selection buffer: unusable) leaves _openPrompts alone: an own command typed transparently ('RETRACESTATUS) runs inside the user's prompt
         _kinds.Clear();
+        _rz.Start(s as Document);
         _sel.CommandStart(_ctxCmdDepth > 0 || _ctxLispDepth > 0);   // a transparent command inside a prompt spoils the outer selection's text
         _cmdDoc = DocName(s as Document);
         _claimedTick = _inputTick; // the click/Enter that started the command answers no prompt
@@ -635,9 +662,9 @@ public sealed class Recorder
         Emit("cmd_start", DocName(s as Document), ("command", name), ("origin", origin), ("via", via), ("script", ScriptActive()));
     });
 
-    void OnCmdEnded(object? s, CommandEventArgs e) => Log.Safe("CommandEnded", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _kinds.Clear(); Emit("cmd_end", DocName(s as Document), ("command", e.GlobalCommandName)); TakePendingMark(); } });
-    void OnCmdCancelled(object? s, CommandEventArgs e) => Log.Safe("CommandCancelled", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _kinds.Clear(); Emit("cmd_cancel", DocName(s as Document), ("command", e.GlobalCommandName)); TakePendingMark(); } });
-    void OnCmdFailed(object? s, CommandEventArgs e) => Log.Safe("CommandFailed", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _kinds.Clear(); Emit("cmd_fail", DocName(s as Document), ("command", e.GlobalCommandName)); TakePendingMark(); } });
+    void OnCmdEnded(object? s, CommandEventArgs e) => Log.Safe("CommandEnded", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _kinds.Clear(); _rz.End(s as Document); _rz.EndNow(s as Document, e.GlobalCommandName, null, () => CheckPendingViews(ViewControl.ViewKey())); Emit("cmd_end", DocName(s as Document), ("command", e.GlobalCommandName)); TakePendingMark(); } });
+    void OnCmdCancelled(object? s, CommandEventArgs e) => Log.Safe("CommandCancelled", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _kinds.Clear(); _rz.End(s as Document); _rz.EndNow(s as Document, e.GlobalCommandName, null, () => CheckPendingViews(ViewControl.ViewKey())); Emit("cmd_cancel", DocName(s as Document), ("command", e.GlobalCommandName)); TakePendingMark(); } });
+    void OnCmdFailed(object? s, CommandEventArgs e) => Log.Safe("CommandFailed", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _kinds.Clear(); _rz.End(s as Document); _rz.EndNow(s as Document, e.GlobalCommandName, null, () => CheckPendingViews(ViewControl.ViewKey())); Emit("cmd_fail", DocName(s as Document), ("command", e.GlobalCommandName)); TakePendingMark(); } });
 
     /// <summary>A command ended: a checkpoint asked for during it is taken now, once AutoCAD has finished ending it (MarkFromKey waits again if
     /// another command is still running).</summary>
@@ -651,12 +678,13 @@ public sealed class Recorder
     // startup: LISP AutoCAD runs while a drawing opens (no click or key since it opened), not the person's (DrawingOpen)
     void OnLispStart(object? s, LispWillStartEventArgs e) => Log.Safe("LispWillStart", () =>
     {
+        _rz.Start(s as Document);
         _sel.LispStart(_ctxCmdDepth > 0 || _ctxLispDepth > 0);   // its own keys come before an ssget; typed inside a prompt (a replay's (handent ..)) it spoils the text
         _cmdDoc = DocName(s as Document);
         Emit("lisp_start", _cmdDoc, ("firstLine", e.FirstLine), ("startup", _startup.IsStartupLisp(_w?.ElapsedMs ?? 0, _lastInputMs)), ("script", ScriptActive()));
     });
-    void OnLispEnded(object? s, EventArgs e) => Log.Safe("LispEnded", () => Emit("lisp_end", DocName(s as Document)));
-    void OnLispCancelled(object? s, EventArgs e) => Log.Safe("LispCancelled", () => Emit("lisp_cancel", DocName(s as Document)));
+    void OnLispEnded(object? s, EventArgs e) => Log.Safe("LispEnded", () => { _rz.End(s as Document); _rz.EndNow(s as Document, null, null, () => CheckPendingViews(ViewControl.ViewKey())); Emit("lisp_end", DocName(s as Document)); });
+    void OnLispCancelled(object? s, EventArgs e) => Log.Safe("LispCancelled", () => { _rz.End(s as Document); _rz.EndNow(s as Document, null, null, () => CheckPendingViews(ViewControl.ViewKey())); Emit("lisp_cancel", DocName(s as Document)); });
 
     /// <summary>"ribbon" if a ribbon click happened within 2 s and its macro contains the command name (or it has no macro
     /// and the command started within 1 s), else "typed/other".</summary>
@@ -971,7 +999,10 @@ public sealed class Recorder
         if (_shots.Arrows && (itemRect ?? ClickRects.Of(hwnd, lParam, pictureBox)) is { } r) _shots.NoteTarget(n, r.Left, r.Top, r.Right, r.Bottom);
         int modalAtClick = _modalOpen;   // a modal state that was already open at the click does not cover the palette; one that opened after it does
         // a click that opens a modal dialog: the palette is under it by then (taken at the EnterModal, or the one from before the click is used)
-        _shots.DeferRect(n, "palette-closeup", "palette", w.ElapsedMs + ShotRules.ClickSettleMs, () => _modalOpen <= modalAtClick && PaletteReveal.PictureRect(at.Page) is { } pr ? (pr.Left, pr.Top, pr.Right, pr.Bottom) : null, before, null, at.Page);
+        bool smart = _shots.Smart;
+        // smart zoom: this one picture (the palette and its surroundings) is the click's picture; the window picture the scheduler would take is not needed when this one is certain (the one kept before the click, or the palette shows now)
+        if (smart && (before != null || SmartShots.PaletteArea(at.Page, true) != null)) _shots.Suppress(n);
+        _shots.DeferRect(n, "palette-closeup", "palette", w.ElapsedMs + ShotRules.ClickSettleMs, () => _modalOpen <= modalAtClick ? SmartShots.PaletteArea(at.Page, smart) : null, before, null, at.Page);
     }
 
     /// <summary>A context menu item was chosen (<see cref="MenuWatch"/>): in a tracked dialog it is written as a click of that dialog; in a palette the values changed so far go first, then the
@@ -984,7 +1015,7 @@ public sealed class Recorder
         EmitPalette(_pal.Flush(w.ElapsedMs, drop: false), withPicture: false);
         var n = Emit("context_menu", CurDoc(), new (string, object?)[] { ("palette", armed.Spot.Palette), ("set", armed.Spot.Set) }.Concat(choice.ToFields()).ToArray());
         _shots.Request(ShotRules.Palette(n, w.ElapsedMs));   // the window, as for a palette click, and the palette's close-up taken at the right-click
-        if (armed.Picture != null) _shots.Write(n, "palette-closeup", armed.Picture, "palette");
+        if (armed.Picture != null) { if (_shots.Smart) _shots.Suppress(n); _shots.Write(n, "palette-closeup", armed.Picture, "palette"); }   // smart zoom: the crop is the one picture
         _lastPaletteT = w.ElapsedMs; _lastPaletteTick = _inputTick; _lastPaletteButton = choice.ButtonText; _lastPaletteConsumed = false;
     }
 
@@ -1030,7 +1061,7 @@ public sealed class Recorder
         if (v == null) return;
         var fields = FieldsJson(v.Changes);
         var n = Emit("palette_values", CurDoc(), ("palette", v.Where.Palette), ("set", v.Where.Set), ("source", v.Source), ("fields", fields), ("read", v.Read));
-        if (withPicture && v.Picture != null) _shots.Write(n, "palette-closeup", v.Picture, "palette");
+        if (withPicture && v.Picture != null) { if (_shots.Smart) _shots.Suppress(n); _shots.Write(n, "palette-closeup", v.Picture, "palette"); }
     }
 
     /// <summary>true if a click/key press within 500 ms led to this result and no earlier result claimed it. Sets <see cref="_claimedBy"/>.</summary>

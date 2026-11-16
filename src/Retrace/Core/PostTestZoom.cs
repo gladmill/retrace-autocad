@@ -16,6 +16,9 @@ public static class PostTestZoomModes
     /// ("last", "lastobject", "zoomextents") also work. Anything else, or null, is <see cref="None"/>.</summary>
     public static string Normalize(string? text) => Normalize(text, out _);
 
+    /// <summary>True when the text is one of the spellings.</summary>
+    public static bool IsKnown(string? text) { Normalize(text, out var k); return k; }
+
     /// <summary>As <see cref="Normalize(string?)"/>; <paramref name="known"/> is false when the text is none of the spellings (it then reads as none).</summary>
     public static string Normalize(string? text, out bool known)
     {

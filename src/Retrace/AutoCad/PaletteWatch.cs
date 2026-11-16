@@ -75,6 +75,8 @@ sealed class PaletteWatch
     public bool Enabled { get; set; }
     /// <summary>Keep close-up pictures of the palette (setting screenshots).</summary>
     public bool Pictures { get; set; }
+    /// <summary>Smart zoom (setting screenshotMode): the palette pictures show the whole palette with its surroundings (<see cref="SmartShots.PaletteArea"/>).</summary>
+    public bool Smart { get; set; }
 
     [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
     [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
@@ -212,7 +214,7 @@ sealed class PaletteWatch
     {
         if (!Pictures) return null;
         if (_cur != null && _cur.Where.Page == spot.Page) { TakePicture(_cur); return _cur.Picture; }
-        return PaletteReveal.PictureRect(spot.Page) is { } r ? ShotService.CaptureRect(r.Left, r.Top, r.Right, r.Bottom, spot.Page) : null;
+        return SmartShots.PaletteArea(spot.Page, Smart) is { } r ? ShotService.CaptureRect(r.L, r.T, r.R, r.B, spot.Page) : null;
     }
 
     /// <summary>Timer tick: re-read the palette being worked in, at most every <see cref="ThrottleMs"/>.</summary>
@@ -245,8 +247,8 @@ sealed class PaletteWatch
     /// the time its step's screenshot is taken, so the step gets this one too.</summary>
     void TakePicture(Watched w)
     {
-        if (!Pictures || PaletteReveal.PictureRect(w.Where.Page) is not { } r) return;
-        if (ShotService.CaptureRect(r.Left, r.Top, r.Right, r.Bottom, w.Where.Page) is { } p) { w.Picture = p; w.PictureOf = w.Last; }
+        if (!Pictures || SmartShots.PaletteArea(w.Where.Page, Smart) is not { } r) return;
+        if (ShotService.CaptureRect(r.L, r.T, r.R, r.B, w.Where.Page) is { } p) { w.Picture = p; w.PictureOf = w.Last; }
     }
 
     void Begin(Spot spot, long nowMs)

@@ -41,6 +41,27 @@ sealed class ShotService
     /// <summary>The window picture the scheduler would take for event <paramref name="n"/> (the ribbon click's) is not needed: a picture was taken at the click itself.</summary>
     public void Suppress(int n) { if (n > 0) _suppressed.Add(n); }
 
+    /// <summary>Smart zoom (setting screenshotMode): a palette click or palette values step gets its one picture from the palette's crop, so the window picture the scheduler would take for it is not needed
+    /// (<see cref="Suppress"/>, only when the crop is certain to be written; the caller checks).</summary>
+    public bool Smart { get; set; }
+
+    /// <summary>The work area of the monitor a window is mostly on, as a logical rectangle; null when it cannot be read.</summary>
+    public static Core.PxRect? WorkAreaOf(IntPtr hwnd) => hwnd != IntPtr.Zero && Win.WorkArea(hwnd) is { } w ? new Core.PxRect(w.Left, w.Top, w.Right, w.Bottom) : null;
+
+    /// <summary>The visible frame of a window as a logical rectangle (the work area only with <paramref name="workArea"/>); null when it is gone, hidden or minimized.</summary>
+    public static Core.PxRect? WindowRect(IntPtr hwnd, bool workArea = false)
+    {
+        try
+        {
+            if (hwnd == IntPtr.Zero || Win.IsIconic(hwnd) || !Win.IsWindowVisible(hwnd)) return null;
+            var b = Win.Bounds(hwnd);
+            if (workArea && Win.WorkArea(hwnd) is { } wa)
+                b = new Win.RECT { Left = Math.Max(b.Left, wa.Left), Top = Math.Max(b.Top, wa.Top), Right = Math.Min(b.Right, wa.Right), Bottom = Math.Min(b.Bottom, wa.Bottom) };
+            return b.Width > 0 && b.Height > 0 ? new Core.PxRect(b.Left, b.Top, b.Right, b.Bottom) : null;
+        }
+        catch (Exception ex) { Log.Error("window rect", ex); return null; }
+    }
+
     /// <summary>The frame and the arrow for event <paramref name="n"/>'s picture of the screen rectangle <paramref name="src"/> saved at <paramref name="w"/> x <paramref name="h"/>: around its noted rectangle, else
     /// the arrow at its noted point.</summary>
     (AnnotationBox? Box, Func<byte[], ArrowLine?>? Arrow) MarksFor(int n, Core.PxRect src, int w, int h)
@@ -107,6 +128,8 @@ sealed class ShotService
                 }
                 pic ??= d.Held;
                 if (pic != null) Write(d.N, d.Kind, pic, d.What);
+                else if (d.Kind == "palette-closeup" && ShotRules.NeedsWindowFallback(_suppressed.Contains(d.N), false) && CaptureWindow(_main, workArea: true) is { } win)
+                    { Log.Info($"shot {d.N}: no palette close-up could be taken (collapsed, hidden or covered), the window picture is taken instead"); Write(d.N, "palette", win.Pic, "window"); }   // smart zoom: the window picture that was left out for this step
             }
             catch (Exception ex) { Log.Error($"shot {d.N} {d.Kind}", ex); }
         }
@@ -180,7 +203,7 @@ sealed class ShotService
     {
         IntPtr hwnd;
         string what;
-        if (r.Kind == "ribbon" && _suppressed.Contains(r.N)) return;   // the picture was taken when the button was clicked
+        if (r.Kind is "ribbon" or "palette" && _suppressed.Contains(r.N)) return;   // the picture was taken when the button was clicked (ribbon), or is the palette's own crop (smart zoom)
         if (r.Target == ShotTarget.Dialog)
         {
             if (!_modalOpen()) return;                       // the dialog is already gone: the screen shows something else
@@ -253,13 +276,14 @@ sealed class ShotService
     }
 
     /// <summary>Writes a picture taken earlier as the `shot` of event <paramref name="n"/> (what: "palette").</summary>
-    public void Write(int n, string kind, Picture p, string what)
+    /// <param name="keepSize">smart zoom: the picture is a 1:1 crop and is never scaled down, whatever its size</param>
+    public void Write(int n, string kind, Picture p, string what, bool keepSize = false)
     {
         if (!_enabled || n <= 0) return;
         var path = Path.Combine(_folder, ShotNaming.FileName(n, kind));
         var rel = ShotNaming.RelativePathFor(_sessionPath, n, kind);
         var onShot = _onShot;
-        var (nw, nh) = what == "window" ? ShotImage.FitSize(p.Width, p.Height) : (p.Width, p.Height);
+        var (nw, nh) = what == "window" && !keepSize ? ShotImage.FitSize(p.Width, p.Height) : (p.Width, p.Height);
         var (box, arrow) = p.HasOrigin ? MarksFor(n, new Core.PxRect(p.Left, p.Top, p.Left + p.SrcWidth, p.Top + p.SrcHeight), nw, nh) : (null, null);
         var t = Task.Run(() =>
         {

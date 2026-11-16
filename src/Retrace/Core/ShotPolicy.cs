@@ -57,6 +57,10 @@ public static class ShotRules
     /// <summary>The window picture of a palette step that ends in a context menu choice (`context_menu` in a palette), like a palette click's.</summary>
     public static ShotRequest Palette(int n, long nowMs) => new(n, "palette", ShotTarget.Window, nowMs + SettleMs);
 
+    /// <summary>Smart zoom: a palette step whose window picture was left out because its close-up was expected must get one anyway when the close-up turns out to be impossible (the click collapsed an auto-hide palette,
+    /// hid it, or opened a modal dialog over it, and nothing was kept before the click): the window picture is then taken in its place.</summary>
+    public static bool NeedsWindowFallback(bool windowSuppressed, bool haveCloseup) => windowSuppressed && !haveCloseup;
+
     /// <summary>The dialog picture: for `modal_title` when one arrived, else for `modal_enter`.</summary>
     public static ShotRequest Dialog(int n, long nowMs) => new(n, "dialog", ShotTarget.Dialog, nowMs + DialogSettleMs);
 }

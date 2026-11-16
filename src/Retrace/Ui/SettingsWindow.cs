@@ -34,11 +34,24 @@ sealed class SettingsWindow : Window
     readonly CheckBox _review = new() { Content = "After Stop, show the checkpoints so you can rename them", Margin = new Thickness(0, 6, 0, 0), ToolTip = "Opens the checkpoints window when a recording with checkpoints stops. RETRACECHECKPOINTS opens it any time." };
     readonly CheckBox _statusBoard = new() { Content = "Write Retrace's state to the AutoCAD status board", Margin = new Thickness(0, 6, 0, 0), ToolTip = "retrace-<acad pid>.json in %ProgramData%\\Gladmill\\acad-status (or the folder ACAD_STATUS_DIR names): what Retrace is doing, refreshed every few seconds. Off: nothing is written." };
     readonly ComboBox _postZoom = new() { Margin = new Thickness(0, 4, 0, 0), ToolTip = "Applies when a replay (Run test, Step, a suite, Tdoc) has run its last step and model space is current: the view is set before the end-of-test pictures. Never while recording, never in a layout, and it never changes the verdict." };
+    readonly ComboBox _recordZoom = new() { Margin = new Thickness(0, 4, 0, 0), ToolTip = "Applies while recording and while a replay runs (Run test, Step, a suite, Tdoc): after a command that created model-space objects has ended and the drawing is quiet, the view is set (never during a command, never in a layout), so the pictures show what was just made. It writes nothing to the recording and never changes a verdict. A drawing you zoom this way counts as modified." };
+    static readonly (string Value, string Text)[] RecordZoomChoices =
+    {
+        (PostTestZoomModes.None, "While a test runs: leave the view as it is"),
+        (PostTestZoomModes.Extents, "While a test runs: zoom to extents after each command that creates objects"),
+        (PostTestZoomModes.LastEntity, "While a test runs: zoom to the last created object after each command"),
+    };
     static readonly (string Value, string Text)[] PostZoomChoices =
     {
         (PostTestZoomModes.None, "After a test: leave the view as it is"),
         (PostTestZoomModes.Extents, "After a test: zoom to extents"),
         (PostTestZoomModes.LastEntity, "After a test: zoom to the last created object"),
+    };
+    readonly ComboBox _shotMode = new() { Margin = new Thickness(0, 4, 0, 0), ToolTip = "Applies to the pictures of the test document (made while recording) and of the training document (Tdoc). Smart zoom: a ribbon click shows the clicked button, its panel and the tab row with its neighbouring tabs; a palette click shows the whole palette with some surroundings; every picture is a true-size crop (never scaled), so text and buttons look the same size throughout. Dialog pictures and pictures of the drawing stay as they are." };
+    static readonly (string Value, string Text)[] ShotModeChoices =
+    {
+        (ScreenshotModes.Classic, "Pictures: as they are now"),
+        (ScreenshotModes.Smart, "Pictures: smart zoom on what was clicked"),
     };
     readonly CheckBox _docx = new() { Content = "Also write Word (.docx)", Margin = new Thickness(0, 6, 0, 0), ToolTip = "steps.docx next to steps.md, made when a recording is stopped." };
     readonly CheckBox _xlsx = new() { Content = "Also write Excel (.xlsx)", Margin = new Thickness(0, 6, 0, 0), ToolTip = "steps.xlsx next to steps.md: one row per step with a PASS / FAIL column." };
@@ -148,7 +161,13 @@ sealed class SettingsWindow : Window
 
         foreach (var (_, text) in PostZoomChoices) _postZoom.Items.Add(text);
         _postZoom.SelectedIndex = Math.Max(0, Array.FindIndex(PostZoomChoices, c => c.Value == current.PostTestZoom));
+        foreach (var (_, text) in ShotModeChoices) _shotMode.Items.Add(text);
+        _shotMode.SelectedIndex = Math.Max(0, Array.FindIndex(ShotModeChoices, c => c.Value == current.ScreenshotMode));
+        root.Children.Add(new GroupBox { Header = "Screenshot configuration", Margin = new Thickness(0, 12, 0, 0), Content = new StackPanel { Margin = new Thickness(6), Children = { _shotMode } } });
         root.Children.Add(new GroupBox { Header = "Post test", Margin = new Thickness(0, 12, 0, 0), Content = new StackPanel { Margin = new Thickness(6), Children = { _postZoom } } });
+        foreach (var (_, text) in RecordZoomChoices) _recordZoom.Items.Add(text);
+        _recordZoom.SelectedIndex = Math.Max(0, Array.FindIndex(RecordZoomChoices, c => c.Value == current.RecordZoom));
+        root.Children.Add(new GroupBox { Header = "Test record execution", Margin = new Thickness(0, 12, 0, 0), Content = new StackPanel { Margin = new Thickness(6), Children = { _recordZoom } } });
 
         root.Children.Add(BuildBehaviorGroup(current));
         root.Children.Add(BuildBasicCheckGroup(current));
@@ -396,6 +415,8 @@ sealed class SettingsWindow : Window
         _docx.IsChecked = false;
         _xlsx.IsChecked = false;
         _postZoom.SelectedIndex = 0;
+        _recordZoom.SelectedIndex = 0;
+        _shotMode.SelectedIndex = 0;
         _tabPos.SelectedIndex = 0;
         var dflt = new RetraceSettings();
         _autoDetect.IsChecked = dflt.AutoDetectBehavior;
@@ -457,8 +478,10 @@ sealed class SettingsWindow : Window
         s.ShowClickArrows = _showClickArrows.IsChecked == true;
         s.TestDocArrows = _testDocArrows.IsChecked == true;
         s.ExportDocx = _docx.IsChecked == true;
+        s.RecordZoom = _recordZoom.SelectedIndex >= 0 ? RecordZoomChoices[_recordZoom.SelectedIndex].Value : PostTestZoomModes.None;
         s.PostTestZoom = _postZoom.SelectedIndex >= 0 ? PostZoomChoices[_postZoom.SelectedIndex].Value : PostTestZoomModes.None;
         s.ExportXlsx = _xlsx.IsChecked == true;
+        s.ScreenshotMode = _shotMode.SelectedIndex >= 0 ? ShotModeChoices[_shotMode.SelectedIndex].Value : ScreenshotModes.Classic;
         var pos = _tabPos.SelectedIndex >= 0 ? _tabPosValues[_tabPos.SelectedIndex] : RibbonTabPosition.AfterHome;
         s.RibbonTabPosition = pos == RibbonTabPosition.AfterHome ? "" : pos;
         s.CheckpointKey = _keyValue;

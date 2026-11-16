@@ -74,6 +74,7 @@ Nothing in the plugin rejects a schema value; readers ignore fields they do not 
 | `locale` | `LOCALE` system variable |
 | `workspace` | `WSCURRENT` system variable |
 | `plugin` | `Retrace` and its informational version |
+| `recordZoom` | optional, additive: the setting `recordZoom` (`none`, `extents`, `lastEntity`) the recording was made with. Older recordings lack it. A replay with another value writes a note to the log and the result's warnings; the events themselves do not depend on it |
 | `template` | the QNEW template of the profile (Options > Files > Template Settings), only when the recording started in a new, unsaved drawing. A hint, not a promise: it is the QNEW setting of the recording machine, not necessarily the template the drawing really came from. RETRACERUN takes it, this machine's QNEW template and `acad.dwt` as candidates (a file that exists) and starts from the one whose layer names best match the recording's start state (`Core/TemplateChoice.Pick`). Absent in older recordings |
 
 ## Events (all other lines)
@@ -138,6 +139,8 @@ Pictures of clicks (additive; an old recording has none and its steps.md is writ
 - a click on a tree / list view / list box item in a dialog is a `dialog_pick` event whose `shot` (`what` `dialog-click`) is taken `ShotRules.ClickSettleMs` (300 ms) after the click, or at once when the next click or OK comes first;
 - a `dialog_click` of a push button also gets a `shot` (`what` `dialog-click`): the dialog as it was when the button came up (before its handler ran) is held, and replaced by one taken 300 ms later when the dialog is still there and enabled; a button that closed the dialog or opened another over it keeps the press-time picture;
 - a palette click's close-up (`what` `palette`) is taken 300 ms after the click (it used to be the one kept while the person worked, from before the click); that one is the fallback when the palette is gone by then.
+
+With the setting `screenshotMode` = `smart` (default `classic`; README, Settings group "Screenshot configuration") the same `shot` events point at different pictures, no new event or field: a ribbon click's picture (`what` `window`, `NNN-ribbon.png`) is a true-size crop of the clicked button, its panel and the tab row (it is never scaled), and a palette click or palette values step has the one `palette` picture, the whole palette with some surroundings, without the `window` picture of the same step. A recording made in either mode replays and exports the same way.
 steps.md writes each click as its own bullet in click order with its picture under it (`StepWording`): ``Select `Root › Child` in the tree``, ``Select `Base 2` in the list``, `Click **Place**`; a value a picked item set is not repeated with the click after it. A control whose only name is `#<id>` is "the tree" / "the list" in the words (`ControlWords`; the recording keeps the id).
 
 ### Dialog values (`dialog_values`)

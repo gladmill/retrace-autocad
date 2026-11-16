@@ -41,6 +41,7 @@ sealed class TdocCapture : IDisposable
     readonly PicGate _stepGate = new(), _afterGate = new();
 
     // the dialog being waited for
+    readonly bool _smart;   // setting screenshotMode = smart: ribbon and palette pictures are 1:1 crops (SmartCrop)
     readonly bool _arrows;   // setting showClickArrows: the picture points at the control the step clicks or fills
     int _dlgStep = -1, _dlgDone = -1;
     DateTime _dlgBegin, _dlgHidden;
@@ -60,7 +61,7 @@ sealed class TdocCapture : IDisposable
     {
         Test = test; _steps = steps; _folder = folder; _testNo = testNo;
         Label = $"Tdoc test {testNo}/{testCount}";
-        _front = settings.TdocBringToFront; _annotate = settings.TdocAnnotate; _arrows = settings.ShowClickArrows;
+        _front = settings.TdocBringToFront; _annotate = settings.TdocAnnotate; _arrows = settings.ShowClickArrows; _smart = settings.SmartShots;
         _delay = TimeSpan.FromMilliseconds(settings.TdocStepDelayMs);
         // the document's steps: a command's answers given after a dialog are a step of their own (TdocSplit)
         var entries = TdocSplit.Entries(steps);
@@ -191,6 +192,7 @@ sealed class TdocCapture : IDisposable
                 _zoom = null;
                 if (s.Kind == "ribbon") Replayer.ActivateTab(s.Tab);   // the button must show
                 if (s.Kind == "mark" && i == _steps.Count - 1 && Replayer.Current?.PostTestZoomNow() == true) { }   // the test ends on this checkpoint: setting postTestZoom (not "none") sets the view for its picture
+                else if (s.Kind == "mark" && Replayer.Current?.RecordZoomOn == true) { }   // setting recordZoom (not "none"): the view follows each command that made objects; the checkpoint picture shows it
                 else if (s.Kind == "mark") ZoomExtents();   // the checkpoint picture shows the whole drawing (the view only; the checkpoint compares objects)
             },
             wait: () => _zoom is { Pending: true },   // SDI: the ZOOM is typed a moment after it was sent; the idle check would not see it yet
@@ -211,7 +213,9 @@ sealed class TdocCapture : IDisposable
     void Shoot(int i, Step s, bool continuation = false)
     {
         if (s.Kind == "palette" && !continuation) { ShootPalette(i, s); return; }
-        var w = ShotService.CaptureWindow(_main, workArea: true);
+        // smart zoom: a ribbon click shows the button, its panel and the tab row, 1:1; the pictures of the drawing (commands, checkpoints, prompts) stay the whole window
+        var crop = _smart && !continuation && s.Kind == "ribbon" ? SmartShots.RibbonPicture(s.ItemId, null, null, _main, workArea: true) : null;
+        var w = crop != null ? (crop, crop.Left, crop.Top) : ShotService.CaptureWindow(_main, workArea: true);
         if (w == null) { Log.Info($"tdoc: no picture of step {i + 1} (AutoCAD's window is hidden or minimized)"); return; }
         var targets = new List<(string Text, ScreenRect? Rect)>();
         ScreenRect? arrowAt = null;
@@ -227,14 +231,14 @@ sealed class TdocCapture : IDisposable
                 }
                 else targets.Add((p.Text, p.Role == CalloutRole.CommandLine ? TdocTargets.CommandLineRect(_main) : null));
             }
-        Save(i, w.Value.Pic, w.Value.Left, w.Value.Top, targets, TdocPlan.Caption(s), arrowAt is { } ra ? [new ArrowAt(ra, false, _annotate ? 0 : -1)] : null);
+        Save(i, w.Value.Pic, w.Value.Left, w.Value.Top, targets, TdocPlan.Caption(s), arrowAt is { } ra ? [new ArrowAt(ra, false, _annotate ? 0 : -1)] : null, keepSize: crop != null);
     }
 
     void ShootPalette(int i, Step s)
     {
         var page = PaletteFill.FindPage(s);
         // an open palette: its own frame; hidden (auto-hide) or not found: AutoCAD's window, without boxes
-        if (page != IntPtr.Zero && PaletteReveal.PictureRect(page) is { } r && ShotService.CaptureRect(r.Left, r.Top, r.Right, r.Bottom, page) is { } pic)
+        if (page != IntPtr.Zero && SmartShots.PaletteArea(page, _smart) is { } r && ShotService.CaptureRect(r.L, r.T, r.R, r.B, page) is { } pic)
         {
             var targets = new List<(string Text, ScreenRect? Rect)>();
             var arrows = new List<ArrowAt>();
@@ -255,7 +259,7 @@ sealed class TdocCapture : IDisposable
                     arrows.Add(new ArrowAt(pr, false, own));
                 }
             }
-            Save(i, pic, r.Left, r.Top, targets, TdocPlan.Caption(s), arrows);
+            Save(i, pic, r.L, r.T, targets, TdocPlan.Caption(s), arrows, keepSize: _smart);
             return;
         }
         var w = ShotService.CaptureWindow(_main);
@@ -355,9 +359,9 @@ sealed class TdocCapture : IDisposable
     /// <summary>Adds the picture to the step and writes it on a pool thread. <paramref name="targets"/>: the legend lines in the order they are
     /// numbered, each with its rectangle on the screen (null = not found; the line is left out). The picture shows the screen area at
     /// (<paramref name="sx"/>, <paramref name="sy"/>) the size of <paramref name="pic"/>, scaled down to fit.</summary>
-    void Save(int i, ShotService.Picture pic, int sx, int sy, IReadOnlyList<(string Text, ScreenRect? Rect)> targets, string? caption, IReadOnlyList<ArrowAt>? arrowsAt = null)
+    void Save(int i, ShotService.Picture pic, int sx, int sy, IReadOnlyList<(string Text, ScreenRect? Rect)> targets, string? caption, IReadOnlyList<ArrowAt>? arrowsAt = null, bool keepSize = false)
     {
-        var (nw, nh) = ShotImage.FitSize(pic.Width, pic.Height);
+        var (nw, nh) = keepSize ? (pic.Width, pic.Height) : ShotImage.FitSize(pic.Width, pic.Height);   // smart zoom: a 1:1 crop is never scaled
         // rectangles are in the process's logical space like sx, sy and the picture's source size; the pixels are the screen's own (ScreenSpace). A rectangle that does not show in the picture gets no frame; one that sticks out is clipped (MarkGuard).
         int sw = pic.SrcWidth, sh = pic.SrcHeight;
         var shown = new PxRect(sx, sy, sx + sw, sy + sh);

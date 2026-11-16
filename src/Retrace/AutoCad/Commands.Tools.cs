@@ -385,6 +385,15 @@ public sealed partial class Commands
                 var tdArrows = Ask.Keywords(ed, new PromptKeywordOptions($"\nDraw a green rectangle and arrow at each click in the test document pictures (testDocArrows) [Yes/No] <{(s.TestDocArrows ? "Yes" : "No")}>: ", "Yes No") { AllowNone = true });
                 if (tdArrows.Status == PromptStatus.Cancel) return;
                 n.TestDocArrows = tdArrows.Status == PromptStatus.OK ? tdArrows.StringResult == "Yes" : s.TestDocArrows;
+                var sm = Ask.String(ed, $"\nPictures of the test and training documents (screenshotMode): classic or smart <{s.ScreenshotMode}>: ");
+                if (sm.Status == PromptStatus.Cancel) return;
+                var smt = (sm.StringResult ?? "").Trim();
+                if (smt.Length > 0)
+                {
+                    var smv = ScreenshotModes.Normalize(smt, out var smKnown);
+                    if (!smKnown) ed.WriteMessage($"\nScreenshot mode not changed: \"{smt}\" is not classic or smart.\n");
+                    else n.ScreenshotMode = smv;
+                }
                 var pz = Ask.String(ed, $"\nAfter a test, set the model-space view (postTestZoom): none, extents or lastEntity <{s.PostTestZoom}>: ");
                 if (pz.Status == PromptStatus.Cancel) return;
                 var pzt = (pz.StringResult ?? "").Trim();
@@ -393,6 +402,15 @@ public sealed partial class Commands
                     var pzv = PostTestZoomModes.Normalize(pzt, out var pzKnown);
                     if (!pzKnown) ed.WriteMessage($"\nPost-test zoom not changed: \"{pzt}\" is not none, extents or lastEntity.\n");
                     else n.PostTestZoom = pzv;
+                }
+                var rz = Ask.String(ed, $"\nWhile a test runs or is recorded, set the model-space view after each command that creates objects (recordZoom): none, extents or lastEntity <{s.RecordZoom}>: ");
+                if (rz.Status == PromptStatus.Cancel) return;
+                var rzt = (rz.StringResult ?? "").Trim();
+                if (rzt.Length > 0)
+                {
+                    var rzv = RecordZoomRules.Normalize(rzt);
+                    if (!PostTestZoomModes.IsKnown(rzt)) ed.WriteMessage($"\nTest record execution not changed: \"{rzt}\" is not none, extents or lastEntity.\n");
+                    else n.RecordZoom = rzv;
                 }
                 SaveAndReport(ed, n);
                 return;
@@ -451,7 +469,9 @@ public sealed partial class Commands
                $"  Tdoc front       : {(s.TdocBringToFront ? "on" : "off")} (RETRACETDOC brings AutoCAD, the dialog or the palette to the front before each picture)\n" +
                $"  Click arrows     : {(s.ShowClickArrows ? "on" : "off")} (a green arrow at each click of a replay, and in Tdoc pictures)\n" +
                $"  Test doc arrows  : {(s.TestDocArrows ? "on" : "off")} (a green rectangle and arrow at each click in the pictures of steps.md, made while recording)\n" +
+               $"  Screenshot mode  : {s.ScreenshotMode} (classic: the pictures as they always were; smart: zoom on what was clicked, 1:1 crops, in the test and training documents)\n" +
                $"  Post-test zoom   : {s.PostTestZoom} (none, extents, lastEntity: the model-space view after a replayed test's last step, before the end-of-test pictures)\n" +
+               $"  Record zoom      : {s.RecordZoom} (none, extents, lastEntity: the model-space view after each command that creates objects, while recording and replaying)\n" +
                $"  Tdoc boxes       : {(s.TdocAnnotate ? "on" : "off")} (green numbered boxes on the pictures where the user gives input)\n" +
                $"  Tdoc pause       : {s.TdocStepDelayMs} ms (before each picture, so the screen has repainted)\n" +
                $"  Suite timeout    : {s.SuiteStepTimeoutSeconds} s (RETRACESUITE cancels a step that runs longer and records the test as ERROR)\n" +
