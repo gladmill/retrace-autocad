@@ -26,7 +26,7 @@ public class TdocSplitTests
         var entries = TdocSplit.Entries(Build(Session));
         Assert.Equal(new[] { "ribbon", "dialog", "command" }, entries.Select(TdocSplit.Kind));
         Assert.Equal(new[] { false, false, true }, entries.Select(e => e.After));
-        Assert.Equal(new[] { "Click Add part on the Home tab." }, TdocSplit.Instructions(entries[0]));
+        Assert.Equal(new[] { "Click Add part." }, TdocSplit.Instructions(entries[0]));
         Assert.Equal(new[] { "At the prompt 'Insertion point', type 0,0.", "At the prompt 'Rotation angle <0>', press Enter." }, TdocSplit.Instructions(entries[2]));
         Assert.Equal("INSERTPART: answer the prompts", TdocSplit.Title(entries[2]));
         Assert.Equal(1, entries[2].Index);   // follows the dialog step
@@ -39,7 +39,7 @@ public class TdocSplitTests
         lines.Insert(2, """{"t":1015,"n":20,"type":"prompt","kind":"string","input":true,"message":"Part name:","status":"OK","value":"A"}""");
         var entries = TdocSplit.Entries(Build(lines.ToArray()));
         Assert.Equal(3, entries.Count);
-        Assert.Equal(new[] { "Click Add part on the Home tab.", "At the prompt 'Part name', type A." }, TdocSplit.Instructions(entries[0]));
+        Assert.Equal(new[] { "Click Add part.", "At the prompt 'Part name', type A." }, TdocSplit.Instructions(entries[0]));
         Assert.Equal(2, TdocSplit.Instructions(entries[2]).Count);
         Assert.Equal("Command line: type 0,0, then press Enter", TdocPlan.CommandLineText(entries[2].Shown, continuation: true));
         Assert.DoesNotContain(TdocPlan.StepCallouts(entries[2].Shown, continuation: true), c => c.Role == CalloutRole.RibbonItem);

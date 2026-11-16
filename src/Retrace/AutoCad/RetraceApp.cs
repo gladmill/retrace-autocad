@@ -25,6 +25,7 @@ public sealed class RetraceApp : IExtensionApplication
             Commands.Instance.Initialize();
             SdiDocs.Initialize();       // the registry of the test's own files compares canonical long paths
             SdiDocs.CleanStaleOnFirstIdle();   // test drawings left in the temp folders by an earlier session, when a day old and unchanged (at the first idle moment)
+            ImageScale.Install();      // smaller copies of wide pictures for the Excel sheet (WPF imaging; the engine has no codec)
             StatusBoardHost.Start();   // the status board file (setting statusBoard); never throws
         }
         catch (Exception ex) { Log.Error("Initialize", ex); }

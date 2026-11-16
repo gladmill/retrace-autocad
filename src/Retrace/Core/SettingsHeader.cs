@@ -66,6 +66,14 @@ public static class SettingsHeader
         return l;
     }
 
+    /// <summary>The screenshot mode a recording was made with: its header's `screenshotMode`; a header without it, or no `settings` object at all (made before the key existed), was made with classic
+    /// (never the current default).</summary>
+    public static string ModeOf(List<(string Name, string Value)>? recorded) =>
+        recorded?.FirstOrDefault(r => r.Name == "screenshotMode") is { Name: not null } m ? ScreenshotModes.Normalize(m.Value) : ScreenshotModes.Classic;
+
+    /// <summary>As <see cref="ModeOf(List{ValueTuple{string,string}})"/>, from a recording's header fields.</summary>
+    public static string ModeOf(IReadOnlyDictionary<string, JsonElement>? header) => ModeOf(header == null ? null : FromHeader(header));
+
     static string Text(JsonElement v) => v.ValueKind switch
     {
         JsonValueKind.True => "true",
@@ -82,6 +90,8 @@ public static class SettingsHeader
         if (recorded == null) return null;
         var dflt = new Dictionary<string, string>();
         foreach (var (k, v) in Snapshot(new RetraceSettings())) dflt[k] = Text(JsonSerializer.SerializeToElement(v));
+        // a settings object without the screenshot mode (made before it existed) was made with classic, which is not the default now
+        if (!recorded.Any(r => r.Name == "screenshotMode")) recorded = new List<(string Name, string Value)>(recorded) { ("screenshotMode", ScreenshotModes.Classic) };
         var diff = recorded.Where(r => !dflt.TryGetValue(r.Name, out var d) || d != r.Value).Select(r => $"{r.Name} {(r.Value.Length == 0 ? "(empty)" : r.Value)}").ToList();
         return diff.Count == 0 ? "Settings: all at their defaults" : "Settings (not default): " + string.Join(", ", diff);
     }

@@ -458,9 +458,10 @@ public class DialogPressTests
             var p = Path.Combine(dir, "s", "recording.jsonl");
             File.WriteAllLines(p, new[] { """{"type":"header","schema":1,"name":"t","started":"2026-11-06T10:00:00"}""" }.Concat(AliasSession));
             var md = Engine.Recordings.ScriptWriter.Build(Engine.Recordings.RecordingReader.Load(p), null, dir, new List<string>());
-            Assert.Single(System.Text.RegularExpressions.Regex.Matches(md, "A dialog opens:"));
-            Assert.Single(System.Text.RegularExpressions.Regex.Matches(md, "A nested dialog opens:"));
-            Assert.Contains("Set **Spacing** to `8` (was `5`)", md);
+            Assert.NotNull(Retrace.Core.ScriptRef.DialogStepNumber(md, 1));   // the replay counts dialog steps through this
+            Assert.Null(Retrace.Core.ScriptRef.DialogStepNumber(md, 2));
+            Assert.Single(System.Text.RegularExpressions.Regex.Matches(md, "Fill in the nested \\*\\*"));
+            Assert.Contains("Set **Spacing** to `8`", md);
         }
         finally { Directory.Delete(dir, true); }
     }
@@ -772,6 +773,6 @@ public class TreeClickSegmentTests : IDisposable
         File.WriteAllLines(p, new[] { """{"type":"header","schema":1,"name":"t","started":"2026-11-06T10:00:00"}""" }.Concat(Session));
         var md = Engine.Recordings.ScriptWriter.Build(Engine.Recordings.RecordingReader.Load(p), null, _dir, new List<string>());
         Assert.Contains("     - Select `Parts › Fasteners › Bolts` in **Catalog**, click **Add**\n", md);
-        Assert.Contains("     - Select `Parts › Frames` in **Catalog** (was `Parts › Fasteners › Bolts`), click **Add**\n", md);
+        Assert.Contains("     - Select `Parts › Frames` in **Catalog**, click **Add**\n", md);
     }
 }

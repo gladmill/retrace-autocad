@@ -268,7 +268,8 @@ public class FlashDialogTests
         }
         RecordingReader.BuildSteps(s);
         var md = ScriptWriter.Build(s, null, Path.GetTempPath(), new List<string>());
-        Assert.Single(System.Text.RegularExpressions.Regex.Matches(md, "A dialog opens"));
+        Assert.NotNull(Retrace.Core.ScriptRef.DialogStepNumber(md, 1));   // the replay counts dialog steps through this
+        Assert.Null(Retrace.Core.ScriptRef.DialogStepNumber(md, 2));
     }
 
     [Fact]

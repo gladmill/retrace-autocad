@@ -26,5 +26,5 @@ public static class ControlWords
 
     /// <summary>The control's words: <paramref name="formatted"/> (the label, usually in bold) when it has a real name, else "the tree" / "the list" ...; <paramref name="formatted"/> is only called then.</summary>
     public static string Name(string? label, string? kind, Func<string, string> formatted) =>
-        IsIdOnly(label) ? Generic(kind) : formatted(label ?? "");
+        IsIdOnly(label) || string.IsNullOrWhiteSpace(label) ? Generic(kind) : formatted(label!);
 }

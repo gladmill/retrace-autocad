@@ -266,8 +266,8 @@ public class SubFormTests : IDisposable
         Assert.Contains("click **Details...**", script);
         Assert.Contains("ouble-click `Spec › A` in **Spec**", script);
         Assert.Contains("Set **Grade** to `B2`", script);
-        Assert.Equal(1, script.Split("A dialog opens:").Length - 1);   // one dialog step; the others are "A nested dialog opens:"
-        Assert.Equal(4, script.Split("A nested dialog opens:").Length - 1);
+        Assert.Equal(1, script.Split("Fill in the **").Length - 1);   // one dialog step; the others are "A nested dialog opens:"
+        Assert.Equal(4, script.Split("Fill in the nested **").Length - 1);
     }
 
     [Fact]
@@ -467,7 +467,8 @@ public class SubFormTests : IDisposable
     public void A_double_click_in_a_palette_reads_double_click_item_in_tree_in_steps_md_and_Tdoc()
     {
         var script = Script(PaletteDbl());
-        Assert.Contains("double-click `Parts › Fasteners › Bolts › M8` in **Catalog**", script);
+        Assert.Contains("Double-click **M8**", script);
+        Assert.Contains("   *Parts palette › Catalog tree › Parts › Fasteners › Bolts*", script);
         var step = Build(PaletteDbl()).Single(x => x.Kind == "palette");
         Assert.Contains(TdocPlan.Instructions(step), l => l.Contains("ouble-click Parts › Fasteners › Bolts › M8 in Catalog"));
     }

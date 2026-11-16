@@ -223,7 +223,7 @@ sealed class PaletteWatch
     public void Tick(long nowMs)
     {
         var w = _cur;
-        if (w != null && nowMs - w.LastReadMs >= ThrottleMs) { Read(w, nowMs); if (w.PictureOf == null || !w.PictureOf.SequenceEqual(w.Last)) TakePicture(w); }
+        if (w != null && nowMs - w.LastReadMs >= ThrottleMs) { Read(w, nowMs); if (Smart && (w.PictureOf == null || !w.PictureOf.SequenceEqual(w.Last))) TakePicture(w); }   // classic: only the picture from a press (the fallback), not one kept fresh while the person works
     }
 
     /// <summary>The changes since the last result, or null if none. <paramref name="drop"/>: stop following the palette; else keep following

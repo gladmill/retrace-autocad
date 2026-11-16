@@ -183,8 +183,9 @@ public class DialogValuesTests : IDisposable
         var md = Script(Session("""{"t":1900,"n":6,"type":"dialog_values","for":3,"title":"Draw grid","source":"win32","fields":[{"key":"id:1","label":"Rows","kind":"edit","before":"3","after":"5"}],"read":4,"closedWith":"ok"}"""));
         int I(string x) { var i = md.IndexOf(x, StringComparison.Ordinal); Assert.True(i >= 0, x + "\n" + md); return i; }
         Assert.True(I("     Before:") < I("![Draw grid as it opens](screenshots/003-dialog.png)"));
-        Assert.True(I("(screenshots/003-dialog.png)") < I("     - Set **Rows** to `5` (was `3`)"));
-        Assert.True(I("- Set **Rows**") < I("     After (what it should look like before you press OK):"));
+        Assert.Contains("     - Click **OK**\n", md);
+        Assert.True(I("     - Set **Rows** to `5`") < I("     Before:"));   // the script lists what to change right under the step, before the pictures
+        Assert.True(I("- Click **OK**") < I("     After (what it should look like before you press OK):"));
         Assert.True(I("After (what") < I("![Draw grid with the changes](screenshots/003-dialog-after.png)"));
 
         // nothing changed: one picture, no after
@@ -238,7 +239,7 @@ public class DialogValuesTests : IDisposable
             """{"t":1920,"n":9,"type":"cmd_end","command":"STYLE"}""",
         };
         var md = Script(Session("\"closedWith\":\"click\",\"button\":\"Close\""));
-        Assert.Contains("(the last click closes the dialog)", md);
+        Assert.DoesNotContain("Click **OK**", md);   // the last click closed it: no OK is named
         Assert.DoesNotContain("After (what it should look like before you press OK)", md);
         Assert.DoesNotContain("003-dialog-after", md);
         // closed with OK after the same click: OK was pressed, so the picture of the filled dialog is there
@@ -256,7 +257,7 @@ public class DialogValuesTests : IDisposable
             Values.Replace("\"read\":9}", "\"read\":9,\"closedWith\":\"cancel\"}"),
             """{"t":1910,"n":6,"type":"modal_leave"}""",
             """{"t":1920,"n":7,"type":"cmd_end","command":"DRAWGRID"}""");
-        Assert.Contains("   - A dialog opens: **Draw grid**. Close it with Cancel.\n", md);
+        Assert.Contains("   - Cancel the **Draw grid** dialog\n", md);
         Assert.DoesNotContain("Rows", md);
         Assert.Equal("A dialog opens: Draw grid. Close it with Cancel (see a.md, step 2).",
             Retrace.Core.ScriptRef.Message("Draw grid", "a.md", 2, new List<Retrace.Core.FieldChange>(), 3, "cancel"));
@@ -297,14 +298,14 @@ public class DialogValuesTests : IDisposable
             """{"t":1800,"n":4,"type":"modal_leave"}""",
             Values,
             """{"t":1910,"n":6,"type":"cmd_end","command":"DRAWGRID"}""");
-        Assert.Contains("   - A dialog opens: **Draw grid**. Make these changes, then confirm:\n", md);
-        Assert.Contains("     - Set **Rows** to `5` (was `3`)\n", md);
-        Assert.Contains("     - Clear **Name** (was `x`)\n", md);
+        Assert.Contains("   - Fill in the **Draw grid** dialog\n", md);
+        Assert.Contains("     - Set **Rows** to `5`\n", md);
+        Assert.Contains("     - Clear **Name**\n", md);
         Assert.Contains("     - Tick **Snap**\n", md);
         Assert.Contains("     - Untick **Ortho**\n", md);
         Assert.Contains("     - Choose **Imperial**\n", md);
-        Assert.Contains("     - Choose `B` in **Style** (was `A`)\n", md);
-        Assert.Contains("     - Set **Quality** to `7` (was `1`)\n", md);
+        Assert.Contains("     - Choose `B` in **Style**\n", md);
+        Assert.Contains("     - Set **Quality** to `7`\n", md);
         Assert.Equal(1, Retrace.Core.ScriptRef.DialogStepNumber(md, 1));
     }
 
@@ -315,7 +316,7 @@ public class DialogValuesTests : IDisposable
             """{"t":100,"n":1,"type":"modal_enter","title":"Options"}""",
             """{"t":1800,"n":2,"type":"modal_leave"}""",
             """{"t":1810,"n":3,"type":"dialog_values","for":1,"title":"Options","source":"win32","fields":[{"key":"id:5","label":"Rows","kind":"edit","before":"3","after":"5"}],"read":2}""");
-        Assert.Contains("1. A dialog opens: **Options**. Make these changes, then confirm:\n   - Set **Rows** to `5` (was `3`)\n", md);
+        Assert.Contains("1. Fill in the **Options** dialog\n   - Set **Rows** to `5`\n", md);
         Assert.Equal(1, Retrace.Core.ScriptRef.DialogStepNumber(md, 1));
     }
 
@@ -326,7 +327,7 @@ public class DialogValuesTests : IDisposable
             """{"t":100,"n":1,"type":"modal_enter","title":"Choose part"}""",
             """{"t":1800,"n":2,"type":"modal_leave"}""",
             """{"t":1810,"n":3,"type":"dialog_values","for":1,"title":"Choose part","source":"win32","fields":[{"key":"name:PartsTree","label":"Catalog","kind":"tree","before":"","after":"Parts › Fasteners › Bolts"}],"read":2}""");
-        Assert.Contains("1. A dialog opens: **Choose part**. Make these changes, then confirm:\n   - Select `Parts › Fasteners › Bolts` in **Catalog**\n", md);
+        Assert.Contains("1. Fill in the **Choose part** dialog\n   - Select `Parts › Fasteners › Bolts` in **Catalog**\n", md);
     }
 
     [Fact]
@@ -346,7 +347,7 @@ public class DialogValuesTests : IDisposable
         var md = File.ReadAllText(Path.Combine(_dir, "s1", "steps.md"));
         var shot = md.IndexOf("step-01-dialog-before.png", StringComparison.Ordinal);
         var item = md.IndexOf("   - Set **Rows**", StringComparison.Ordinal);
-        Assert.True(shot > 0 && item > shot, md);
+        Assert.True(shot > 0 && item > 0 && item < shot, md);   // the list comes before the picture
     }
 
     [Fact]
@@ -356,7 +357,7 @@ public class DialogValuesTests : IDisposable
             """{"t":100,"n":1,"type":"modal_enter","title":"Options"}""",
             """{"t":1800,"n":2,"type":"modal_leave"}""",
             """{"t":1810,"n":3,"type":"dialog_values","for":1,"fields":[],"read":4}""");
-        Assert.Contains("1. A dialog opens: **Options**. Fill it in and confirm.\n   - Leave the values as they are.\n", md);
+        Assert.Contains("1. Fill in the **Options** dialog\n   - Leave the values as they are.\n", md);
     }
 
     [Fact]
@@ -371,7 +372,7 @@ public class DialogValuesTests : IDisposable
             """{"t":1800,"n":2,"type":"modal_leave"}""");
         Assert.DoesNotContain("Leave the values", none);
         Assert.Equal(old, none);
-        Assert.Contains("1. A dialog opens: **Options**. Fill it in and confirm.\n", old);
+        Assert.Contains("1. Fill in the **Options** dialog\n", old);
     }
 
     [Fact]

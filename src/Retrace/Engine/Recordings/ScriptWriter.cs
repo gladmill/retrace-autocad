@@ -47,12 +47,10 @@ public static class ScriptWriter
         var sb = new StringBuilder($"# {Md.Cell(StepWording.SessionName(s))}\n\n");
         var meta = StepWording.MetaLine(s);
         if (meta.Length > 0) sb.Append(meta).Append(".\n\n");
-        if (SettingsHeader.Line(SettingsHeader.FromHeader(s.Header)) is { } settingsLine) sb.Append('*').Append(Md.Inline(settingsLine)).Append("*\n\n");   // the Retrace settings the test was recorded with (those not at their default)
+        // the Retrace settings the test was recorded with (those not at their default): only steps.md says so; the Word and Excel exports leave the line out (StepsDoc.IsSettingsLine)
+        if (SettingsHeader.Line(SettingsHeader.FromHeader(s.Header)) is { } settingsLine) sb.Append('*').Append(Md.Inline(settingsLine)).Append("*\n\n");
 
-        var start = s.InitialState is { Count: > 0 } st
-            ? $"a drawing like the one recorded at the start ({Md.Cell(st.Summary())}). Open or build it before the first step"
-            : "a new empty drawing";
-        sb.Append($"**Start with:** {start}.\n\n");
+        sb.Append($"**Start with:** {StartWording.Describe(s)}.\n\n");
         sb.Append("Do the steps in order. A picture under a step shows what the screen looked like when the test was recorded.\n\n");
         if (filesTable || namer != null) sb.Append(FilesSection);
         sb.Append("## Steps\n\n");
@@ -82,6 +80,7 @@ public static class ScriptWriter
         if (n == 0) sb.Append("_No steps were recorded._\n\n");
 
         sb.Append("## Result\n\n");
+        if (EndCheck(s) is { } endCheck) sb.Append("**End check:** ").Append(endCheck).Append(".\n\n");
         if (checks.Count == 0)
             sb.Append("This recording has no checkpoints. Write down what you saw: **pass** if the steps ran as described, **fail** otherwise.\n");
         else
@@ -92,6 +91,17 @@ public static class ScriptWriter
             sb.Append("\nOverall: [ ] pass  [ ] fail\n");
         }
         return sb.ToString();
+    }
+
+    /// <summary>The drawing at the end in plain words, from the recording's last `end_counts` event: "Model space has 2 objects, 1 layer, 1 layout". Null when the recording has none.</summary>
+    public static string? EndCheck(RecordingSession s)
+    {
+        var e = s.Events.LastOrDefault(x => x.Type == "end_counts");
+        if (e == null) return null;
+        string? N(string key, string one, string many) =>
+            e.Raw.TryGetProperty(key, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.Number && v.TryGetInt32(out var n) ? $"{n} {(n == 1 ? one : many)}" : null;
+        var parts = new[] { N("modelspace", "object", "objects"), N("layers", "layer", "layers"), N("layouts", "layout", "layouts") }.Where(x => x != null).ToList();
+        return parts.Count == 0 ? null : "Model space has " + string.Join(", ", parts);
     }
 
     private const string FilesSection = """

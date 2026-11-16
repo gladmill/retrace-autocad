@@ -140,6 +140,42 @@ public sealed class ShotScheduler
     }
 }
 
+/// <summary>Classic mode takes one picture per palette step, the whole window. A step must still always end with one picture: the window request can be dropped (a handler blocked the UI thread for over
+/// <see cref="ShotScheduler.MaxWaitMs"/>) or fulfilled with nothing (AutoCAD's window is minimized). The palette's close-up taken when the button was pressed is held for that case and written only then.</summary>
+public sealed class PictureFallback
+{
+    /// <summary>How long after its window request was due a step may wait for its picture before the held close-up is written instead: the request's age limit plus a margin.</summary>
+    public const int GraceMs = ShotScheduler.MaxWaitMs + 300;
+
+    readonly Dictionary<int, long> _due = new();
+
+    /// <summary>Step <paramref name="n"/> expects a window picture whose request is due at <paramref name="requestDueMs"/>.</summary>
+    public void Expect(int n, long requestDueMs) { if (n > 0) _due[n] = requestDueMs + GraceMs; }
+
+    /// <summary>A picture was written for step <paramref name="n"/>: no fallback.</summary>
+    public void Written(int n) => _due.Remove(n);
+
+    /// <summary>The steps still without a picture whose wait is over (all of them with <paramref name="force"/>: the recording is stopping), in order; they leave the list.</summary>
+    public List<int> Due(long nowMs, bool force)
+    {
+        var due = _due.Where(x => force || x.Value <= nowMs).Select(x => x.Key).OrderBy(x => x).ToList();
+        foreach (var n in due) _due.Remove(n);
+        return due;
+    }
+
+    public int Pending => _due.Count;
+    public void Clear() => _due.Clear();
+}
+
+/// <summary>Classic mode: where a palette step's one picture comes from.</summary>
+public static class ClassicPalettePicture
+{
+    /// <summary>The palette's window lies inside AutoCAD's window (2 px slack): the whole-window picture shows it. A palette floating outside (another monitor, a moved window) is not in that picture, so its own close-up is the step's one picture then.</summary>
+    public static bool InsideWindow(PxRect palette, PxRect window, int slack = 2) =>
+        palette.Width > 0 && palette.Height > 0 && window.Width > 0 && window.Height > 0 &&
+        palette.Left >= window.Left - slack && palette.Top >= window.Top - slack && palette.Right <= window.Right + slack && palette.Bottom <= window.Bottom + slack;
+}
+
 /// <summary>Pixel work that needs no Windows API: shrinking a picture so its longest side is at most a limit.</summary>
 public static class ShotImage
 {

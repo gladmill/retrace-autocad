@@ -226,13 +226,19 @@ public static class ExportDocx
             }
         }
 
+        string? _stepLabel;   // the number of the step being written, while its sub-steps (the bullets right under it) get "1.1.", "1.2." like the Excel sheet
+
         void WriteList(ListBlock l, OpenXmlElement into, int indent)
         {
             int n = int.TryParse(l.OrderedStart, out var s) ? s : 1;
+            int sub = 0;
             foreach (var item in l.OfType<ListItemBlock>())
             {
-                var m = new Marker(l.IsOrdered ? $"{n++}." : "•");
-                Blocks(item.ToList(), into, indent + 1, m);
+                string marker;
+                if (l.IsOrdered) { marker = $"{n}."; if (indent == 0) _stepLabel = StepsDoc.IsStepWithSubSteps(item) ? n.ToString() : null; n++; }
+                else if (indent == 1 && _stepLabel != null && StepsDoc.HasText(item)) marker = $"{_stepLabel}.{++sub}.";   // a sub-step of a ribbon click or typed command
+                else marker = "•";
+                Blocks(item.ToList(), into, indent + 1, new Marker(marker));
             }
         }
 
@@ -251,6 +257,22 @@ public static class ExportDocx
 
         void Paragraph(ParagraphBlock p, OpenXmlElement into, int indent, Marker? marker)
         {
+            if (StepsDoc.IsSettingsLine(p)) return;   // the Word document does not show the Retrace settings (steps.md and the recording header do)
+            if (StepsDoc.IsWhere(p) && indent > 0)
+            {
+                // the location line under a step: smaller, grey, kept with the step's text and its picture
+                var where = Para(p.Inline, null, indent, marker, false);
+                foreach (var r in where.Elements<Run>())
+                {
+                    var rp = r.RunProperties;
+                    if (rp == null) { rp = new RunProperties(); r.PrependChild(rp); }
+                    rp.Append(new Color { Val = "6B6B6B" });
+                    rp.Append(new FontSize { Val = "18" });
+                }
+                KeepTogether(where);
+                into.Append(where);
+                return;
+            }
             // a paragraph that is only pictures: one paragraph per picture, so Word lays them out one under the other
             bool onlyImages = p.Inline != null && p.Inline.All(i => i is LinkInline { IsImage: true } || i is LineBreakInline || (i is LiteralInline l && string.IsNullOrWhiteSpace(l.Content.ToString())));
             if (onlyImages && p.Inline!.Any(i => i is LinkInline))

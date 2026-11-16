@@ -170,7 +170,7 @@ public class DocsLinkTests : IDisposable
         var steps = Path.Combine(Path.GetDirectoryName(rec)!, "steps.md");
         var text = File.ReadAllText(steps);
         Assert.Contains("](../../docs/reference/ribbon/code/plugin/garden.md)", text);
-        Assert.Contains("![Click Garden › Beds › Settings](screenshots/", text);   // alt text keeps the words of a link, not its address   // the ribbon click links to its reference page
+        Assert.Contains("![Click Settings](screenshots/", text);   // alt text keeps the words of a link, not its address   // the ribbon click links to its reference page
         var broken = Targets(text).Where(t => t.Target.Length > 0 && !File.Exists(Path.GetFullPath(Path.Combine(Path.GetDirectoryName(steps)!, t.Target.Replace('/', Path.DirectorySeparatorChar))))).ToList();
         Assert.Empty(broken);
         Assert.True(Targets(text).Count(t => t.Target.StartsWith("screenshots/")) >= 3);

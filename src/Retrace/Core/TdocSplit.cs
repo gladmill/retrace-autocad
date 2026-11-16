@@ -85,6 +85,9 @@ public static class TdocSplit
         : e.Full != null ? [.. TdocPlan.Instructions(e.Shown, e.Full.Answers)]
         : TdocPlan.Instructions(e.Shown);
 
+    /// <summary>The location line of a Tdoc step ("Ribbon › Home tab › Draw panel"); none for the answers after a dialog.</summary>
+    public static string Where(TdocEntry e) => e.After ? "" : TdocPlan.Where(e.Shown);
+
     /// <summary>The heading of a Tdoc step.</summary>
     public static string Title(TdocEntry e) => e.After ? ContinuationTitle(e.Shown) : TdocPlan.StepTitle(e.Shown);
 

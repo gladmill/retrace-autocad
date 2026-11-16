@@ -172,7 +172,7 @@ public class ExportTests : IDisposable
             Assert.True(order.IndexOf("KeepNext") < order.IndexOf("KeepLines"));
             if (order.Contains("SpacingBetweenLines")) Assert.True(order.IndexOf("KeepLines") < order.IndexOf("SpacingBetweenLines"));   // schema order
         }
-        Assert.Contains(firstPictures, p => ((W.Paragraph)p.PreviousSibling()!).InnerText.Contains("Line"));
+        Assert.Contains(firstPictures, p => ((W.Paragraph)p.PreviousSibling()!).InnerText.Contains("Draw panel"));
     }
 
     [Fact]
@@ -243,7 +243,7 @@ public class ExportTests : IDisposable
     // ---- xlsx --------------------------------------------------------------------------------------------------------
 
     [Fact]
-    public void Export_writes_a_valid_xlsx_with_one_row_per_step()
+    public void Export_writes_a_valid_xlsx_with_one_row_per_thing_to_do()
     {
         var dir = TestFolder();
         Assert.True(EngineRunner.Export(dir, false, true).Success);
@@ -253,48 +253,113 @@ public class ExportTests : IDisposable
         var wb = xl.WorkbookPart!;
         Assert.Equal("Steps|Info", string.Join("|", wb.Workbook!.Sheets!.Elements<S.Sheet>().Select(s => s.Name!.Value!)));
         var steps = (WorksheetPart)wb.GetPartById(wb.Workbook!.Sheets!.Elements<S.Sheet>().First().Id!);
-        var rows = steps.Worksheet!.Descendants<S.Row>().ToList();
-        string Cell(S.Row r, int i) => r.Elements<S.Cell>().ElementAt(i).InnerText;
+        var rows = steps.Worksheet!.Descendants<S.Row>().ToDictionary(r => (int)r.RowIndex!.Value);
+        string Cell(int row, int col) => rows[row].Elements<S.Cell>().First(c => c.CellReference!.Value == $"{(char)('A' + col)}{row}").InnerText;
 
-        Assert.Equal("Step|Action|Details|Check|Screenshot|Result|Notes", string.Join("|", Enumerable.Range(0, 7).Select(i => Cell(rows[0], i))));
-        Assert.Equal(4, rows.Count);                 // header + 3 steps
-        Assert.Contains("Click", Cell(rows[1], 1));
-        Assert.Contains("Pick the first point", Cell(rows[1], 2));
-        Assert.Contains("\n", Cell(rows[1], 2));     // sub-items joined with line breaks
-        Assert.Equal("", Cell(rows[1], 3));
-        Assert.Contains("line drawn", Cell(rows[3], 3));   // the checkpoint's expected text
-        Assert.StartsWith("screenshots/step-01-click.png", Cell(rows[1], 4));   // one line per picture, the link opens the first
-        Assert.Equal(3, steps.HyperlinkRelationships.Count());   // a link per step that has a picture
+        // the table: a header row, then a row per thing the tester does, numbered like the Word document (1, then 1.1, 1.2 ... for its sub-steps)
+        Assert.Equal("#|Action|Where|Details|Expected|Picture|Result|Notes", string.Join("|", Enumerable.Range(0, 8).Select(i => Cell(6, i))));
+        Assert.Equal("1|1.1|1.2|2|2.1|3", string.Join("|", Enumerable.Range(7, 6).Select(r => Cell(r, 0))));
+        Assert.Equal("Click Line", Cell(7, 1));
+        Assert.Equal("Ribbon › Home tab › Draw panel", Cell(7, 2));
+        Assert.Contains("Pick the first point", Cell(8, 1));
+        Assert.Equal("", Cell(8, 2));
+        Assert.Equal("Type DRAWGRID and press Enter", Cell(10, 1));
+        Assert.Equal("Command line", Cell(10, 2));
+        Assert.Equal("Fill in the Draw grid dialog", Cell(11, 1));
+        Assert.Equal("Check the drawing", Cell(12, 1));
+        Assert.Contains("line drawn", Cell(12, 4));   // the checkpoint's text is the Expected column
+        Assert.All(Enumerable.Range(7, 6), r => Assert.Equal("Not run", Cell(r, 6)));
+
+        // the picture of a row is inside the file (xl/media) and anchored in its Picture cell; the file name is a relative link under it
+        var drawing = steps.DrawingsPart!;
+        var anchors = drawing.WorksheetDrawing!.Descendants<DocumentFormat.OpenXml.Drawing.Spreadsheet.OneCellAnchor>().ToList();
+        Assert.Equal(4, anchors.Count);          // the ribbon click, its second answer, the dialog, the check: one picture per row
+        Assert.Equal(4, drawing.ImageParts.Count());
+        Assert.All(anchors, a => Assert.Equal("5", a.FromMarker!.ColumnId!.Text));
+        Assert.Equal(new[] { "6", "8", "10", "11" }, anchors.Select(a => a.FromMarker!.RowId!.Text));   // zero-based rows 7, 9, 11, 12
+        var wide = anchors[0].Extent!;           // 2000 x 1000 px: 420 px wide, 210 px high
+        Assert.Equal(420L * 9525, wide.Cx!.Value);
+        Assert.Equal(210L * 9525, wide.Cy!.Value);
+        Assert.Equal("step-01-click.png", Cell(7, 5));   // the file name, linked to screenshots/step-01-click.png
+        Assert.Equal(4, steps.HyperlinkRelationships.Count());
         Assert.All(steps.HyperlinkRelationships, r => Assert.False(Path.IsPathRooted(r.Uri.OriginalString)));
-        Assert.Equal("", Cell(rows[1], 5));
-        Assert.Equal("F2:F4", steps.Worksheet!.Descendants<S.DataValidation>().Single().SequenceOfReferences!.InnerText);
-        Assert.Equal("\"PASS,FAIL\"", steps.Worksheet!.Descendants<S.Formula1>().Single().Text);
+        Assert.True(double.Parse(rows[7].Height!.Value.ToString(System.Globalization.CultureInfo.InvariantCulture), System.Globalization.CultureInfo.InvariantCulture) >= 210 * 0.75);   // the row is as high as the picture
+
+        // Result: a drop-down with colours; Overall result: a formula; the table's header is frozen and repeated when printed
+        var validation = steps.Worksheet!.Descendants<S.DataValidation>().Single();
+        Assert.Equal("G7:G12", validation.SequenceOfReferences!.InnerText);
+        Assert.Equal("\"Pass,Fail,Blocked,Not run\"", validation.Formula1!.Text);
+        Assert.Contains(steps.Worksheet.Descendants<S.ConditionalFormattingRule>(), r => r.Elements<S.Formula>().Any(f => f.Text == "\"Fail\""));
+        var overall = rows[3].Elements<S.Cell>().Single(c => c.CellReference!.Value == "F3").CellFormula!.Text;
+        Assert.Equal("IF(COUNTIF(G7:G12,\"Fail\")>0,\"Fail\",IF(COUNTIF(G7:G12,\"Pass\")=ROWS(G7:G12),\"Pass\",\"In progress\"))", overall);
+        Assert.Contains("COUNTIF(G7:G12,\"Pass\")", rows[4].Elements<S.Cell>().First(c => c.CellFormula != null).CellFormula!.Text);
         Assert.Equal(S.PaneStateValues.Frozen, steps.Worksheet!.Descendants<S.Pane>().Single().State!.Value);
+        Assert.Equal(S.OrientationValues.Landscape, steps.Worksheet.Descendants<S.PageSetup>().Single().Orientation!.Value);
+        Assert.Equal("Steps!$6:$6", wb.Workbook.Descendants<S.DefinedName>().Single().Text);
+
+        // the top block: test, recorded, starts with (no settings line), and the sign-off cells
+        var top = string.Concat(Enumerable.Range(1, 4).Select(r => rows[r].InnerText));
+        Assert.Contains("draw test", top);
+        Assert.Contains("2026-10-10, with AutoCAD 2026 25.1.0.0", top);   // the label says "Recorded", the value is the date and the AutoCAD version
+        Assert.Contains("a new, empty drawing", top);
+        Assert.DoesNotContain("Settings", top);
+        Assert.Contains("Tester", top);
+        Assert.Contains("Overall result", top);
 
         var info = (WorksheetPart)wb.GetPartById(wb.Workbook!.Sheets!.Elements<S.Sheet>().Last().Id!);
         var all = info.Worksheet!.InnerText;
         Assert.Contains("draw test", all);
-        Assert.Contains("Recorded 2026-10-10", all);
-        Assert.Contains("a new empty drawing", all);
         Assert.Contains(dir, all);
     }
 
     [Fact]
-    public void A_step_with_several_pictures_lists_all_of_them_and_links_the_first()
+    public void A_row_has_one_picture_and_a_dialog_row_shows_the_filled_in_one()
     {
-        var md = "# t\n\n## Steps\n\n1. Click **Go**\n\n   ![a](screenshots/step-01-a.png)\n\n   ![b](screenshots/step-01-b%20x.png)\n\n   - Detail\n\n     ![c](screenshots/step-01-c.png)\n\n2. Next\n";
+        var md = "# t\n\n## Steps\n\n1. Click **Go**\n\n   *Ribbon › Home tab*\n\n   ![a](screenshots/step-01-a.png)\n\n   ![b](screenshots/step-01-b%20x.png)\n\n2. Fill in the **Opts** dialog\n\n   - Set **Rows** to `5`\n   - Click **OK**\n\n   Before:\n\n   ![c](screenshots/step-02-before.png)\n\n   After (what it should look like before you press OK):\n\n   ![d](screenshots/step-02-after.png)\n";
         var doc = new Retrace.Engine.Recordings.StepsDoc(md, _root);
-        Assert.Equal(new[] { "screenshots/step-01-a.png", "screenshots/step-01-b%20x.png", "screenshots/step-01-c.png" }, doc.Steps[0].Pictures);
-        Assert.Empty(doc.Steps[1].Pictures);
+        Assert.Equal(2, doc.Steps.Count);
+        Assert.Equal(2, doc.Rows.Count);
+        Assert.Equal("screenshots/step-01-a.png", doc.Rows[0].Picture);   // a click: its first picture
+        Assert.Equal("Ribbon › Home tab", doc.Rows[0].Where);
+        Assert.Equal("screenshots/step-02-after.png", doc.Rows[1].Picture);   // a dialog: the filled-in one
+        Assert.Equal("Set Rows to 5\nClick OK", doc.Rows[1].Details);
+        Directory.CreateDirectory(Path.Combine(_root, "screenshots"));
+        foreach (var f in new[] { "step-01-a", "step-01-b x", "step-02-before", "step-02-after" }) File.WriteAllBytes(Path.Combine(_root, "screenshots", f + ".png"), PngOf(840, 300));
         var xlsx = Path.Combine(_root, "multi.xlsx");
         Retrace.Engine.Recordings.ExportXlsx.Write(doc, _root, xlsx);
         using var xl = SpreadsheetDocument.Open(xlsx, false);
         NoErrors(xl);
         var wb = xl.WorkbookPart!;
         var sheet = (WorksheetPart)wb.GetPartById(wb.Workbook!.Sheets!.Elements<S.Sheet>().First().Id!);
-        var cell = sheet.Worksheet!.Descendants<S.Row>().ElementAt(1).Elements<S.Cell>().ElementAt(4);
-        Assert.Equal("screenshots/step-01-a.png\nscreenshots/step-01-b x.png\nscreenshots/step-01-c.png", cell.InnerText);
-        Assert.Equal("screenshots/step-01-a.png", sheet.HyperlinkRelationships.Single().Uri.OriginalString);
+        Assert.Equal(2, sheet.DrawingsPart!.ImageParts.Count());   // never two pictures of one moment: one per row
+        Assert.Equal(new[] { "screenshots/step-01-a.png", "screenshots/step-02-after.png" }, sheet.HyperlinkRelationships.Select(r => r.Uri.OriginalString));
+        Assert.Equal("Set Rows to 5\nClick OK", sheet.Worksheet!.Descendants<S.Row>().First(r => r.RowIndex!.Value == 8).Elements<S.Cell>().First(c => c.CellReference!.Value == "D8").InnerText);
+    }
+
+    [Fact]
+    public void A_thumbnail_is_420_px_wide_and_at_most_380_px_high()
+    {
+        Assert.Equal((420L * 9525, 210L * 9525), Retrace.Engine.Recordings.ExportXlsx.Thumb(2000, 1000));
+        Assert.Equal((300L * 9525, 200L * 9525), Retrace.Engine.Recordings.ExportXlsx.Thumb(300, 200));   // never enlarged
+        var tall = Retrace.Engine.Recordings.ExportXlsx.Thumb(600, 1900);
+        Assert.Equal(380L * 9525, tall.Cy);
+    }
+
+    [Fact]
+    public void The_settings_line_is_left_out_of_the_word_and_excel_documents_and_kept_in_steps_md()
+    {
+        var dir = TestFolder("settings");
+        var rec = Path.Combine(dir, "recording.jsonl");
+        File.WriteAllLines(rec, Lines.Select(l => l.StartsWith("{\"type\":\"header\"") ? l.Replace("\"workspace\":\"Drafting\"", "\"workspace\":\"Drafting\",\"settings\":{\"screenshotMode\":\"smart\",\"recordZoom\":\"extents\"}") : l));
+        Assert.True(EngineRunner.WriteSteps(rec).Success);
+        Assert.Contains("Settings (not default)", File.ReadAllText(Path.Combine(dir, "steps.md")));
+        Assert.True(EngineRunner.Export(dir, true, true).Success);
+        using var w = WordprocessingDocument.Open(Path.Combine(dir, "steps.docx"), false);
+        Assert.DoesNotContain("Settings", w.MainDocumentPart!.Document!.Body!.InnerText);
+        Assert.Contains("recorded", w.MainDocumentPart.Document.Body.InnerText + "recorded");
+        using var x = SpreadsheetDocument.Open(Path.Combine(dir, "steps.xlsx"), false);
+        foreach (var part in x.WorkbookPart!.WorksheetParts) Assert.DoesNotContain("Settings", part.Worksheet!.InnerText);
+        Assert.Contains("screenshotMode", File.ReadAllText(rec));   // the recording keeps its settings object
     }
 
     [Fact]
@@ -304,7 +369,7 @@ public class ExportTests : IDisposable
         Assert.Equal("draw test", doc.Name);
         Assert.Equal(3, doc.Steps.Count);
         Assert.Equal([1, 2, 3], doc.Steps.Select(s => s.Number).ToArray());
-        Assert.StartsWith("a new empty drawing", doc.StartWith);
+        Assert.StartsWith("a new, empty drawing", doc.StartWith);
         Assert.Equal("screenshots/step-02-dialog-before.png", doc.Steps[1].Pictures[0]);
         Assert.StartsWith("Check:", doc.Steps[2].Action);
     }

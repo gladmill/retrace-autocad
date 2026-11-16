@@ -40,7 +40,7 @@ public class TdocPlanTests
     {
         var s = new Step { Kind = "lisp", Lisp = lisp };
         Assert.Equal(typed, TdocPlan.LispTyped(s));
-        Assert.Equal($"Type {typed} at the command line and press Enter.", TdocPlan.Instructions(s)[0]);
+        Assert.Equal($"Type {typed} and press Enter.", TdocPlan.Instructions(s)[0]);
     }
 
     [Fact]
@@ -51,7 +51,7 @@ public class TdocPlanTests
         Assert.Equal(
             new[]
             {
-                "Click Create Block on the Insert tab.",
+                "Click Create Block.",
                 "At the prompt 'Specify insertion base point', type 10,20.",
                 "At the prompt 'Enter a note', press Enter.",
             },
@@ -63,7 +63,7 @@ public class TdocPlanTests
     {
         var d = Build(BlockSession)[1];
         Assert.Equal(new[] { "In the Block Definition dialog:", "Set Name to KitBlock.", "Tick Snap.", "Click OK." }, TdocPlan.Instructions(d));
-        Assert.Equal("Block Definition dialog", TdocPlan.StepTitle(d));
+        Assert.Equal("Fill in the Block Definition dialog", TdocPlan.StepTitle(d));
     }
 
     [Fact]
@@ -112,9 +112,9 @@ public class TdocPlanTests
             """{"t":130,"n":4,"type":"cmd_end","command":"LINE"}""",
             """{"t":200,"n":5,"type":"lisp_start","firstLine":"(c:kitgrid)"}""",
             """{"t":210,"n":6,"type":"lisp_end"}""");
-        Assert.Equal(new[] { "Type LINE at the command line and press Enter.", "At the prompt 'Specify first point', type 0,0.", "At the prompt 'Specify next point or [Undo]', type Undo." },
+        Assert.Equal(new[] { "Type LINE and press Enter.", "At the prompt 'Specify first point', type 0,0.", "At the prompt 'Specify next point or [Undo]', type Undo." },
             TdocPlan.Instructions(steps[0]));
-        Assert.Equal(new[] { "Type KITGRID at the command line and press Enter." }, TdocPlan.Instructions(steps[1]));
+        Assert.Equal(new[] { "Type KITGRID and press Enter." }, TdocPlan.Instructions(steps[1]));
     }
 
     [Fact]

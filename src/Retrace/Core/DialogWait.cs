@@ -78,7 +78,7 @@ public sealed class DialogWait
 public static class ScriptRef
 {
     static readonly Regex StepLine = Rx.Create(@"^(\d+)\.\s", RegexOptions.CultureInvariant);
-    static readonly Regex DialogLine = Rx.Create(@"^(\d+\.|\s+-)\s+A dialog opens:", RegexOptions.CultureInvariant);
+    static readonly Regex DialogLine = Rx.Create(@"^(\d+\.|\s+-)\s+(A dialog opens:|(Fill in|Cancel) the (\*\*.*\*\* )?dialog\s*$)", RegexOptions.CultureInvariant);
 
     /// <summary>Script step number holding the <paramref name="ordinal"/>-th (1-based) dialog, or null if the script has fewer. A dialog is
     /// its own step ("4. A dialog opens: ...") or, when the command that opens it is described in the same step, a sub-item of that step

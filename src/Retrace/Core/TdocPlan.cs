@@ -29,7 +29,9 @@ public static class TdocPlan
         switch (s.Kind)
         {
             case "dialog":
-                return string.IsNullOrWhiteSpace(s.DialogTitle) ? "Dialog" : $"{DialogName(s)} dialog";
+                return string.IsNullOrWhiteSpace(s.DialogTitle) ? "Dialog" : s.ClosedWith == "cancel" && s.Clicks.Count == 0 ? $"Cancel the {DialogName(s)} dialog" : $"Fill in the {DialogName(s)} dialog";
+            case "ribbon" when RibbonLabel(s) is { } label:
+                return "Click " + label;
             case "mark":
                 return string.IsNullOrWhiteSpace(s.Note) ? "Checkpoint" : "Checkpoint: " + s.Note.Trim();
             default:
@@ -48,16 +50,16 @@ public static class TdocPlan
             case "ribbon":
             {
                 var label = RibbonLabel(s) ?? "the button";
-                list.Add(string.IsNullOrWhiteSpace(s.Tab) ? $"Click {label}." : $"Click {label} on the {s.Tab.Trim()} tab.");
+                list.Add($"Click {label}.");   // where the button is goes in the location line (Where)
                 list.AddRange(AnswerLines(s.Answers, s, all));
                 break;
             }
             case "command":
-                list.Add($"Type {s.Command ?? "the command"} at the command line and press Enter.");
+                list.Add($"Type {s.Command ?? "the command"} and press Enter.");
                 list.AddRange(AnswerLines(s.Answers, s, all));
                 break;
             case "lisp":
-                list.Add($"Type {LispTyped(s)} at the command line and press Enter.");
+                list.Add($"Type {LispTyped(s)} and press Enter.");
                 list.AddRange(AnswerLines(s.Answers, s, all));
                 break;
             case "dialog":
@@ -81,6 +83,35 @@ public static class TdocPlan
         }
         return list;
     }
+
+    /// <summary>The location line under a step's action, in a smaller grey font: "Ribbon › Home tab › Draw panel", "Command line", "Pick palette › Catalog tree › Cabinets › Base". Empty for a step that needs none.</summary>
+    public static string Where(Step s)
+    {
+        switch (s.Kind)
+        {
+            case "ribbon":
+                return string.Join(" › ", new[] { "Ribbon", Named(s.Tab, "tab"), Named(s.Panel, "panel") }.Where(x => x != null));
+            case "command" or "lisp":
+                return "Command line";
+            case "palette":
+            {
+                var palette = string.IsNullOrWhiteSpace(s.DialogTitle) ? "Palette" : $"{s.DialogTitle.Trim()} palette";
+                if (!IsTreeClickOnly(s)) return palette;
+                var levels = PaletteClickKinds.ClickLevels(s.ClickPath).Select(l => l.Trim()).ToList();
+                var tree = TreeWording.Label(PaletteTreeLabel(s));
+                return string.Join(" › ", new[] { palette, tree.Length > 0 ? tree + " tree" : "tree" }.Concat(levels.Take(Math.Max(0, levels.Count - 1))));
+            }
+            default:
+                return "";
+        }
+    }
+
+    /// <summary>A palette step that is one click on a tree item, with no changes before it (the case <see cref="PaletteLines"/> words by the item alone).</summary>
+    static bool IsTreeClickOnly(Step s) =>
+        s.Native == null && s.Menu == null && PaletteClickKinds.OnTree(s.ClickKind) && s.ClickKind != DialogClickKinds.DoubleClick
+        && (s.Values ?? []).All(v => Describe(v) == null);
+
+    static string? Named(string? name, string noun) => string.IsNullOrWhiteSpace(name) ? null : $"{name.Trim()} {noun}";
 
     /// <summary>The button's label as the person saw it: the last part of "Click Insert > Block > Create Block"; the item id when the title has none.</summary>
     public static string? RibbonLabel(Step s)
@@ -156,13 +187,21 @@ public static class TdocPlan
         if (changes.Count == 0 && button == null) { yield return $"Look at the {name}."; yield break; }
         // a tree click leads with the action and the item ("Click B24 under A, in the Catalog tree of the Box palette."), see TreeWording
         if (changes.Count == 0 && s.Menu == null && PaletteClickKinds.OnTree(s.ClickKind) && s.ClickKind != DialogClickKinds.DoubleClick)
-        { yield return PaletteClickKinds.Phrase(s.ClickKind, button!, s.ClickPath, PaletteTreeLabel(s), s.ButtonIndex, s.ButtonLegacyIndex, HitNamed(s.Hit), x => x, x => x, capital: true) + $" of the {name}."; yield break; }
+        { yield return TreeClickShort(s, button!) + "."; yield break; }   // the tree, its parents and the palette are the location line (Where)
         if (changes.Count == 0) { yield return s.Menu != null ? $"In the {name}: {press}" : $"In the {name}, " + (s.ClickKind != DialogClickKinds.Click ? PaletteClickKinds.Phrase(s.ClickKind, button, s.ClickPath, PaletteTreeLabel(s), s.ButtonIndex, s.ButtonLegacyIndex, HitNamed(s.Hit), x => x, x => x, capital: false) : $"click {button}") + "."; yield break; }
         yield return $"In the {name}:";
         var tabs = new TabLines();
         foreach (var (tab, text) in changes)
             foreach (var line in tabs.Add(tab, text)) yield return line;
         if (button != null) yield return s.Menu != null ? press : s.ClickKind != DialogClickKinds.Click ? PaletteClickKinds.Phrase(s.ClickKind, button, s.ClickPath, PaletteTreeLabel(s), s.ButtonIndex, s.ButtonLegacyIndex, HitNamed(s.Hit), x => x, x => x, capital: true) + "." : $"Click {button}.";
+    }
+
+    /// <summary>"Click B24" / "Expand Cabinets" / "Collapse Cabinets": the item of a palette tree click, with no place.</summary>
+    static string TreeClickShort(Step s, string button)
+    {
+        var levels = PaletteClickKinds.ClickLevels(s.ClickPath);
+        var verb = s.ClickKind switch { PaletteClickKinds.Expand => "Expand", PaletteClickKinds.Collapse => "Collapse", _ => "Click" };
+        return $"{verb} {(levels.Count > 0 ? levels[^1] : button)}";
     }
 
     // ---- answers at the command line ---------------------------------------------------------------------------------------
