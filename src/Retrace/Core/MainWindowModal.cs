@@ -48,11 +48,13 @@ static class MainWindowModal
         var res = new HashSet<int>();
         var withValues = new HashSet<long>();
         var noWindow = new HashSet<long>();
+        var flashed = new HashSet<long>();   // `modal_flash`: the dialog opened and closed by itself within a fraction of a second (FlashDialog): not a dialog, whatever else the recording says about it
         foreach (var x in list)
         {
             var ty = Str(x, "type");
             if (ty is "dialog_values" or "dialog_click" or "modal_alias" && Num(x, "for") > 0) { withValues.Add(Num(x, "for")); if (ty == "modal_alias" && Num(x, "of") > 0) withValues.Add(Num(x, "of")); }
             else if (ty == "modal_nowindow" && Num(x, "for") > 0) noWindow.Add(Num(x, "for"));
+            if (ty == "modal_flash" && Num(x, "for") > 0) flashed.Add(Num(x, "for"));
         }
         for (int k = 0; k < list.Count; k++)
         {
@@ -73,8 +75,17 @@ static class MainWindowModal
             }
             bool flagged = n > 0 && noWindow.Contains(n);
             bool windowless = recorderSays ? flagged : flagged || main;   // the recorder's marker alone for a new recording, whatever `main` says
-            if (!hasValues && !other && windowless) foreach (var m in members) res.Add(m);
+            if (n > 0 && flashed.Contains(n) || !hasValues && !other && windowless) foreach (var m in members) res.Add(m);
         }
+        return res;
+    }
+
+    /// <summary>The `n` of every `modal_enter` that a `modal_flash` says was a flash (a dialog that opened and closed by itself, see <see cref="FlashDialog"/>). Readers that look at the raw event list ignore these enters:
+    /// a flash is no dialog, no person's action, and no "first dialog" of a chain.</summary>
+    public static HashSet<long> FlashedEnters(IEnumerable<JsonElement> list)
+    {
+        var res = new HashSet<long>();
+        foreach (var x in list) if (Str(x, "type") == "modal_flash" && Num(x, "for") > 0) res.Add(Num(x, "for"));
         return res;
     }
 

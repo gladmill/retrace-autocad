@@ -154,12 +154,15 @@ public static class TdocPlan
         var button = string.IsNullOrWhiteSpace(s.Button) ? (PaletteClickKinds.IsIntermediate(s.ClickKind) ? "(blank)" : null) : s.Button.Trim();   // a click with an empty name (an older recording) is still a click
         var press = s.Menu != null ? s.Menu.Wording(false, null, "the palette") + "." : $"Click {button}.";
         if (changes.Count == 0 && button == null) { yield return $"Look at the {name}."; yield break; }
-        if (changes.Count == 0) { yield return s.Menu != null ? $"In the {name}: {press}" : $"In the {name}, " + (s.ClickKind != DialogClickKinds.Click ? PaletteClickKinds.Phrase(s.ClickKind, button, s.ClickPath, ControlName(s.ClickTreeLabel, "the tree"), s.ButtonIndex, s.ButtonLegacyIndex, HitNamed(s.Hit), x => x, x => x, capital: false) : $"click {button}") + "."; yield break; }
+        // a tree click leads with the action and the item ("Click B24 under A, in the Catalog tree of the Box palette."), see TreeWording
+        if (changes.Count == 0 && s.Menu == null && PaletteClickKinds.OnTree(s.ClickKind) && s.ClickKind != DialogClickKinds.DoubleClick)
+        { yield return PaletteClickKinds.Phrase(s.ClickKind, button!, s.ClickPath, PaletteTreeLabel(s), s.ButtonIndex, s.ButtonLegacyIndex, HitNamed(s.Hit), x => x, x => x, capital: true) + $" of the {name}."; yield break; }
+        if (changes.Count == 0) { yield return s.Menu != null ? $"In the {name}: {press}" : $"In the {name}, " + (s.ClickKind != DialogClickKinds.Click ? PaletteClickKinds.Phrase(s.ClickKind, button, s.ClickPath, PaletteTreeLabel(s), s.ButtonIndex, s.ButtonLegacyIndex, HitNamed(s.Hit), x => x, x => x, capital: false) : $"click {button}") + "."; yield break; }
         yield return $"In the {name}:";
         var tabs = new TabLines();
         foreach (var (tab, text) in changes)
             foreach (var line in tabs.Add(tab, text)) yield return line;
-        if (button != null) yield return s.Menu != null ? press : s.ClickKind != DialogClickKinds.Click ? PaletteClickKinds.Phrase(s.ClickKind, button, s.ClickPath, ControlName(s.ClickTreeLabel, "the tree"), s.ButtonIndex, s.ButtonLegacyIndex, HitNamed(s.Hit), x => x, x => x, capital: true) + "." : $"Click {button}.";
+        if (button != null) yield return s.Menu != null ? press : s.ClickKind != DialogClickKinds.Click ? PaletteClickKinds.Phrase(s.ClickKind, button, s.ClickPath, PaletteTreeLabel(s), s.ButtonIndex, s.ButtonLegacyIndex, HitNamed(s.Hit), x => x, x => x, capital: true) + "." : $"Click {button}.";
     }
 
     // ---- answers at the command line ---------------------------------------------------------------------------------------
@@ -259,6 +262,10 @@ public static class TdocPlan
     }
 
     static readonly System.Text.RegularExpressions.Regex IdLabel = Engine.Util.Rx.Create(@"^#\d+$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>The tree label of a palette click for its words: a double-click keeps "the tree" for a label that is only an id; click / expand / collapse leave it out (the words say "in the tree").</summary>
+    static string PaletteTreeLabel(Step s) =>
+        PaletteClickKinds.OnTree(s.ClickKind) && s.ClickKind != DialogClickKinds.DoubleClick ? ControlName(s.ClickTreeLabel, "") : ControlName(s.ClickTreeLabel, "the tree");
 
     /// <summary>A control with no label of its own is recorded as "#1012" (its id). A trainee can not use that: the document says <paramref name="plain"/> ("the tree", "the list") instead. Tdoc text only; the recording and the replay's lookup keep the id.</summary>
     public static string ControlName(string? label, string plain) => label != null && IdLabel.IsMatch(label.Trim()) ? plain : label ?? "";

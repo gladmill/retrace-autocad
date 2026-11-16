@@ -20,6 +20,12 @@ public static class Md
     public static string Cell(string? s) =>
         (s ?? "").Replace("\r", "").Replace("\n", " ").Replace("|", "\\|").Trim();
 
+    static readonly Regex Special = Rx.Create(@"[\\*`\[\]<]|(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])", RegexOptions.CultureInvariant);
+
+    /// <summary>Text inside a sentence (also inside **bold** or *italic*): a cell's escaping plus a backslash before the characters markdown would read as emphasis, code, a link or html, so the
+    /// text stays as it is written and only the raw markdown carries the backslashes. An underscore inside a word is left (it is no emphasis).</summary>
+    public static string Inline(string? s) => Special.Replace(Cell(s), m => "\\" + m.Value);
+
     /// <summary>Inline code span that survives backticks in content.</summary>
     public static string Code(string? s)
     {

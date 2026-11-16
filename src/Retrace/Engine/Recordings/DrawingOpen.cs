@@ -63,9 +63,12 @@ public static class DrawingOpen
     {
         var skip = new HashSet<long>();
         var tracker = new Tracker();
-        foreach (var e in events)
+        var list = events as IReadOnlyList<JsonElement> ?? events.ToList();
+        var flashed = Retrace.Core.MainWindowModal.FlashedEnters(list);   // a dialog that flashed by itself (start-up LISP of an add-in) is no person acting
+        foreach (var e in list)
         {
             var type = e.TryGetProperty("type", out var ty) && ty.ValueKind == JsonValueKind.String ? ty.GetString() : null;
+            if (type == "modal_enter" && e.TryGetProperty("n", out var fn) && fn.ValueKind == JsonValueKind.Number && flashed.Contains(fn.GetInt64())) type = "modal_flash_enter";
             long t = e.TryGetProperty("t", out var tv) && tv.ValueKind == JsonValueKind.Number ? tv.GetInt64() : 0;
             bool? flag = e.TryGetProperty("startup", out var sv) && sv.ValueKind is JsonValueKind.True or JsonValueKind.False ? sv.GetBoolean() : null;
             if (tracker.Feed(type, t, flag) && e.TryGetProperty("n", out var nv) && nv.ValueKind == JsonValueKind.Number) skip.Add(nv.GetInt64());

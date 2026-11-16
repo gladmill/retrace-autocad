@@ -38,6 +38,8 @@ sealed class PaletteWatch
     }
 
     Watched? _cur;
+    /// <summary>The window of the palette page being worked in, zero when none.</summary>
+    public IntPtr CurrentPage => _cur?.Where.Page ?? IntPtr.Zero;
 
     /// <summary>Where the last button's name came from (<see cref="ButtonNames"/>: "tooltip", "accessible", "automation", "name"); null for its text. Set by <see cref="OnInput"/>.</summary>
     public string? ButtonFrom { get; private set; }

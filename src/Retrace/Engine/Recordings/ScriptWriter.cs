@@ -47,6 +47,7 @@ public static class ScriptWriter
         var sb = new StringBuilder($"# {Md.Cell(StepWording.SessionName(s))}\n\n");
         var meta = StepWording.MetaLine(s);
         if (meta.Length > 0) sb.Append(meta).Append(".\n\n");
+        if (SettingsHeader.Line(SettingsHeader.FromHeader(s.Header)) is { } settingsLine) sb.Append('*').Append(Md.Inline(settingsLine)).Append("*\n\n");   // the Retrace settings the test was recorded with (those not at their default)
 
         var start = s.InitialState is { Count: > 0 } st
             ? $"a drawing like the one recorded at the start ({Md.Cell(st.Summary())}). Open or build it before the first step"

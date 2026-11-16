@@ -10,7 +10,8 @@ public enum ShotTarget { Window, Dialog }
 /// <param name="N">the `n` of the event the picture belongs to</param>
 /// <param name="Kind">file name part: ribbon, cmd-start, prompt, cmd-end, cmd-cancel, cmd-fail, dialog, mark</param>
 /// <param name="DueMs">session time (ms) from which it may be taken: the UI needs a moment to paint what the event caused</param>
-public sealed record ShotRequest(int N, string Kind, ShotTarget Target, long DueMs);
+/// <param name="Window">a dialog picture: the handle of the dialog window it is for (0 = the foreground window of the process, as before). Another dialog that opens meanwhile is not this one's picture.</param>
+public sealed record ShotRequest(int N, string Kind, ShotTarget Target, long DueMs, long Window = 0);
 
 public static class ShotNaming
 {
@@ -62,7 +63,7 @@ public static class ShotRules
     public static bool NeedsWindowFallback(bool windowSuppressed, bool haveCloseup) => windowSuppressed && !haveCloseup;
 
     /// <summary>The dialog picture: for `modal_title` when one arrived, else for `modal_enter`.</summary>
-    public static ShotRequest Dialog(int n, long nowMs) => new(n, "dialog", ShotTarget.Dialog, nowMs + DialogSettleMs);
+    public static ShotRequest Dialog(int n, long nowMs, long window = 0) => new(n, "dialog", ShotTarget.Dialog, nowMs + DialogSettleMs, window);
 }
 
 /// <summary>
@@ -83,18 +84,33 @@ public sealed class ShotScheduler
     readonly Dictionary<ShotTarget, (long At, string Kind)> _last = new();
 
     public int Pending => _pending.Count;
+
+    /// <summary>Takes the queued requests of <paramref name="target"/> whose event is one of <paramref name="ns"/> out of the queue (the dialog turned out to be a flash: no picture of it); how many went.</summary>
+    public int Cancel(ShotTarget target, params long[] ns) => _pending.RemoveAll(r => r.Target == target && ns.Contains(r.N));
     public int Dropped { get; private set; }
 
     public void Enqueue(ShotRequest r) => _pending.Add(r);
 
-    /// <summary>Requests to fulfil now, in event order. <paramref name="force"/> ignores the due time (used when recording stops).</summary>
-    public List<ShotRequest> TakeReady(long nowMs, bool force = false)
+    /// <summary>Is a request of this kind queued (a cheap look, for the caller that only wants to do work when there is something to take).</summary>
+    public bool HasPending(string kind) => _pending.Any(r => r.Kind == kind);
+
+    /// <summary>Requests to fulfil now, in event order. <paramref name="force"/> ignores the due time (used when recording stops); <paramref name="early"/> ignores it too and also the gap rule: the next click is about to
+    /// change the screen, each queued picture is of its own click and is taken whatever was taken a moment ago (it does not count as the picture the gap rule looks at, either).
+    /// <paramref name="mayTake"/>: a request it says no to is held, and its due time moves to now, so the hold never makes it too old (the age limit counts from the end of the hold).</summary>
+    public List<ShotRequest> TakeReady(long nowMs, bool force = false, Func<ShotRequest, bool>? mayTake = null, bool early = false)
     {
         var take = new List<ShotRequest>();
         foreach (var r in _pending.OrderBy(r => r.N).ToList())
         {
-            if (!force && r.DueMs > nowMs) continue;
+            if (!force && !early && r.DueMs > nowMs) continue;
+            if (!force && mayTake != null && !mayTake(r))
+            {
+                int at = _pending.IndexOf(r);
+                if (at >= 0 && r.DueMs < nowMs) _pending[at] = r with { DueMs = nowMs };
+                continue;
+            }
             if (nowMs - r.DueMs > MaxWaitMs) { _pending.Remove(r); Dropped++; continue; }
+            if (early) { _pending.Remove(r); take.Add(r); continue; }
             if (_last.TryGetValue(r.Target, out var last) && nowMs - last.At < MinGapMs)
             {
                 if (last.Kind == r.Kind) { _pending.Remove(r); Dropped++; }   // duplicate within the gap
@@ -105,6 +121,13 @@ public sealed class ShotScheduler
             take.Add(r);
         }
         return take;
+    }
+
+    /// <summary>A request taken by <see cref="TakeReady"/> at <paramref name="nowMs"/> could not be fulfilled yet (the dialog has not painted): back into the queue, and the gap rule does not count it as a picture of its target.</summary>
+    public void Untake(ShotRequest r, long nowMs)
+    {
+        _pending.Add(r);
+        if (_last.TryGetValue(r.Target, out var l) && l.At == nowMs && l.Kind == r.Kind) _last.Remove(r.Target);
     }
 
     /// <summary>Forget everything: queued requests, the last picture per target and the drop count. A new recording starts its clock at 0,
@@ -130,6 +153,28 @@ public static class ShotImage
         if (longest <= maxSide) return (w, h);
         var f = (double)maxSide / longest;
         return (Math.Max(1, (int)Math.Round(w * f)), Math.Max(1, (int)Math.Round(h * f)));
+    }
+
+    /// <summary>A dialog picture that has not been painted yet: inside the frame (a title bar's height and a few pixels of border left out) the picture holds at most two colors (the dialog's flat background, at most a
+    /// stray pixel). A painted dialog has text, buttons or lines, far more. Such a picture is not kept: the dialog is looked at again a moment later.</summary>
+    public static bool IsBlank(byte[] bgra, int w, int h)
+    {
+        if (w <= 0 || h <= 0 || bgra.Length < w * h * 4) return true;
+        int top = Math.Min(48, h / 4), side = Math.Min(8, w / 8), bottom = Math.Min(8, h / 8);
+        Span<int> seen = stackalloc int[3];
+        int count = 0;
+        for (int y = top; y < h - bottom; y++)
+            for (int x = side; x < w - side; x++)
+            {
+                int i = (y * w + x) * 4;
+                int c = (bgra[i] >> 2) | (bgra[i + 1] >> 2) << 8 | (bgra[i + 2] >> 2) << 16;   // blue, green, red; the low two bits dropped: a dither or gradient step is not content
+                bool known = false;
+                for (int k = 0; k < count; k++) if (seen[k] == c) { known = true; break; }
+                if (known) continue;
+                if (count == 2) return false;   // a third color: something is drawn
+                seen[count++] = c;
+            }
+        return true;
     }
 
     /// <summary>Box-filter downscale of a 32-bit BGRA picture to the given size (area average, so text stays readable).</summary>

@@ -211,7 +211,7 @@ public static class Plan
     static bool IsNeutral(JsonElement e)
     {
         var ty = Str(e, "type");
-        if (ty is "shot" or "view_stale" or "state" or "end_counts" or "mark" or "doc_active" or "modal_enter" or "modal_title" or "modal_leave" or "modal_alias" or "modal_nowindow" or "dialog_values" or "dialog_click" or "dialog_pick" or DragRuns.DroppedType) return true;
+        if (ty is "shot" or "view_stale" or "state" or "end_counts" or "mark" or "doc_active" or "modal_enter" or "modal_title" or "modal_leave" or "modal_alias" or "modal_nowindow" or "modal_flash" or "dialog_values" or "dialog_click" or "dialog_pick" or DragRuns.DroppedType) return true;
         return ty == "context_menu" && e.TryGetProperty("for", out var f) && f.ValueKind == JsonValueKind.Number;
     }
 
@@ -249,6 +249,7 @@ public static class Plan
         var owned = new Dictionary<int, int>();
         bool hasInputFlags = HasInputFlags(list);
         bool hasScriptFlags = list.Any(x => x.TryGetProperty("script", out _));
+        var flashedEnters = MainWindowModal.FlashedEnters(list);   // a dialog that flashed by itself is not "the first dialog" of a chain
         bool Person(JsonElement x) => IsPersonPrompt(x, hasInputFlags);
         bool IsScript(JsonElement x) => Str(x, "type") == "cmd_start" && string.Equals(Str(x, "command"), "SCRIPT", StringComparison.OrdinalIgnoreCase);
         bool IsStartup(JsonElement x) => Bool(x, "startup") == true || (startup?.Contains(Num(x, "n")) ?? false);
@@ -353,7 +354,7 @@ public static class Plan
             bool bad = false;
             int firstModal = -1;
             // (a modal state with no dialog window counts: it is the command's hidden interaction, and the click still owns the chain with the answers a person gave in it)
-            for (int k = r; k <= last; k++) if (Str(list[k], "type") == "modal_enter" && !IsSecurityModal(list, k)) { firstModal = k; break; }
+            for (int k = r; k <= last; k++) if (Str(list[k], "type") == "modal_enter" && !IsSecurityModal(list, k) && !flashedEnters.Contains(Num(list[k], "n"))) { firstModal = k; break; }
             foreach (var m in members)
                 if (Person(list[m]) && (firstModal < 0 || m < firstModal)) bad = true;
             // the core's own prompts too: a macro that is SCRIPT asks for the file name (FILEDIA 0), and a person who typed it gave an answer before any dialog

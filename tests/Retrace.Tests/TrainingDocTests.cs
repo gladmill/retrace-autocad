@@ -274,6 +274,21 @@ public class TrainingDocTests : IDisposable
     }
 
     [Fact]
+    public void The_instructions_of_a_step_with_a_picture_stay_with_it()
+    {
+        var docx = Path.Combine(_root, "kit.docx");
+        TrainingDocx.Write(Sample(), _root, docx);
+        using var d = WordprocessingDocument.Open(docx, false);
+        var paras = BodyParagraphs(d);
+        foreach (var text in new[] { "Click Create Block on the Insert tab.", "In Block Definition, set Name to KitBlock.", "Click OK." })
+        {
+            var p = paras.Single(x => x.InnerText == text);
+            Assert.NotNull(p.ParagraphProperties!.KeepNext);
+            Assert.NotNull(p.ParagraphProperties.KeepLines);
+        }
+    }
+
+    [Fact]
     public void A_missing_picture_file_gets_a_note_instead()
     {
         var docx = Path.Combine(_root, "kit.docx");

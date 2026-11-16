@@ -163,7 +163,7 @@ sealed class ShotService
     /// <param name="onShot">called on a pool thread after the file is written: (n, relative file path, "window" | "dialog")</param>
     public void Begin(string sessionPath, bool enabled, IntPtr mainWindow, Func<bool> modalOpen, Action<int, string, string> onShot)
     {
-        _sched.Clear();
+        _sched.Clear(); _blankLogged.Clear();
         _tasks.Clear();
         _afterTaken.Clear();
         _clicks.Clear(); _rects.Clear(); _suppressed.Clear(); _deferred.Clear();
@@ -184,14 +184,18 @@ sealed class ShotService
         if (_enabled && r != null) _sched.Enqueue(r);
     }
 
-    /// <summary>Fulfils what is due. <paramref name="force"/>: everything pending now (recording is stopping).</summary>
-    public void Pump(long nowMs, bool force = false)
+    /// <summary>A click in a palette is about to be handled: the window pictures of the palette steps before it are taken now, so each shows its own click's result and none is taken (late, after a stall of the UI
+    /// thread) with the next click's. Only requests of the "palette" kind, and only when one is queued (a list look otherwise: nothing is painted, nothing is captured). The due time is not waited for and the gap rule
+    /// does not apply: every queued picture is of its own click. The click arrives before the WM_PAINT of what the stalled handler changed, so the main window and the palette's window are painted first
+    /// (RedrawWindow UPDATENOW: only what is invalid); without it the picture showed the label of the click before.</summary>
+    public void FlushPaletteWindows(long nowMs, IntPtr palettePage = default)
     {
-        if (_enabled) PumpDeferred(nowMs, force);
-        if (!_enabled || _sched.Pending == 0) return;
+        if (!_enabled || !_sched.HasPending("palette")) return;
         List<ShotRequest> ready;
-        try { ready = _sched.TakeReady(nowMs, force); }
-        catch (Exception ex) { Log.Error("shot schedule", ex); return; }
+        try { ready = _sched.TakeReady(nowMs, early: true, mayTake: r => r.Kind == "palette" && !(Hold?.Invoke() ?? false)); }
+        catch (Exception ex) { Log.Error("shot flush", ex); return; }
+        if (ready.Count == 0) return;
+        Repaint(palettePage);
         foreach (var r in ready)
         {
             try { Capture(r); }
@@ -199,25 +203,69 @@ sealed class ShotService
         }
     }
 
-    void Capture(ShotRequest r)
+    /// <summary>A picture of a palette is queued or held for its click (a window picture or a close-up).</summary>
+    public bool HasQueuedPaletteShots => _enabled && (_deferred.Count > 0 || _sched.HasPending("palette"));
+
+    /// <summary>Paints what is invalid in the main window and in the palette's window now (RedrawWindow UPDATENOW). A click reaches PreTranslateMessage before the WM_PAINT of what the stalled handler before it changed, so the
+    /// pictures of the click before (close-up and window) are taken after this, or they show the old label.</summary>
+    public void Repaint(IntPtr palettePage = default)
+    {
+        try
+        {
+            const uint UPDATENOW = 0x0100, ALLCHILDREN = 0x0080, GA_ROOT = 2;
+            if (_main != IntPtr.Zero) RedrawWindow(_main, IntPtr.Zero, IntPtr.Zero, UPDATENOW | ALLCHILDREN);
+            if (palettePage != IntPtr.Zero && GetAncestor(palettePage, GA_ROOT) is { } root && root != IntPtr.Zero && root != _main) RedrawWindow(root, IntPtr.Zero, IntPtr.Zero, UPDATENOW | ALLCHILDREN);
+        }
+        catch (Exception ex) { Log.Error("shot repaint", ex); }
+    }
+
+    [DllImport("user32.dll")] static extern bool RedrawWindow(IntPtr hwnd, IntPtr rect, IntPtr region, uint flags);
+    [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+
+    /// <summary>Fulfils what is due. <paramref name="force"/>: everything pending now (recording is stopping).</summary>
+    public void Pump(long nowMs, bool force = false)
+    {
+        if (_enabled) PumpDeferred(nowMs, force);
+        if (!_enabled || _sched.Pending == 0) return;
+        List<ShotRequest> ready;
+        try { ready = _sched.TakeReady(nowMs, force, Hold == null ? null : _ => !Hold()); }
+        catch (Exception ex) { Log.Error("shot schedule", ex); return; }
+        foreach (var r in ready)
+        {
+            try { if (!Capture(r, force)) _sched.Untake(r, nowMs); }   // not painted yet: asked again (until the request is too old)
+            catch (Exception ex) { Log.Error($"shot {r.N} {r.Kind}", ex); }
+        }
+    }
+
+    /// <summary>True while a dialog that may be a flash (see <see cref="FlashDialog"/>) is on screen: no picture is taken then (not of the dialog, not of the window, which would show it).</summary>
+    public Func<bool>? Hold { get; set; }
+    readonly HashSet<int> _blankLogged = new();
+
+    /// <summary>Takes the queued dialog pictures of events <paramref name="ns"/> out of the queue (the dialog was a flash).</summary>
+    public int CancelDialog(params long[] ns) => _sched.Cancel(ShotTarget.Dialog, ns);
+
+    /// <summary>false: the dialog has not been painted yet, ask again later.</summary>
+    bool Capture(ShotRequest r, bool force = false)
     {
         IntPtr hwnd;
         string what;
-        if (r.Kind is "ribbon" or "palette" && _suppressed.Contains(r.N)) return;   // the picture was taken when the button was clicked (ribbon), or is the palette's own crop (smart zoom)
+        if (r.Kind is "ribbon" or "palette" && _suppressed.Contains(r.N)) return true;   // the picture was taken when the button was clicked (ribbon), or is the palette's own crop (smart zoom)
         if (r.Target == ShotTarget.Dialog)
         {
-            if (!_modalOpen()) return;                       // the dialog is already gone: the screen shows something else
-            hwnd = Native.ForegroundOfThisProcess();
-            if (hwnd == IntPtr.Zero || hwnd == _main) return; // no dialog window of AutoCAD in front
+            if (!_modalOpen()) return true;                       // the dialog is already gone: the screen shows something else
+            // the dialog the request is for (a nested dialog that opens meanwhile is not its picture); a request without a window takes the one in front, as before
+            hwnd = r.Window != 0 ? (IntPtr)r.Window : Native.ForegroundOfThisProcess();
+            if (hwnd == IntPtr.Zero || hwnd == _main) return true; // no dialog window of AutoCAD in front
+            if (r.Window != 0 && (!Win.IsWindowVisible(hwnd) || !Native.Exists(hwnd))) return true;   // its window is gone
             what = "dialog";
         }
         else
         {
             hwnd = _main;
-            if (hwnd == IntPtr.Zero || Win.IsIconic(hwnd) || !Win.IsWindowVisible(hwnd)) return;
+            if (hwnd == IntPtr.Zero || Win.IsIconic(hwnd) || !Win.IsWindowVisible(hwnd)) return true;
             what = "window";
         }
-        Grab(r.N, r.Kind, hwnd, what);
+        return Grab(r.N, r.Kind, hwnd, what, skipBlank: what == "dialog" && !force);
     }
 
     readonly HashSet<int> _afterTaken = new();
@@ -302,12 +350,14 @@ sealed class ShotService
         lock (_tasks) { _tasks.RemoveAll(x => x.IsCompleted); _tasks.Add(t); }
     }
 
-    void Grab(int n, string kind, IntPtr hwnd, string what, bool announce = true)
+    /// <summary>Takes the picture; false only when <paramref name="skipBlank"/> and the window shows nothing yet (the dialog has not painted its controls): nothing is written.</summary>
+    bool Grab(int n, string kind, IntPtr hwnd, string what, bool announce = true, bool skipBlank = false)
     {
         var (b, pbounds) = Win.BoundsBoth(hwnd);
-        if (b.Width <= 0 || b.Height <= 0 || pbounds.Width <= 0 || pbounds.Height <= 0) return;
+        if (b.Width <= 0 || b.Height <= 0 || pbounds.Width <= 0 || pbounds.Height <= 0) return true;
         var cap = Capture(b, hwnd, pbounds);                          // the only part that must run on the UI thread
-        if (cap == null) return;
+        if (cap == null) return true;
+        if (skipBlank && ShotImage.IsBlank(cap.Pixels, cap.Width, cap.Height)) { if (_blankLogged.Add(n)) Log.Info($"dialog picture {n} not taken yet: the dialog shows nothing (not painted); asked again until it does"); return false; }
         var px = cap.Pixels;
         var path = Path.Combine(_folder, ShotNaming.FileName(n, kind));
         var rel = ShotNaming.RelativePathFor(_sessionPath, n, kind);
@@ -330,6 +380,7 @@ sealed class ShotService
             catch (Exception ex) { Log.Error($"shot {n} write", ex); }
         });
         lock (_tasks) { _tasks.RemoveAll(x => x.IsCompleted); _tasks.Add(t); }
+        return true;
     }
 
     /// <summary>Waits (bounded) for pictures still being encoded, so their `shot` events land before session_end.</summary>

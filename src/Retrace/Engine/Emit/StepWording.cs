@@ -100,8 +100,11 @@ public static class StepWording
         if (st.Native != null)   // a native palette: one action, no values
             return $"{where}, {st.Native.Describe(Md.Cell, x => $"**{x}**")}" + (st.OpensDrawing != null ? $". It opens {Md.Code(st.OpensDrawing)}" : "");
         var click = st.Menu != null ? st.Menu.Phrase(true, Md.Cell, "the palette") : string.IsNullOrWhiteSpace(st.Text) && !Retrace.Core.PaletteClickKinds.IsIntermediate(st.ClickKind) ? null
-            : st.ClickKind != Retrace.Core.DialogClickKinds.Click ? Retrace.Core.PaletteClickKinds.Phrase(st.ClickKind, st.Text, st.ClickPath, st.ClickTreeLabel, st.ClickIndex, st.ClickLegacyIndex, st.Hit, Md.Code, t => $"**{Md.Cell(t)}**", capital: false)
+            : st.ClickKind != Retrace.Core.DialogClickKinds.Click ? Retrace.Core.PaletteClickKinds.Phrase(st.ClickKind, st.Text, st.ClickPath, st.ClickTreeLabel, st.ClickIndex, st.ClickLegacyIndex, st.Hit, Md.Code, t => $"**{Md.Inline(t)}**", capital: false, plain: Md.Inline)
             : $"click **{Md.Cell(st.Text)}**";
+        // a tree click leads with the action and the item; the palette follows ("Click **B24** under A › B, in the Catalog tree of the **Box** palette (Samples)")
+        if (ChangeLines(st).Count == 0 && st.Menu == null && st.Native == null && Retrace.Core.PaletteClickKinds.OnTree(st.ClickKind) && st.ClickKind != Retrace.Core.DialogClickKinds.DoubleClick && click != null)
+            return char.ToUpperInvariant(click[0]) + click[1..] + " of the " + where["In the ".Length..];
         if (ChangeLines(st).Count == 0) return click == null ? where + ", leave the values as they are" : $"{where}, {click}";
         return click == null ? where + ", make these changes:" : $"{where}, make these changes, then {click}:";
     }
@@ -357,7 +360,7 @@ public static class StepWording
 
     /// <summary>Step text as image alt text: no emphasis, code ticks or brackets; a link keeps only its text.</summary>
     public static string Alt(string text) =>
-        Regex.Replace(Regex.Replace(text, @"\[([^\]]*)\]\([^)]*\)", "$1", RegexOptions.None, TimeSpan.FromSeconds(2)).Replace("*", "").Replace("`", "").Replace("[", "(").Replace("]", ")"), @"\s+", " ", RegexOptions.None, TimeSpan.FromSeconds(2)).Trim();
+        Regex.Replace(Regex.Replace(Regex.Replace(text, @"\\([\\*`\[\]<_])", "$1", RegexOptions.None, TimeSpan.FromSeconds(2)), @"\[([^\]]*)\]\([^)]*\)", "$1", RegexOptions.None, TimeSpan.FromSeconds(2)).Replace("*", "").Replace("`", "").Replace("[", "(").Replace("]", ")"), @"\s+", " ", RegexOptions.None, TimeSpan.FromSeconds(2)).Trim();
 
     /// <summary>"the drawing now has 1 LINE, 1 CIRCLE" / "the drawing is empty"; should: "the drawing should now have ..." / "should now be empty".</summary>
     public static string StateText(RecordingState state, bool should = false)

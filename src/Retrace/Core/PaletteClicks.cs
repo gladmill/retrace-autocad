@@ -88,15 +88,15 @@ public static class PaletteClickKinds
 
     /// <summary>The words of a click, with the caller's markup for names and paths (<paramref name="code"/>: a path or item, <paramref name="bold"/>: a control's name): "Click tree item `A › B` in **Catalog**",
     /// "Expand tree item `A`", "Click list item `Oak` in **Finishes**", "Click Panel no. 2 at 40% × 60%". Null for a plain button (the caller words it).</summary>
-    public static string? Words(string kind, string button, string path, string treeLabel, PaletteHit? hit, Func<string, string> code, Func<string, string> bold, bool capital = true)
+    public static string? Words(string kind, string button, string path, string treeLabel, PaletteHit? hit, Func<string, string> code, Func<string, string> bold, bool capital = true, Func<string, string>? plain = null)
     {
         string C(string s) => capital ? char.ToUpperInvariant(s[0]) + s[1..] : s;
         string In(string label) => label.Length > 0 ? " in " + bold(label) : "";
         switch (kind)
         {
-            case Tree: return C("click tree item ") + code(path) + In(treeLabel);
-            case Expand: return C("expand tree item ") + code(path) + In(treeLabel);
-            case Collapse: return C("collapse tree item ") + code(path) + In(treeLabel);
+            case Tree: return TreeWording.Words("click", path, treeLabel, bold, plain ?? (t => t), capital);
+            case Expand: return TreeWording.Words("expand", path, treeLabel, bold, plain ?? (t => t), capital);
+            case Collapse: return TreeWording.Words("collapse", path, treeLabel, bold, plain ?? (t => t), capital);
             case ListView:
                 return C("click list item ") + code(hit?.Item.Length > 0 ? hit.Item : "(blank)") + In(hit?.ControlLabel ?? "");
             case Point:
@@ -125,11 +125,11 @@ public static class PaletteClickKinds
     static string Percent(double f) => Math.Round(f * 100).ToString("0", CultureInfo.InvariantCulture) + "%";
 
     /// <summary>The words of a palette step's click as one sentence part, for every kind (a button: "click Draw box"; a double-click as before).</summary>
-    public static string Phrase(string kind, string button, string path, string treeLabel, int index, int legacyIndex, PaletteHit? hit, Func<string, string> code, Func<string, string> bold, bool capital)
+    public static string Phrase(string kind, string button, string path, string treeLabel, int index, int legacyIndex, PaletteHit? hit, Func<string, string> code, Func<string, string> bold, bool capital, Func<string, string>? plain = null)
     {
         if (kind == Image) return ImageWords(button, index, legacyIndex, bold, capital);
         if (kind == DialogClickKinds.DoubleClick) return DialogClickKinds.DoubleClickWords(path, treeLabel, code, bold, capital);
-        if (Words(kind, button, path, treeLabel, hit, code, bold, capital) is { } w) return w;
+        if (Words(kind, button, path, treeLabel, hit, code, bold, capital, plain) is { } w) return w;
         return (capital ? "Click " : "click ") + bold(button);
     }
 

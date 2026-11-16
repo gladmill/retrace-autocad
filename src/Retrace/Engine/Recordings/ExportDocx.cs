@@ -152,7 +152,44 @@ public static class ExportDocx
         public int Pictures;
         uint _drawingId = 1;
 
-        public void All(IEnumerable<Block> blocks, OpenXmlElement into) { foreach (var b in blocks) Block(b, into, 0, null); }
+        public void All(IEnumerable<Block> blocks, OpenXmlElement into) => Blocks(blocks.ToList(), into, 0);
+
+        /// <summary>Writes sibling blocks. Everything in front of a picture (a step's text and its change lines, the "Before:" / "After" labels) stays on the page of the first picture of that group
+        /// (keep with next, lines together), so a step's text is never left under the previous step's picture. A group is the run of non-picture blocks since the last picture. <paramref name="firstMarker"/>
+        /// goes in front of the first paragraph (a list item's number or bullet).</summary>
+        void Blocks(List<Block> blocks, OpenXmlElement into, int indent, Marker? firstMarker = null)
+        {
+            var group = new List<Paragraph>();   // the paragraphs written since the last picture
+            bool first = true;
+            foreach (var b in blocks)
+            {
+                int before = into.ChildElements.Count;
+                Block(b, into, indent, first && b is ParagraphBlock ? firstMarker : null);
+                if (b is ParagraphBlock) first = false;
+                var written = into.ChildElements.Skip(before).OfType<Paragraph>().ToList();
+                if (IsPictureOnly(b))
+                {
+                    foreach (var p in group) KeepTogether(p);
+                    group.Clear();
+                }
+                else group.AddRange(written);
+            }
+        }
+
+        static bool IsPictureOnly(Block b) =>
+            b is ParagraphBlock p && p.Inline != null && p.Inline.Any(i => i is LinkInline { IsImage: true })
+            && p.Inline.All(i => i is LinkInline { IsImage: true } || i is LineBreakInline || (i is LiteralInline l && string.IsNullOrWhiteSpace(l.Content.ToString())));
+
+        /// <summary>keepNext and keepLines on a paragraph, in schema order (after the style, before spacing and indent).</summary>
+        public static void KeepTogether(Paragraph para)
+        {
+            var pp = para.ParagraphProperties ??= new ParagraphProperties();
+            if (pp.KeepNext != null) return;
+            var style = pp.ParagraphStyleId;
+            var keep = new KeepNext(); var lines = new KeepLines();
+            if (style != null) { style.InsertAfterSelf(keep); keep.InsertAfterSelf(lines); }
+            else { pp.PrependChild(lines); pp.PrependChild(keep); }
+        }
 
         record Marker(string Text);   // the "1." / bullet to put in front of a list item's first paragraph
 
@@ -174,7 +211,7 @@ public static class ExportDocx
                     into.Append(new Paragraph(new ParagraphProperties(new SpacingBetweenLines { After = "60" })));   // Word wants a paragraph after a table
                     break;
                 case QuoteBlock q:
-                    foreach (var c in q) Block(c, into, indent + 1, null);
+                    Blocks(q.ToList(), into, indent + 1);
                     break;
                 case FencedCodeBlock or CodeBlock:
                     foreach (var line in ((LeafBlock)b).Lines.Lines.Take(((LeafBlock)b).Lines.Count))
@@ -184,7 +221,7 @@ public static class ExportDocx
                     into.Append(new Paragraph(new ParagraphProperties(new ParagraphBorders(new BottomBorder { Val = BorderValues.Single, Size = 4, Color = "A0A0A0" }))));
                     break;
                 case ContainerBlock cb:
-                    foreach (var c in cb) Block(c, into, indent, null);
+                    Blocks(cb.ToList(), into, indent);
                     break;
             }
         }
@@ -195,12 +232,7 @@ public static class ExportDocx
             foreach (var item in l.OfType<ListItemBlock>())
             {
                 var m = new Marker(l.IsOrdered ? $"{n++}." : "•");
-                bool first = true;
-                foreach (var c in item)
-                {
-                    Block(c, into, indent + 1, first && c is ParagraphBlock ? m : null);
-                    if (c is ParagraphBlock) first = false;
-                }
+                Blocks(item.ToList(), into, indent + 1, m);
             }
         }
 
