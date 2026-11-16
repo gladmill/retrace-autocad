@@ -230,12 +230,14 @@ public sealed class RetraceSettings
     /// turn back on) keeps its previous value on false.</summary>
     public static bool TryLoad(out RetraceSettings settings, string root = Paths.Root)
     {
+        string text = "";
         try
         {
             var file = Paths.SettingsFile(root);
             if (File.Exists(file))
             {
-                var s = JsonSerializer.Deserialize<RetraceSettings>(File.ReadAllText(file), ReadOptions);
+                text = File.ReadAllText(file);
+                var s = JsonSerializer.Deserialize<RetraceSettings>(text, ReadOptions);
                 if (s == null) { settings = new() { RootDir = root }; return false; }
                 s.RootDir = root;
                 settings = s;
@@ -246,9 +248,54 @@ public sealed class RetraceSettings
         }
         catch (Exception)
         {
+            // one value of the wrong type (a string where a boolean belongs) must not drop the readable ones: read the file key by key
+            var partial = TryLoadKeys(text, root);
+            if (partial != null) { settings = partial; return partial.UnreadableKeys.Count == 0 || !partial.UnreadableKeys.Contains("statusBoard"); }
             settings = new() { RootDir = root };
             return false;
         }
+    }
+
+    /// <summary>The names of the keys the settings file holds that could not be read (wrong type); they keep their defaults. Empty for a file that was read whole. Not stored.</summary>
+    [JsonIgnore] public List<string> UnreadableKeys { get; private set; } = new();
+
+    /// <summary>The message every writer of settings.json shows when the file it loaded had values it could not read: which keys, and what saving writes for them (their defaults), so a
+    /// rewrite never drops a value silently. Null when there were none.</summary>
+    public string? UnreadableNotice() => UnreadableNotice(UnreadableKeys);
+
+    public static string? UnreadableNotice(IReadOnlyCollection<string>? keys)
+    {
+        if (keys == null || keys.Count == 0) return null;
+        var defaults = JsonSerializer.SerializeToElement(new RetraceSettings());
+        var parts = keys.Select(k => defaults.TryGetProperty(k, out var v) ? $"{k} (saved as {v.GetRawText()})" : k);
+        return "settings.json: could not read " + string.Join(", ", parts) + " (wrong type); saving writes the default for " + (keys.Count == 1 ? "it" : "them") + ".";
+    }
+
+    /// <summary>Reads a settings file whose whole read failed, one key at a time: the readable keys are kept, the others are named in <see cref="UnreadableKeys"/>. Null when the text is not a JSON object at all.</summary>
+    static RetraceSettings? TryLoadKeys(string text, string root)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(text, new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return null;
+            var result = new RetraceSettings { RootDir = root };
+            var props = typeof(RetraceSettings).GetProperties()
+                .Where(p => p.GetCustomAttributes(typeof(JsonPropertyNameAttribute), false).Length > 0 && p.CanWrite)
+                .ToDictionary(p => ((JsonPropertyNameAttribute)p.GetCustomAttributes(typeof(JsonPropertyNameAttribute), false)[0]).Name, StringComparer.Ordinal);
+            foreach (var member in doc.RootElement.EnumerateObject())
+            {
+                if (!props.TryGetValue(member.Name, out var prop)) continue;
+                try
+                {
+                    var value = JsonSerializer.Deserialize(member.Value.GetRawText(), prop.PropertyType, ReadOptions);
+                    if (value == null && prop.PropertyType.IsValueType) throw new JsonException();
+                    prop.SetValue(result, value);
+                }
+                catch (Exception) { result.UnreadableKeys.Add(member.Name); }
+            }
+            return result;
+        }
+        catch (Exception) { return null; }
     }
 
     public bool Save(out string error)

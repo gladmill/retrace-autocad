@@ -8,8 +8,9 @@ namespace Retrace.AutoCad;
 
 /// <summary>Setting <c>postTestZoom</c>: after the last step of a replayed test, the model-space view is set through the API (Editor.SetCurrentView), not with a ZOOM command, so nothing
 /// shows up as a step, in the command history the test compares, or in the recorder. The view is not part of the state hash (that reads entities and layers only).
-/// "last created" = the newest model-space object that is not erased and whose handle is at or above the database's handle seed read when the run's first step started: handles
-/// only grow while objects are made, so the highest one is the one made last, and an object that was there before the test is never taken for the test's work.</summary>
+/// "last created" = the newest live entity whose handle is at or above the database's handle seed read when the run's first step started (handles only grow while objects are made, so
+/// the highest one is the one made last, and an object that was there before the test is never taken for the test's work), resolved upward to what sits in model space: see <see cref="ZoomParent"/>
+/// (an attribute to its block reference, a piece of a new block definition to the reference made by the same command, a member of a group made by the command to the whole group); an object that was there before the run is never the target, even when the run added a vertex or an attribute to it.</summary>
 static class PostZoom
 {
     public const double Margin = 0.15;           // lastEntity: 15 % of the object's larger side on every side
@@ -52,8 +53,7 @@ static class PostZoom
             else
             {
                 if (seed <= 0) return null;
-                if (!LastCreated(db, seed, out lo, out hi, out var handle)) return null;
-                what = "last created object " + handle;
+                if (!LastCreated(db, seed, out lo, out hi, out what)) return null;
             }
             if (hi.X < lo.X || hi.Y < lo.Y || hi.Z < lo.Z) return null;
             if (hi.X - lo.X > MaxSpan || hi.Y - lo.Y > MaxSpan || hi.Z - lo.Z > MaxSpan) { Log.Info("post-test zoom: the extents are absurd (an infinite line?); the view is left as it is"); return null; }   // an empty drawing reports a reversed box; checked here, before the corners are turned into the view's coordinates
@@ -88,24 +88,156 @@ static class PostZoom
         return RecordZoomRules.Created(seed, ms.Cast<ObjectId>().Select(id => id.Handle.Value));
     }
 
-    /// <summary>The model-space object with the highest handle at or above <paramref name="seed"/> (erased ones are not listed), its extents in WCS. False when the test made
-    /// none or the object has no extents.</summary>
-    static bool LastCreated(Database db, long seed, out Point3d lo, out Point3d hi, out string handle)
+    public const int BudgetMs = 100;             // lastEntity: the walk over the new handles may take this long, then the plain model-space rule is used
+
+    /// <summary>The most recently created thing, resolved to what sits in model space (<see cref="ZoomResolver{T}"/>): the object with the highest handle at or above <paramref name="seed"/> that is a live
+    /// entity and can be resolved upward to a new object (attribute to its block reference, a piece inside a block definition to the reference made by the same command, a group made by the command
+    /// to the whole group), its extents (all members' for a group) in WCS. The walk has a time budget (<see cref="BudgetMs"/>); past it, or when nothing resolves, the newest model-space object is used.
+    /// False when the run made none or nothing has usable extents.</summary>
+    static bool LastCreated(Database db, long seed, out Point3d lo, out Point3d hi, out string what)
     {
-        lo = hi = Point3d.Origin; handle = "";
+        lo = hi = Point3d.Origin; what = "";
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        bool Expired() => sw.ElapsedMilliseconds > BudgetMs;
         using var tr = db.TransactionManager.StartOpenCloseTransaction();
-        var ms = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForRead);
+        var owners = new AcOwners(db, tr);
+        ZoomTarget<AcOwners.Ob>? target = null;
+        bool timedOut = false;
+        try { target = ZoomParent.Newest(seed, owners.Candidates(seed, Expired), owners, out timedOut, Expired, (c, ex) => Log.Info("post-test zoom: object " + c.Id.Handle + " skipped (" + ex.Message + ")")); }
+        catch (Exception ex) { Log.Info("post-test zoom: resolving the newest object failed (" + ex.Message + "); the newest model-space object is used"); }
+        if (timedOut) Log.Info("post-test zoom: resolving the newest object took more than " + BudgetMs + " ms (" + owners.Probes + " handles looked at); the newest model-space object is used");
+        var walkMs = sw.ElapsedMilliseconds;
+        target ??= NewestInModelSpace(db, seed, tr);
+        if (target == null) return false;
+        var boxes = new List<ZoomBox>();
+        foreach (var o in target.Objects)
+        {
+            try
+            {
+                var ent = tr.GetObject(o.Id, OpenMode.ForRead) as Entity;
+                if (ent == null || ent.BlockId != SymbolUtilityServices.GetBlockModelSpaceId(db)) continue;   // a group member in another space
+                var e = ExtentsOf(ent);
+                boxes.Add(new ZoomBox(e.MinPoint.X, e.MinPoint.Y, e.MinPoint.Z, e.MaxPoint.X, e.MaxPoint.Y, e.MaxPoint.Z));
+            }
+            catch (Exception ex) { Log.Info("post-test zoom: object " + o.Id.Handle + " has no extents (" + ex.Message + "); left out"); }
+        }
+        if (ZoomBox.Union(boxes, MaxSpan, out var skippedBoxes) is not { } u) { Log.Info("post-test zoom: the last created object has no usable extents (an infinite line?); the view is left as it is"); return false; }
+        if (skippedBoxes > 0) Log.Info("post-test zoom: " + skippedBoxes + " member(s) with no usable extents (an infinite line?) left out");
+        lo = new Point3d(u.MinX, u.MinY, u.MinZ); hi = new Point3d(u.MaxX, u.MaxY, u.MaxZ); what = "last created " + target.Why + " [" + walkMs + " ms, " + owners.Probes + " handles]";
+        return true;
+    }
+
+    /// <summary>The extents of an entity in WCS. An MInsert reports only its first cell, so the whole array is that cell plus the cells at the other three corners.</summary>
+    static Extents3d ExtentsOf(Entity ent)
+    {
+        var cell = ent.GeometricExtents;
+        var e = cell;
+        if (ent is MInsertBlock mi && (mi.Columns > 1 || mi.Rows > 1))
+        {
+            var ocs = Matrix3d.PlaneToWorld(mi.Normal);
+            foreach (var (c, r) in new[] { (mi.Columns - 1, 0), (0, mi.Rows - 1), (mi.Columns - 1, mi.Rows - 1) })
+            {
+                var off = new Vector3d(c * mi.ColumnSpacing, r * mi.RowSpacing, 0).RotateBy(mi.Rotation, Vector3d.ZAxis).TransformBy(ocs);
+                var moved = new Extents3d(cell.MinPoint, cell.MaxPoint);
+                moved.TransformBy(Matrix3d.Displacement(off));
+                e.AddExtents(moved);
+            }
+            Log.Info($"post-test zoom: MInsert {mi.ObjectId.Handle} {mi.Columns} x {mi.Rows}: GeometricExtents (first cell) {cell.MinPoint.X:0.###},{cell.MinPoint.Y:0.###} to {cell.MaxPoint.X:0.###},{cell.MaxPoint.Y:0.###}; whole array {e.MinPoint.X:0.###},{e.MinPoint.Y:0.###} to {e.MaxPoint.X:0.###},{e.MaxPoint.Y:0.###}");
+        }
+        return e;
+    }
+
+    /// <summary>The old rule, when the walk found nothing it could resolve (or ran out of time): the model-space object with the highest handle at or above the seed.</summary>
+    static ZoomTarget<AcOwners.Ob>? NewestInModelSpace(Database db, long seed, Transaction tr)
+    {
+        if (tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForRead) is not BlockTableRecord ms) return null;
         var ids = ms.Cast<ObjectId>().ToList();
         var bestH = RecordZoomRules.Newest(seed, ids.Select(id => id.Handle.Value));
-        var best = bestH < 0 ? ObjectId.Null : ids.First(id => id.Handle.Value == bestH);
-        if (best.IsNull) return false;
-        try
+        if (bestH < 0) return null;
+        var id = ids.First(i => i.Handle.Value == bestH);
+        return new ZoomTarget<AcOwners.Ob>(new[] { new AcOwners.Ob(id) }, "object " + id.Handle + " (model-space rule)");
+    }
+
+    /// <summary>The drawing's owner relations for <see cref="ZoomResolver{T}"/>. Nothing here throws on purpose: the resolver's caller skips a candidate that does.</summary>
+    sealed class AcOwners : IZoomOwners<AcOwners.Ob>
+    {
+        public const long MaxProbes = 1_000_000;   // handles looked at from the top down before the walk gives up
+        public sealed class Ob { public readonly ObjectId Id; public Ob(ObjectId id) { Id = id; } }
+
+        readonly Database _db; readonly Transaction _tr; readonly ObjectId _ms;
+        readonly Autodesk.AutoCAD.Runtime.RXClass _entity = Autodesk.AutoCAD.Runtime.RXObject.GetClass(typeof(Entity));
+        readonly Autodesk.AutoCAD.Runtime.RXClass _btr = Autodesk.AutoCAD.Runtime.RXObject.GetClass(typeof(BlockTableRecord));
+        readonly Autodesk.AutoCAD.Runtime.RXClass _group = Autodesk.AutoCAD.Runtime.RXObject.GetClass(typeof(Group));
+        public long Probes;
+        public AcOwners(Database db, Transaction tr) { _db = db; _tr = tr; _ms = SymbolUtilityServices.GetBlockModelSpaceId(db); }
+
+        /// <summary>Live entities with a handle at or above the seed, the highest handle first. Walks the handle range down; the class test needs no open, so a handle that is no entity (a dictionary,
+        /// an xrecord, a group) or no object, and an erased one, costs almost nothing. Stops when <paramref name="expired"/> says so.</summary>
+        public IEnumerable<Ob> Candidates(long seed, Func<bool> expired)
         {
-            var ext = ((Entity)tr.GetObject(best, OpenMode.ForRead)).GeometricExtents;
-            lo = ext.MinPoint; hi = ext.MaxPoint; handle = best.Handle.ToString();
-            return true;
+            long top;
+            try { top = _db.Handseed.Value - 1; } catch { yield break; }
+            for (long h = top; h >= seed && h > 0; h--)
+            {
+                if (++Probes > MaxProbes) { Log.Info("post-test zoom: more than " + MaxProbes + " handles since the seed"); yield break; }
+                if ((Probes & 63) == 0 && expired()) yield break;
+                if (!_db.TryGetObjectId(new Autodesk.AutoCAD.DatabaseServices.Handle(h), out var id) || id.IsNull || id.IsErased) continue;
+                if (!id.ObjectClass.IsDerivedFrom(_entity)) continue;
+                yield return new Ob(id);
+            }
         }
-        catch (Exception ex) { Log.Info("post-test zoom: the last created object has no extents (" + ex.Message + "); the view is left as it is"); return false; }
+
+        public long Handle(Ob obj) => obj.Id.Handle.Value;
+
+        public ZoomOwner OwnerOf(Ob obj, out long ownerHandle)
+        {
+            ownerHandle = 0;
+            var owner = (_tr.GetObject(obj.Id, OpenMode.ForRead) as DBObject)?.OwnerId ?? ObjectId.Null;
+            if (owner.IsNull || owner.IsErased) return ZoomOwner.None;
+            ownerHandle = owner.Handle.Value;
+            if (owner == _ms) return ZoomOwner.Space;
+            var cls = owner.ObjectClass;
+            if (cls.IsDerivedFrom(_entity)) return ZoomOwner.Entity;
+            if (cls.IsDerivedFrom(_btr)) return ZoomOwner.Definition;
+            return ZoomOwner.None;
+        }
+
+        public Ob? ParentEntity(Ob obj)
+        {
+            var owner = (_tr.GetObject(obj.Id, OpenMode.ForRead) as DBObject)?.OwnerId ?? ObjectId.Null;
+            return owner.IsNull || owner.IsErased ? null : new Ob(owner);
+        }
+
+        public IEnumerable<Ob> ReferencesOfDefinition(Ob obj)
+        {
+            var btrId = ((_tr.GetObject(obj.Id, OpenMode.ForRead) as Entity)?.BlockId) ?? ObjectId.Null;
+            if (btrId.IsNull || _tr.GetObject(btrId, OpenMode.ForRead) as BlockTableRecord is not { } btr) yield break;
+            if (btr.IsLayout || btr.IsFromExternalReference || btr.IsFromOverlayReference) yield break;
+            // a dimension's anonymous block ("*D..."): the dimension is no block reference, so asking would find nothing; the walk reaches the dimension itself
+            if (btr.IsAnonymous && !btr.IsDynamicBlock && btr.Name.StartsWith("*D", StringComparison.OrdinalIgnoreCase)) yield break;
+            var ids = new List<ObjectId>();
+            ids.AddRange(btr.GetBlockReferenceIds(true, false).Cast<ObjectId>());
+            if (btr.IsDynamicBlock) foreach (ObjectId anon in btr.GetAnonymousBlockIds()) if (_tr.GetObject(anon, OpenMode.ForRead) is BlockTableRecord ab) ids.AddRange(ab.GetBlockReferenceIds(true, false).Cast<ObjectId>());
+            foreach (var id in ids) if (!id.IsErased) yield return new Ob(id);
+        }
+
+        /// <summary>The groups an entity belongs to, from its persistent reactors (a group puts itself there): no scan of the group dictionary.</summary>
+        public IReadOnlyList<long> GroupsOf(Ob obj)
+        {
+            var res = new List<long>();
+            if (_tr.GetObject(obj.Id, OpenMode.ForRead) is not DBObject o) return res;
+            foreach (ObjectId r in o.GetPersistentReactorIds())
+                if (!r.IsNull && !r.IsErased && r.ObjectClass.IsDerivedFrom(_group)) res.Add(r.Handle.Value);
+            return res;
+        }
+
+        public IReadOnlyList<Ob> GroupMembers(long groupHandle)
+        {
+            var members = new List<Ob>();
+            if (!_db.TryGetObjectId(new Autodesk.AutoCAD.DatabaseServices.Handle(groupHandle), out var gid) || _tr.GetObject(gid, OpenMode.ForRead) as Group is not { } g) return members;
+            foreach (ObjectId id in g.GetAllEntityIds()) if (!id.IsNull && !id.IsErased) members.Add(new Ob(id));
+            return members;
+        }
     }
 
     /// <summary>The matrix from the view's own coordinates (DCS) to WCS.</summary>

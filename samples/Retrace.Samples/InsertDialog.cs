@@ -13,6 +13,12 @@ namespace Retrace.Samples
         /// <summary>Open the next dialog partly below the bottom of the screen (DRAWINSERTLOW).</summary>
         public static bool Low;
 
+        /// <summary>DRAWFLASH*: close the next dialog by itself this many ms after it shows, with nobody touching it (0 = stay open).</summary>
+        public static int AutoCloseMs;
+
+        /// <summary>DRAWLATEDIALOG: the next dialog shows its frame and an empty body, and its controls only this many ms later (a dialog that paints late; 0 = at once).</summary>
+        public static int LateMs;
+
         private readonly TreeView tree = new() { Name = "PartsTree", AccessibleName = "Parts", HideSelection = false, Location = new Point(16, 36), Size = new Size(200, 190), TabIndex = 1 };
         private readonly Label selected = new() { Name = "SelectedLabel", AutoSize = true, Location = new Point(16, 234), Text = "Selected: (nothing)" };
         private readonly Button add = new() { Name = "addButton", Text = "Add", Location = new Point(232, 36), Size = new Size(90, 27), TabIndex = 5 };
@@ -74,11 +80,26 @@ namespace Retrace.Samples
         }
 
         private readonly bool low;
+        private readonly int autoCloseMs = AutoCloseMs, lateMs = LateMs;
+        private System.Windows.Forms.Timer? timer;
 
         /// <summary>AutoCAD centres a modal dialog on its own, so the low position is set once it shows.</summary>
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
+            if (lateMs > 0)
+            {
+                foreach (Control c in Controls) c.Visible = false;
+                var late = new System.Windows.Forms.Timer { Interval = lateMs };
+                late.Tick += (_, _) => { late.Stop(); late.Dispose(); foreach (Control c in Controls) c.Visible = true; };
+                late.Start();
+            }
+            if (autoCloseMs > 0)
+            {
+                timer = new System.Windows.Forms.Timer { Interval = autoCloseMs };
+                timer.Tick += (_, _) => { timer.Stop(); DialogResult = DialogResult.Cancel; Close(); };
+                timer.Start();
+            }
             if (!low) return;
             var area = Screen.PrimaryScreen!.WorkingArea;
             Location = new Point(area.Left + 200, area.Bottom - 160);
@@ -86,6 +107,8 @@ namespace Retrace.Samples
 
         /// <summary>The text of the selected node, or "" when there is none.</summary>
         public string PartName => tree.SelectedNode?.Text ?? "";
+
+        protected override void Dispose(bool disposing) { if (disposing) timer?.Dispose(); base.Dispose(disposing); }
 
         private void Done()
         {

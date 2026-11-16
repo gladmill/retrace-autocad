@@ -88,6 +88,7 @@ public sealed class Recorder
     // button's (SendStringToExecute), also after an awaited call; _lastPaletteTick is the input count at the click
     long _lastPaletteT = -100000, _lastPaletteTick;
     string? _lastPaletteButton;
+    uint _downMsgTime;        // the system time (ms) the last left button-down was posted: when the person pressed, not when the UI thread got round to it
     int _downX, _downY;       // the screen point of the last left button-down, when and in which window (setting showClickArrows)
 
     bool _lastPaletteConsumed = true;
@@ -135,7 +136,10 @@ public sealed class Recorder
             ["workspace"] = Try(() => AcApp.GetSystemVariable("WSCURRENT")?.ToString()),
             ["plugin"] = "Retrace " + (typeof(Recorder).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false).OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion ?? "?"),
         };
-        header[RecordZoomRules.HeaderField] = RetraceSettings.Load().RecordZoom;   // additive: which view setting this recording was made with (a replay notes a difference)
+        var atStart = RetraceSettings.Load();
+        if (atStart.UnreadableKeys.Count > 0) Log.Info("settings.json: could not read " + string.Join(", ", atStart.UnreadableKeys) + " (wrong type); those keep their defaults");
+        header[SettingsHeader.Field] = SettingsHeader.Snapshot(atStart);   // additive: every setting (but the folder paths) as it is at record start, so a sent recording shows how the test was made
+        header[RecordZoomRules.HeaderField] = atStart.RecordZoom;  // additive: which view setting this recording was made with (a replay notes a difference)
         // a recording made in a new drawing: the template new drawings start from here, so RETRACERUN can start its drawing from the same one (it holds the layers etc.)
         Log.Safe("header template", () =>
         {
@@ -338,6 +342,7 @@ public sealed class Recorder
         _rz.Begin(settings.RecordZoom, Ask.ScriptOrLispBits());
         _shots.Arrows = settings.TestDocArrows;   // the test document's own setting (the training document's showClickArrows is not read here)
         ButtonNaming.NewSession();
+        _shots.Hold = YoungModal;
         _shots.Begin(w.Path, enabled, MainWindowHandle(), () => _modalOpen > 0, (n, file, what) =>
         {
             var ww = _w;   // pool thread: only the writer is touched
@@ -737,16 +742,17 @@ public sealed class Recorder
         var nEnter = Emit("modal_enter", CurDoc(), ("title", fg?.Title), ("windowClass", fg?.Class), ("main", mainInFront));
         var watch = nEnter > 0 ? _dlg.Push(nEnter) : null;
         foreach (var older in _episodes) if (!older.WindowSeen) older.Abandon();   // the timer below replaces theirs: nothing more is known about them
-        var episode = new ModalEpisode(nEnter, before);
+        var episode = new ModalEpisode(nEnter, before) { StartMs = _w?.ElapsedMs ?? 0, InputTick = _inputTick, DlgInput = _dlg.InputCount, CanSeeInput = watch != null };
         _episodes.Add(episode);
-        // the dialog is often not foreground yet at this instant: look again shortly after, and then every 250 ms while the modal state is open (a slow dialog shows after a second or more)
+        // the dialog is often not foreground yet at this instant: look again shortly after (every 100 ms for the first 1.5 s: the moment it is first seen decides whether it was a flash, see FlashDialog), and then every
+        // 250 ms while the modal state is open (a slow dialog shows after a second or more)
         _modalTimer?.Stop();
         var disp = System.Windows.Threading.Dispatcher.CurrentDispatcher;
-        var timer = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Background, disp) { Interval = TimeSpan.FromMilliseconds(300) };
+        var timer = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Background, disp) { Interval = TimeSpan.FromMilliseconds(100) };
         _modalTimer = timer;
         timer.Tick += (_, _) =>
         {
-            timer.Interval = TimeSpan.FromMilliseconds(250);
+            if ((_w?.ElapsedMs ?? 0) - episode.StartMs > 1500) timer.Interval = TimeSpan.FromMilliseconds(250);
             Log.Safe("ModalTitle", () =>
             {
                 if (!_episodes.Contains(episode)) { timer.Stop(); return; }   // left already
@@ -764,20 +770,43 @@ public sealed class Recorder
                 var dlgWnd = announced != IntPtr.Zero ? announced : Native.DialogWindow(main, default, episode.Before);
                 if (dlgWnd == IntPtr.Zero) return;   // none yet: look again (it is written as `modal_nowindow` at the leave if none ever shows)
                 timer.Stop(); episode.WindowFound();
+                episode.SeenMs ??= _w?.ElapsedMs;
                 var shotFor = nEnter;   // the dialog picture belongs to modal_title when a title arrives, else to modal_enter
                 var title = fg?.Title;
                 var shown = dlgWnd == announced ? (Native.Foreground() ?? (Title: Native.TitleOf(dlgWnd), Class: Native.ClassOf(dlgWnd))) : (Title: Native.TitleOf(dlgWnd), Class: Native.ClassOf(dlgWnd));
                 if (shown.Title != fg?.Title || shown.Class != fg?.Class)
                 {
                     var nTitle = Emit("modal_title", CurDoc(), ("title", shown.Title), ("windowClass", shown.Class), ("main", false));
-                    if (nTitle > 0) { shotFor = nTitle; title = shown.Title; }
+                    if (nTitle > 0) { shotFor = nTitle; title = shown.Title; episode.TitleN = nTitle; }
                 }
-                if (watch != null && _w != null) _dlg.Resolve(watch, dlgWnd, shotFor, title, _w.ElapsedMs);
-                if (shotFor > 0 && _w != null) _shots.Request(ShotRules.Dialog(shotFor, _w.ElapsedMs));   // a picture only of a real dialog window
+                if (watch != null && _w != null)
+                {
+                    _dlg.Resolve(watch, dlgWnd, shotFor, title, _w.ElapsedMs);   // (throws before the hook is installed when the window cannot be read: HookOk stays false, the dialog is never a flash)
+                    episode.HookOk = _dlg.HookActive;
+                }
+                if (shotFor > 0 && _w != null) _shots.Request(ShotRules.Dialog(shotFor, _w.ElapsedMs, dlgWnd.ToInt64()));   // a picture only of a real dialog window
             });
         };
         timer.Start();
     });
+
+    /// <summary>A dialog window is on screen that may still turn out to be a flash (seen for under <see cref="FlashDialog.ThresholdMs"/>, nobody has touched it): the shot service holds its pictures.</summary>
+    bool YoungModal()
+    {
+        var w = _w;
+        if (w == null || _episodes.Count == 0) return false;
+        var ep = _episodes[^1];
+        if (ep.N <= 0 || Touched(ep)) return false;
+        // a dialog window is on screen that the modal timer has not looked at yet (it looks every 100 ms): wait for that, the time it counts from is the moment it was seen
+        // (not for ever, and not for a state whose window was found already: one that merged into a dialog a button opened can never be a flash)
+        if (ep.SeenMs == null)
+            return !ep.WindowSeen && ep.CanSeeInput && w.ElapsedMs - ep.StartMs < FlashDialog.UnseenHoldMs
+                && FlashDialog.HoldBeforeSeen(ep.StartMs, w.ElapsedMs, Native.ShownForegroundOfThisProcess(MainWindowHandle()) != IntPtr.Zero, ep.WindowSeen, ep.CanSeeInput, false);
+        return FlashDialog.Young(ep.SeenMs, w.ElapsedMs, false, ep.HookOk);
+    }
+
+    /// <summary>A click or key press since this modal state began (the recorder's own count, and the dialog hook's, which sees a WinForms dialog's own loop).</summary>
+    bool Touched(ModalEpisode ep) => _inputTick != ep.InputTick || _dlg.InputCount != ep.DlgInput;
 
     void OnLeaveModal(object? s, EventArgs e) => Log.Safe("LeaveModal", () =>
     {
@@ -791,12 +820,22 @@ public sealed class Recorder
             if (_w != null && _dlg.LeaveAdopted(_w.ElapsedMs) is { } adopted) { EmitDialogValues(adopted); Emit("modal_leave", CurDoc()); }
             return;
         }
+        // a dialog that opened and closed by itself within a fraction of a second, with nobody touching it: no step, no picture, one line in the log (FlashDialog)
+        bool flash = _w != null && episode is { N: > 0 } && FlashDialog.IsFlash(episode.SeenMs, _w.ElapsedMs, Touched(episode), episode.HookOk);
         Log.Safe("dialog values", () =>
         {
             var r = _w == null ? null : _dlg.Close(_w.ElapsedMs);
-            if (r == null) return;
+            if (r == null || flash) return;
             EmitDialogValues(r);
         });
+        if (flash)
+        {
+            _shots.CancelDialog(episode!.N, episode.TitleN);
+            Log.Info($"dialog shown for {_w!.ElapsedMs - episode.SeenMs} ms with no click or key (under {FlashDialog.ThresholdMs} ms): not recorded as a step, no picture");
+            Emit("modal_flash", CurDoc(), ("for", episode.N), ("ms", _w.ElapsedMs - episode.SeenMs));
+            Emit("modal_leave", CurDoc());
+            return;
+        }
         // no window other than the main window showed while this modal state was open: say so, just before its leave (a dialog that shows late is written as any dialog is, and no marker)
         if (episode is { WindowlessAtLeave: true, N: > 0 }) Emit("modal_nowindow", CurDoc(), ("for", episode.N));
         Emit("modal_leave", CurDoc());
@@ -813,7 +852,7 @@ public sealed class Recorder
         var w = _w;
         if (w == null || _inOwnCmd || _ownModal > 0) return 0;
         var n = Emit("modal_enter", CurDoc(), ("title", e.Title), ("windowClass", Native.ClassOf(e.Hwnd)));
-        if (n > 0) _shots.Request(ShotRules.Dialog(n, w.ElapsedMs));
+        if (n > 0) _shots.Request(ShotRules.Dialog(n, w.ElapsedMs, e.Hwnd.ToInt64()));
         return n;
     }
 
@@ -927,7 +966,7 @@ public sealed class Recorder
         var m = e.Message.message;
         if (m == 0x0200) { _activity++; return; }   // WM_MOUSEMOVE: somebody is at the mouse (a script that answers by itself moves nothing)
         if (CheckpointKey.TryHandle(m, e.Message.wParam, e.Message.lParam)) { e.Handled = true; return; }   // the shortcut is not user input
-        if (m == 0x0201) { _downX = e.Message.pt_x; _downY = e.Message.pt_y; }   // where the person clicked, for the arrow of the step's picture
+        if (m == 0x0201) { _downX = e.Message.pt_x; _downY = e.Message.pt_y; _downMsgTime = (uint)e.Message.time; }   // where the person clicked, for the arrow of the step's picture
         if (m is 0x0100 or 0x0201 or 0x0202 or 0x0203 && _pal.Enabled) PaletteInput(e.Message.hwnd, (uint)m, e.Message.wParam, e.Message.lParam);
         if (m == 0x0100 && _w != null && !_inOwnCmd) { if (Native.TypedChar((uint)(long)e.Message.wParam) is { } typedChar) _sel.Key(typedChar); }   // WM_KEYDOWN (no WM_CHAR reaches this handler)
         if (m is 0x0201 or 0x0202 && _w != null && !_inOwnCmd && Native.IsInside(DrawingWindow(), e.Message.hwnd))
@@ -955,8 +994,11 @@ public sealed class Recorder
         if (w == null) return;
         try
         {
+            if (message == 0x0202) _upSinceTree = true;
             if (message == 0x0202 && !_pal.HasPending) { _pal.NoteInput(hwnd); return; }   // a button-up: no click of its own (but the one a toolbar item waits for)
+            if (message == 0x0201 && _shots.HasQueuedPaletteShots) _shots.Repaint(_pal.CurrentPage);   // what the click before changed is painted first (its close-up shows the new label, not the old one)
             if (message is 0x0201 or 0x0202 or 0x0203) _shots.FlushDeferred();   // the click before this one has settled by now: its picture is taken before this click is handled
+            if (message == 0x0201) _shots.FlushPaletteWindows(w.ElapsedMs, _pal.CurrentPage);       // and its window picture too: it must show that click's result, not this one's (a stalled UI thread took it late)
             var (changed, at, button, index, picture) = _pal.OnInput(hwnd, message, wParam, lParam, w.ElapsedMs);
             _pal.NoteInput(hwnd);
             EmitPalette(changed, withPicture: button == null);   // values and the click are one step: the click carries the picture
@@ -972,6 +1014,7 @@ public sealed class Recorder
                 // a click on a tree item, a +/- button, an image, a list view item or a control with no name: one step of its own, after the values changed so far
                 var fields = new List<(string, object?)> { ("palette", at.Palette), ("set", at.Set), ("button", button) };
                 fields.AddRange(ic.ToFields());
+                if (ic.Kind == PaletteClickKinds.Tree) NoteTreeClick(ic.Path, w.ElapsedMs, _downMsgTime);
                 int k = Emit("palette_click", CurDoc(), fields.ToArray());
                 if (message is 0x0201 or 0x0202 or 0x0203) _shots.NoteClick(k, _downX, _downY);   // a double-click that opens a node: the point of its first button-down
                 PaletteClickPicture(k, hwnd, lParam, at, picture, ic.Kind == PaletteClickKinds.Image, ic.Rect);
@@ -988,6 +1031,21 @@ public sealed class Recorder
             _lastPaletteT = w.ElapsedMs; _lastPaletteTick = _inputTick; _lastPaletteButton = button; _lastPaletteConsumed = false;
         }
         catch (Exception ex) { Log.Error("palette input", ex); }
+    }
+
+    string? _lastTreePath;
+    long _lastTreeT;
+    uint _lastTreeMsgTime;
+    bool _upSinceTree = true;   // a left button-up was seen since the last recorded tree click
+
+    /// <summary>A tree click on the item that was clicked less than 1.5 s ago is recorded like any other (it can be a second click of a person), but leaves one line in retrace.log that tells a person's second click
+    /// from a phantom one: how long after the first, and whether the button came up in between (a real second click has an up first).</summary>
+    void NoteTreeClick(string path, long nowMs, uint msgTime)
+    {
+        if (_lastTreePath == path && nowMs - _lastTreeT < 1500)
+            Log.Info($"tree click on \"{path}\" again {nowMs - _lastTreeT} ms after the last one was recorded; the two presses were {unchecked(msgTime - _lastTreeMsgTime)} ms apart by the system clock (a press made while the UI thread was busy is recorded when it gets to it); " +
+                     $"left button released in between: {_upSinceTree}; both are recorded");
+        _lastTreePath = path; _lastTreeT = nowMs; _lastTreeMsgTime = msgTime; _upSinceTree = false;
     }
 
     /// <summary>The palette's close-up for a click, taken once the click has settled (a list a tree click filled is in it); <paramref name="before"/>, the close-up kept while the person worked, is the fallback when the palette

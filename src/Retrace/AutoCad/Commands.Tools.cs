@@ -276,6 +276,7 @@ public sealed partial class Commands
         {
             RetraceSettings.EnsureHome();
             var s = RetraceSettings.Load();
+            if ((commandLine || !FileDialogsOn()) && s.UnreadableNotice() is { } unreadable) ed.WriteMessage("\n" + unreadable + "\n");
             if (commandLine || !FileDialogsOn())
             {
                 using var cl = Ask.CommandLineOnly();   // -RETRACESETTINGS is the command-line form
@@ -425,6 +426,7 @@ public sealed partial class Commands
 
     static void SaveAndReport(Editor ed, RetraceSettings n)
     {
+        if (n.UnreadableNotice() is { } unreadable) ed.WriteMessage("\n" + unreadable + "\n");
         if (!n.Save(out var err)) { ed.WriteMessage($"\nCould not save settings: {err}\n"); return; }
         n.EnsureFolders();
         RibbonInstaller.ApplyPosition(n.RibbonTabPosition);
@@ -495,6 +497,7 @@ public sealed partial class Commands
                 var picked = AskSourceFolder(ed, s.Source);
                 if (picked == null) { ed.WriteMessage("\nRETRACEDOCS: no source folder; cancelled.\n"); return; }
                 s.SourceFolder = picked;
+                if (s.UnreadableNotice() is { } unreadable) ed.WriteMessage("\nRETRACEDOCS: " + unreadable + "\n");
                 s.Save(out _);
             }
             if (!Directory.Exists(s.Source)) { ed.WriteMessage($"\nRETRACEDOCS: source folder not found: {s.Source}\n"); return; }

@@ -91,6 +91,8 @@ sealed class SettingsWindow : Window
 
         var root = new StackPanel { Margin = new Thickness(14) };
         root.Children.Add(new TextBlock { Text = "Everything lives under " + current.RootDir + " unless you change a folder here.", Margin = new Thickness(0, 0, 0, 10), TextWrapping = TextWrapping.Wrap });
+        if (current.UnreadableNotice() is { } unreadable)
+            root.Children.Add(new TextBlock { Text = unreadable + " Save writes those defaults into the file.", Foreground = Brushes.Firebrick, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 10) });
         var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -191,11 +193,33 @@ sealed class SettingsWindow : Window
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
         var reset = Btn("Reset to defaults"); reset.Click += (_, _) => ResetAll();
         var save = Btn("Save"); save.IsDefault = true; save.Click += (_, _) => Save();
-        var cancel = Btn("Cancel"); cancel.IsCancel = true; cancel.Click += (_, _) => { Saved = false; Close(); };
+        var cancel = Btn("Cancel"); cancel.Click += (_, _) => { Saved = false; _discard = true; Close(); };   // a deliberate Cancel discards without asking; Esc and the X ask when something changed
         buttons.Children.Add(reset); buttons.Children.Add(save); buttons.Children.Add(cancel);
         root.Children.Add(buttons);
         Content = new ScrollViewer { Content = root, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         MaxHeight = Math.Max(400, SystemParameters.WorkArea.Height - 40);
+        _baseline = RawState();   // what the controls hold as it opens: a change is measured against this (not against validated settings, so a window that opens with an invalid combination still asks), and a value changed and changed back is no change
+        KeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Escape && !e.Handled) { e.Handled = true; Close(); } };   // Esc (not used by a drop-down or the shortcut box) closes like the X: it asks when something changed
+    }
+
+    readonly string _baseline;
+    bool _discard;   // the Cancel button: closes without asking
+
+    /// <summary>The window is closed (X, Esc, Alt+F4) with something changed and not saved: ask. Save / Don't save / Cancel (Cancel keeps the window open). The Cancel button and a save do not ask.</summary>
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        base.OnClosing(e);
+        if (e.Cancel || _discard || Saved) return;
+        var changed = SettingsClose.Changed(_baseline, RawState());
+        CloseAnswer? answer = changed ? ConfirmWindow.Ask(this) : null;
+        switch (SettingsClose.Decide(changed, answer))
+        {
+            case CloseAction.StayOpen: e.Cancel = true; break;
+            case CloseAction.SaveThenClose:
+                if (!Collect(Result, true)) { e.Cancel = true; break; }   // a value that is not valid: say so and stay
+                Saved = true;
+                break;
+        }
     }
 
     GroupBox BuildBasicCheckGroup(RetraceSettings current)
@@ -438,28 +462,52 @@ sealed class SettingsWindow : Window
         SetKey(KeyChord.Default);
     }
 
+    /// <summary>Save: collect, and close with Saved set. A value that is not valid keeps the window open with its message.</summary>
     void Save()
+    {
+        if (!Collect(Result, true)) return;
+        Saved = true;
+        Close();
+    }
+
+    /// <summary>Every control's value as one text, for the unsaved-changes check. It reads the controls as they are, with no validation.</summary>
+    string RawState() => SettingsClose.State(new object?[]
+    {
+        _rows.Select(r => r.Box.Text), _shots.IsChecked, _dialogValues.IsChecked, _autoFill.IsChecked, _review.IsChecked, _showUi.IsChecked, _uiPrompts.IsChecked, _loadedCuix.IsChecked,
+        _captureRibbon.IsChecked, _allWorkspaces.IsChecked, _statusBoard.IsChecked, _showClickArrows.IsChecked, _testDocArrows.IsChecked, _docx.IsChecked, _xlsx.IsChecked,
+        _tdocFront.IsChecked, _tdocAnnotate.IsChecked, _tdocDelay.Text, _suiteTimeout.Text, _postZoom.SelectedIndex, _recordZoom.SelectedIndex, _shotMode.SelectedIndex, _tabPos.SelectedIndex,
+        _keyValue, _autoDetect.IsChecked, _checkModelSpace.IsChecked, _basicCheck.IsChecked, _basicItems.Select(b => b.Box.IsChecked), _behaviorBoxes.Select(b => b.Box.IsChecked),
+        _recordBoxes.Select(b => b.Box.IsChecked), _sysAdd, _sysRemove,
+    });
+
+    /// <summary>Writes what the window holds into <paramref name="s"/>. False when a number is not valid (with <paramref name="show"/>: the message is shown and the box focused).</summary>
+    bool Collect(RetraceSettings s, bool show)
     {
         if (!int.TryParse(_tdocDelay.Text.Trim(), out var delay) || delay < 0 || delay > RetraceSettings.MaxTdocStepDelayMs)
         {
-            _tdocDelayMsg.Text = $"a whole number from 0 to {RetraceSettings.MaxTdocStepDelayMs}";
-            _tdocDelayMsg.Foreground = Brushes.Firebrick;
-            _tdocDelay.Focus();
-            return;
+            if (show)
+            {
+                _tdocDelayMsg.Text = $"a whole number from 0 to {RetraceSettings.MaxTdocStepDelayMs}";
+                _tdocDelayMsg.Foreground = Brushes.Firebrick;
+                _tdocDelay.Focus();
+            }
+            return false;
         }
         if (!int.TryParse(_suiteTimeout.Text.Trim(), out var suiteSecs) || suiteSecs < RetraceSettings.MinSuiteTimeoutSeconds || suiteSecs > RetraceSettings.MaxSuiteTimeoutSeconds)
         {
-            _suiteTimeoutMsg.Text = $"a whole number from {RetraceSettings.MinSuiteTimeoutSeconds} to {RetraceSettings.MaxSuiteTimeoutSeconds}";
-            _suiteTimeoutMsg.Foreground = Brushes.Firebrick;
-            _suiteTimeout.Focus();
-            return;
+            if (show)
+            {
+                _suiteTimeoutMsg.Text = $"a whole number from {RetraceSettings.MinSuiteTimeoutSeconds} to {RetraceSettings.MaxSuiteTimeoutSeconds}";
+                _suiteTimeoutMsg.Foreground = Brushes.Firebrick;
+                _suiteTimeout.Focus();
+            }
+            return false;
         }
         if (_basicCheck.IsChecked == true && !_basicItems.Any(b => b.Box.IsChecked == true))
         {
-            _basicMsg.Text = "tick at least one thing to count, or turn the basic check off";
-            return;
+            if (show) _basicMsg.Text = "tick at least one thing to count, or turn the basic check off";
+            return false;
         }
-        var s = Result;
         s.SourceFolder = _rows[0].Box.Text.Trim().Trim('"');
         s.DocsFolder = RetraceSettings.Normalize(_rows[1].Box.Text, s.DefaultDocs);
         s.TestsFolder = RetraceSettings.Normalize(_rows[2].Box.Text, s.DefaultTests);
@@ -497,7 +545,6 @@ sealed class SettingsWindow : Window
         s.TdocAnnotate = _tdocAnnotate.IsChecked == true;
         s.TdocStepDelayMs = delay;
         s.SuiteStepTimeoutSeconds = suiteSecs;
-        Saved = true;
-        Close();
+        return true;
     }
 }

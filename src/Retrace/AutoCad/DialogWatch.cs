@@ -150,6 +150,10 @@ sealed partial class DialogWatch
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")] static extern IntPtr GetFocus();
     HookProc? _proc;   // kept alive while hooked
+
+    /// <summary>How many presses (key down, button down) the hook has seen: a click or key press during a modal state is somebody answering it (<see cref="Retrace.Core.FlashDialog"/>). PreTranslateMessage misses these in a WinForms dialog.</summary>
+    public long InputCount { get; private set; }
+    static bool IsDown(uint message) => message is WM_NCLBUTTONDOWN or WM_KEYDOWN or WM_SYSKEYDOWN or WM_LBUTTONDOWN or WM_LBUTTONDBLCLK or WM_RBUTTONDOWN or WM_MBUTTONDOWN;
     IntPtr _hook;
 
     const uint WM_NCLBUTTONDOWN = 0x00A1, WM_KEYDOWN = 0x0100, WM_KEYUP = 0x0101, WM_CHAR = 0x0102, WM_SYSKEYDOWN = 0x0104, WM_SYSCOMMAND = 0x0112,
@@ -158,6 +162,9 @@ sealed partial class DialogWatch
 
     static bool IsInput(uint message) => message is WM_NCLBUTTONDOWN or WM_KEYDOWN or WM_KEYUP or WM_SYSKEYDOWN or WM_SYSCOMMAND or WM_LBUTTONDOWN or WM_LBUTTONUP or WM_LBUTTONDBLCLK
         or WM_RBUTTONDOWN or WM_MBUTTONDOWN or WM_MOUSEWHEEL;
+
+    /// <summary>The input hook is installed now (it is installed when a tracked dialog's window has been read; <see cref="Hook"/> only logs when the system refuses).</summary>
+    public bool HookActive => _hook != IntPtr.Zero;
 
     void Hook()
     {
@@ -179,6 +186,7 @@ sealed partial class DialogWatch
         try
         {
             // only the messages that are input are read (the hook sees every message of the thread: WM_MOUSEMOVE, WM_TIMER, WM_PAINT ...): the type first, the whole MSG for those
+            if (code >= 0 && wParam == (IntPtr)1 /* PM_REMOVE: the message is being handled */ && IsDown((uint)Marshal.ReadInt32(lParam, IntPtr.Size))) InputCount++;
             if (code >= 0 && wParam == (IntPtr)1 /* PM_REMOVE: the message is being handled */ && Top != IntPtr.Zero && IsInput((uint)Marshal.ReadInt32(lParam, IntPtr.Size)))
                 OnMessage(Marshal.PtrToStructure<Native.Msg>(lParam), Clock());
         }

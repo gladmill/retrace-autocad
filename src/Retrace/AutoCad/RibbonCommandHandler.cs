@@ -55,6 +55,8 @@ public sealed class PromptToggleHandler : System.Windows.Input.ICommand
                 RibbonInstaller.ShowPromptStyle(RibbonInstaller.ShownPromptStyle);
                 return;
             }
+            // the toggle still works (refusing would lock the person out of a harmless switch, and the unreadable value was ignored anyway), but it says what the rewrite does to those keys
+            if (s.UnreadableNotice() is { } note) Commands.Print("Prompts: " + note);
             s.PromptStyle = RibbonPrompts.Flip(s.PromptStyle);
             if (!s.Save(out var why))
             {

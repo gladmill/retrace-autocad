@@ -102,7 +102,11 @@ public static class TrainingDocx
         void Step(TrainingStep s, Body body)
         {
             body.Append(Para("Heading2", $"Step {s.Number}: {s.Title}"));
-            foreach (var i in s.Instructions) body.Append(Para(null, i));
+            // the step's text stays with its first picture: the title (keep with next by its style) and the last two lines before the picture are kept with it; a long run of field lines may
+            // break across pages (keeping them all would move the whole block and leave most of a page blank). Lines never break inside.
+            var lines = s.Instructions.ToList();
+            for (int k = 0; k < lines.Count; k++)
+                body.Append(Para(null, lines[k], keepNext: s.Pictures.Count > 0 && k >= lines.Count - 2, keepLines: true));
             if (s.Checkpoint is { } c)
             {
                 body.Append(Para("Heading3", $"Checkpoint {c.Index}: {c.Note}"));
@@ -174,11 +178,12 @@ public static class TrainingDocx
         }
 
         /// <summary>A paragraph; property order follows the schema (style, keep next, page break, shading, spacing).</summary>
-        static Paragraph Para(string? style, string text, bool bold = false, bool italic = false, bool pageBreakBefore = false, bool keepNext = false, string? shade = null)
+        static Paragraph Para(string? style, string text, bool bold = false, bool italic = false, bool pageBreakBefore = false, bool keepNext = false, string? shade = null, bool keepLines = false)
         {
             var pp = new ParagraphProperties();
             if (style != null) pp.Append(new ParagraphStyleId { Val = style });
             if (keepNext) pp.Append(new KeepNext());
+            if (keepLines) pp.Append(new KeepLines());
             if (pageBreakBefore) pp.Append(new PageBreakBefore());
             if (shade != null) pp.Append(new Shading { Val = ShadingPatternValues.Clear, Color = "auto", Fill = shade });
             var rp = new RunProperties();

@@ -63,8 +63,8 @@ public class PaletteIntermediateClickTests : IDisposable
     public void The_step_titles_read_naturally()
     {
         var titles = Build(Session).Where(x => x.Kind == "palette").Select(s => s.Title).ToList();
-        Assert.Contains("expand tree item Cabinets in Catalog", titles[0]);
-        Assert.Equal("Palette \"Pick\": click tree item Cabinets › Base › B24 in Catalog", titles[1]);
+        Assert.Contains("expand Cabinets in the Catalog tree", titles[0]);
+        Assert.Equal("Palette \"Pick\": click B24 under Cabinets › Base, in the Catalog tree", titles[1]);
         Assert.Equal("Palette \"Pick\": click image Door style 3 (no. 2)", titles[2]);
         Assert.Equal("Palette \"Pick\": click list item Oak in Finish", titles[3]);
         Assert.Equal("Palette \"Pick\": click swatch at 40% × 60%", titles[4]);
@@ -76,7 +76,7 @@ public class PaletteIntermediateClickTests : IDisposable
         Assert.Equal("Click image no. 3", PaletteClickKinds.ImageWords(PaletteClickKinds.ImageUnnamed, 3, 0, x => x));
         Assert.Equal("click image **Open**", PaletteClickKinds.ImageWords("Open", 1, 2, x => $"**{x}**", capital: false));
         Assert.Equal("Click window no. 2 at 50% × 50%", PaletteClickKinds.Words(PaletteClickKinds.Point, "window", "", "", new PaletteHit(Class: "window", ClassIndex: 2, Fx: 0.5, Fy: 0.5), x => x, x => x));
-        Assert.Equal("Collapse tree item `A`", PaletteClickKinds.Words(PaletteClickKinds.Collapse, "A", "A", "", null, x => $"`{x}`", x => x));
+        Assert.Equal("Collapse `A` in the tree", PaletteClickKinds.Words(PaletteClickKinds.Collapse, "A", "A", "", null, x => $"`{x}`", x => $"`{x}`"));
     }
 
     [Fact]
@@ -87,11 +87,11 @@ public class PaletteIntermediateClickTests : IDisposable
         var p = Path.Combine(dir, "recording.jsonl");
         File.WriteAllLines(p, new[] { Header }.Concat(Session));
         var md = ScriptWriter.Build(RecordingReader.Load(p), null, _dir, new List<string>());
-        Assert.Contains("click tree item `Cabinets › Base › B24` in **Catalog**", md);
+        Assert.Contains("Click **B24** under Cabinets › Base, in the Catalog tree of the **Pick** palette", md);
         Assert.Contains("click image **Door style 3**", md);
         Assert.Contains("click list item `Oak` in **Finish**", md);
         var tree = Build(Session).Where(x => x.Kind == "palette").ElementAt(1);
-        Assert.Contains(TdocPlan.Instructions(tree), l => l.Contains("lick tree item Cabinets › Base › B24 in Catalog"));
+        Assert.Contains(TdocPlan.Instructions(tree), l => l == "Click B24 under Cabinets › Base, in the Catalog tree of the Pick palette.");
     }
 
     [Fact]
@@ -189,8 +189,8 @@ public class PaletteIntermediateClickTests : IDisposable
         var line = Pc(2, """{"button":"","kind":"tree","tree":"name:PickTree","treeLabel":"Catalog","path":"Cabinets › "}""");
         var step = Build(line).Single();
         Assert.True(PaletteClickKinds.IsIntermediate(step.ClickKind));   // the replay dispatches by kind before it looks at the name
-        Assert.Contains("click tree item", step.Title);
-        Assert.Contains(TdocPlan.Instructions(step), l => l.Contains("lick tree item Cabinets"));
+        Assert.Contains("click (blank) under Cabinets", step.Title);
+        Assert.Contains(TdocPlan.Instructions(step), l => l.Contains("lick (blank) under Cabinets"));
         Assert.Equal("(blank)", PaletteClickKinds.ItemName("  "));
         Assert.Equal("B24", PaletteClickKinds.ItemName(" B24 "));
     }

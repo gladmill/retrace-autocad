@@ -38,6 +38,18 @@ public sealed class ModalEpisode
     /// <summary>The handles of the visible windows when the state started: only a window that is not among them can be its dialog (<see cref="ModalWindows.IsDialogWindow"/>).</summary>
     public IReadOnlyCollection<long>? Before { get; }
     public bool WindowSeen { get; private set; }
+    /// <summary>Session time (ms) of the `EnterModal`, and the recorder's input count then: a click or key press since is the person's answer.</summary>
+    public long StartMs { get; init; }
+    public long InputTick { get; init; }
+    /// <summary>The dialog hook's press count then, and whether the hook can see presses of this modal state at all (the dialog is tracked): without it nobody can say the dialog was not answered, so it is never a flash.</summary>
+    public long DlgInput { get; init; }
+    public bool CanSeeInput { get; init; }
+    /// <summary>The dialog hook was really installed for this dialog (checked after its window was read): only then a press in it was seen, and only then it can be a flash.</summary>
+    public bool HookOk { get; set; }
+    /// <summary>Session time (ms) the dialog window was first seen showing; null while it was not (see <see cref="FlashDialog"/>).</summary>
+    public long? SeenMs { get; set; }
+    /// <summary>The `n` of its `modal_title` event, 0 when it has none.</summary>
+    public long TitleN { get; set; }
     public bool Superseded { get; private set; }
 
     public void WindowFound() => WindowSeen = true;

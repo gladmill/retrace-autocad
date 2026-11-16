@@ -154,6 +154,81 @@ public class ExportTests : IDisposable
     }
 
     [Fact]
+    public void A_steps_text_stays_on_the_page_of_its_first_picture()
+    {
+        var dir = TestFolder();
+        Assert.True(EngineRunner.Export(dir, true, false).Success);
+        using var doc = WordprocessingDocument.Open(Path.Combine(dir, "steps.docx"), false);
+        NoErrors(doc);
+        var body = doc.MainDocumentPart!.Document!.Body!;
+        var firstPictures = body.Elements<W.Paragraph>().Where(p => p.Descendants<W.Drawing>().Any() && p.PreviousSibling() is W.Paragraph prev && !prev.Descendants<W.Drawing>().Any()).ToList();
+        Assert.NotEmpty(firstPictures);
+        foreach (var pic in firstPictures)
+        {
+            var text = (W.Paragraph)pic.PreviousSibling()!;
+            Assert.NotNull(text.ParagraphProperties!.KeepNext);    // the text is kept with the picture under it...
+            Assert.NotNull(text.ParagraphProperties.KeepLines);    // ...and its own lines together
+            var order = text.ParagraphProperties.ChildElements.Select(c => c.GetType().Name).ToList();
+            Assert.True(order.IndexOf("KeepNext") < order.IndexOf("KeepLines"));
+            if (order.Contains("SpacingBetweenLines")) Assert.True(order.IndexOf("KeepLines") < order.IndexOf("SpacingBetweenLines"));   // schema order
+        }
+        Assert.Contains(firstPictures, p => ((W.Paragraph)p.PreviousSibling()!).InnerText.Contains("Line"));
+    }
+
+    [Fact]
+    public void A_palette_step_with_change_lines_keeps_text_and_changes_with_its_first_picture()
+    {
+        var dir = TestFolder();
+        var pic = "screenshots/" + Path.GetFileName(Directory.GetFiles(Path.Combine(dir, "screenshots"), "*.png").OrderBy(f => f).First());
+        File.WriteAllText(Path.Combine(dir, "steps.md"), $"""
+            # t
+
+            ## Steps
+
+            1. First step, no picture
+
+            2. In the **Box** palette (Samples), make these changes, then click **Draw**:
+               - Size: 1 to 2
+               - Colour: red
+
+               ![one]({pic})
+
+               ![two]({pic})
+
+            3. A dialog opens: **Draw grid**. Make these changes, then confirm:
+               - Rows: 3
+
+               Before:
+
+               ![b]({pic})
+
+               After (what it should look like before you press OK):
+
+               ![a]({pic})
+
+            > 4. quoted step
+            >
+            >    ![q]({pic})
+            """.Replace("\n            ", "\n").TrimStart());
+        Assert.True(EngineRunner.Export(dir, true, false).Success);
+        using var doc = WordprocessingDocument.Open(Path.Combine(dir, "steps.docx"), false);
+        var paras = doc.MainDocumentPart!.Document!.Body!.Elements<W.Paragraph>().ToList();
+        bool Kept(W.Paragraph p) => p.ParagraphProperties?.KeepNext != null && p.ParagraphProperties.KeepLines != null;
+        bool Pic(W.Paragraph p) => p.Descendants<W.Drawing>().Any();
+        W.Paragraph Find(string t) => paras.FirstOrDefault(p => p.InnerText.Contains(t)) ?? throw new Xunit.Sdk.XunitException("no paragraph " + t + " in: " + string.Join(" / ", paras.Select(p => p.InnerText)));
+        Assert.False(Kept(Find("First step")));                       // no picture after it
+        Assert.True(Kept(Find("In the Box palette")));                // the step text...
+        Assert.True(Kept(Find("Size: 1 to 2")));                      // ...its change lines...
+        Assert.True(Kept(Find("Colour: red")));
+        Assert.True(paras.Any(Pic), string.Join(" / ", paras.Select(p => p.InnerText))); Assert.False(Kept(paras.First(Pic)));                         // ...down to the first picture, which is not kept with the next one
+        Assert.True(Kept(Find("A dialog opens")));
+        Assert.True(Kept(Find("Rows: 3")));
+        Assert.True(Kept(Find("Before:")));                           // a label stays with the picture under it
+        Assert.True(Kept(Find("After (what")));
+        Assert.True(Kept(Find("quoted step")));                       // also inside a quote
+    }
+
+    [Fact]
     public void Missing_pictures_do_not_break_the_docx()
     {
         var dir = TestFolder();
