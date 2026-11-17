@@ -12,7 +12,7 @@ public class RibbonMapWriterTests : IDisposable
 
     private static readonly string Folder = Path.Combine(Path.GetTempPath(), "proj");
 
-    private static MapSource At(string rel, int line, string? part = null) => new(Path.Combine(Folder, rel), line, Folder, part);
+    private static MapSource At(string rel, int line, string? part = null) => new(Path.Combine(Folder, rel.Replace('/', Path.DirectorySeparatorChar)), line, Folder, part);
 
     /// <param name="more">sets what can be set after the row is made; the tab id and where it is defined are given here</param>
     /// <param name="definedIn">null: the default place, a cuix element</param>
@@ -71,7 +71,7 @@ public class RibbonMapWriterTests : IDisposable
         var csv = Csv(Map(Row("T", "A", MapStatus.NoAction), Row("T", "B", MapStatus.NoAction)));
         var lines = csv.Split("\r\n");
         Assert.Equal("Tab,Panel,Item,Item id,Kind,Origin,Defined in,Shown in AutoCAD,Macro,Runs,Status,Language,Code,File,Line,More code,Found by,Note", lines[0]);
-        Assert.Equal(new[] { "", }, lines[3..]);   // CRLF after the last row too
+        Assert.Equal(new[] { "", }, lines.Skip(3).ToArray());   // CRLF after the last row too
         Assert.DoesNotContain("\n", csv.Replace("\r\n", ""));
     }
 

@@ -646,7 +646,7 @@ public sealed partial class Commands
             catch (Exception ex) { Log.Error("guide palette", ex); }
             var s = RetraceSettings.Load();
             var index = s.GuideIndex;
-            if (File.Exists(index)) { OpenPath(index, System.IO.Path.GetDirectoryName(index)!); ed?.WriteMessage($"\nOpening {index}\n"); }
+            if (File.Exists(index)) { OpenPath(index, Path.GetDirectoryName(index)!); ed?.WriteMessage($"\nOpening {index}\n"); }
             else
             {
                 ed?.WriteMessage($"\nNo guide yet at {index}. Run RETRACEDOCS first.\n");
@@ -720,7 +720,7 @@ public sealed partial class Commands
             if (ScriptViewer.Open(md)) { Print("Opened " + md); return; }
         }
         catch (Exception ex) { Log.Error("script viewer", ex); }
-        OpenPath(md, System.IO.Path.GetDirectoryName(md)!);
+        OpenPath(md, Path.GetDirectoryName(md)!);
     }
 
     /// <summary>RETRACEFOLDER [Root/Tests/Captures/Docs]: opens one of Retrace's folders in Explorer (asks when the keyword was not typed).</summary>

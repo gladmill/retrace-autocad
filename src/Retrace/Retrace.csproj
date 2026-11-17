@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <!-- net8.0-windows = AutoCAD 2025 / 2026 (.NET 8), net48 = AutoCAD 2024 (R24.3, .NET Framework 4.8): one source, see Compat/ -->
+    <TargetFrameworks>net8.0-windows;net48</TargetFrameworks>
     <PlatformTarget>x64</PlatformTarget>
     <Platforms>x64</Platforms>
     <!-- lets macOS and Linux build the Windows target -->
@@ -12,16 +13,20 @@
     <LangVersion>latest</LangVersion>
     <AssemblyName>Retrace</AssemblyName>
     <RootNamespace>Retrace</RootNamespace>
-    <Version>0.6.15</Version>
+    <Version>0.6.16</Version>
     <!-- Retrace.dll is the only file of the plugin: the packages below are embedded into it (target EmbedDependencies), not copied -->
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <GenerateDependencyFile>false</GenerateDependencyFile>
     <!-- the WebView2 package would copy WebView2Loader.dll to runtimes\ next to Retrace.dll; the loader is embedded instead -->
     <WebView2NeverCopyLoaderDllToOutputDirectory>true</WebView2NeverCopyLoaderDllToOutputDirectory>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
-    <!-- the AutoCAD release the bundle loads in (PackageContents.xml SeriesMin/SeriesMax); keep in step with the AutoCAD.NET package
-         below (the build passes it to trust-retrace.ps1 as -Series) -->
-    <AutoCADSeries>R25.1</AutoCADSeries>
+    <WebView2Version>1.0.2849.39</WebView2Version>
+    <!-- the AutoCAD releases the bundle loads in (PackageContents.xml SeriesMin/SeriesMax, one component entry each); keep in step with the
+         AutoCAD.NET packages below: R24.3 = AutoCAD 2024 (net48, AutoCAD.NET 24.3.0), R25.1 = AutoCAD 2026 (net8.0-windows, AutoCAD.NET 25.1.0).
+         AutoCADSeries is the list the build passes to trust-retrace.ps1 as -Series. -->
+    <AutoCADSeries2024>R24.3</AutoCADSeries2024>
+    <AutoCADSeries2026>R25.1</AutoCADSeries2026>
+    <AutoCADSeries>$(AutoCADSeries2024),$(AutoCADSeries2026)</AutoCADSeries>
     <!-- Visual Studio skips MSBuild when the dll is up to date, and with it the bundle and the install (bundle/Retrace.Bundle.targets) -->
     <DisableFastUpToDateCheck Condition="'$(OS)' == 'Windows_NT'">true</DisableFastUpToDateCheck>
   </PropertyGroup>
@@ -31,13 +36,34 @@
     <Using Include="Retrace.Engine.Util" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="AutoCAD.NET" Version="25.1.0" ExcludeAssets="runtime" />
+    <PackageReference Include="AutoCAD.NET" Version="25.1.0" ExcludeAssets="runtime" Condition="'$(TargetFramework)' == 'net8.0-windows'" />
+    <PackageReference Include="AutoCAD.NET" Version="24.3.0" ExcludeAssets="runtime" Condition="'$(TargetFramework)' == 'net48'" />
     <PackageReference Include="Markdig" Version="0.38.0" />
     <!-- AutoCAD 2026 ships DocumentFormat.OpenXml 2.16.0 in its program folder and the runtime binds every load of that name to it, so build
          against exactly that version and use AutoCAD's copy (not embedded). -->
-    <PackageReference Include="DocumentFormat.OpenXml" Version="2.16.0" ExcludeAssets="runtime" />
-    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2849.39" />
+    <PackageReference Include="DocumentFormat.OpenXml" Version="2.16.0" ExcludeAssets="runtime" Condition="'$(TargetFramework)' == 'net8.0-windows'" />
+    <!-- AutoCAD 2024 (.NET Framework): not known to ship it, so it goes into Contents\2024 beside Retrace.dll (the same 2.16.0 as above) -->
+    <PackageReference Include="DocumentFormat.OpenXml" Version="2.16.0" Condition="'$(TargetFramework)' == 'net48'" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="$(WebView2Version)" />
   </ItemGroup>
+
+  <!-- AutoCAD 2024: .NET Framework 4.8 has no System.Text.Json and lacks newer language/runtime types. The same source builds for both: PolySharp
+       generates the compiler-support attributes (init, required, records, ranges, ...), Compat/ holds the few runtime APIs it cannot (HashCode, Math.Clamp, ...).
+       The versions are pinned: AutoCAD binds no redirects for add-ins, see Embedded/Dependencies.cs. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <PackageReference Include="PolySharp" Version="1.15.0" PrivateAssets="all" />
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+    <Reference Include="Microsoft.CSharp" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Windows.Forms" />
+  </ItemGroup>
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net48'">
+    <!-- the .NET Framework class library has no nullable annotations (string.IsNullOrEmpty, Dictionary.TryGetValue, ...): these warnings are
+         noise there and the net8.0 build reports every real one -->
+    <NoWarn>$(NoWarn);CS8600;CS8601;CS8602;CS8603;CS8604;CS8605;CS8619;CS8620;CS8714;CS8767</NoWarn>
+  </PropertyGroup>
 
   <!--
     One dll. The managed dependencies and the native WebView2 loader are embedded as resources with fixed names (Embedded/Dependencies.cs
@@ -54,15 +80,23 @@
       <_CopyLocalDll Include="@(ReferenceCopyLocalPaths)" Condition="'%(Extension)' == '.dll'" />
       <_EmbedDll Include="@(_CopyLocalDll)" Condition="$(EmbeddedDependencies.Contains(';%(Filename);')) And !$([System.String]::Copy('%(FullPath)').Replace('\', '/').Contains('/runtimes/'))" />
       <_EmbedNative Include="@(_CopyLocalDll)" Condition="'%(Filename)' == 'WebView2Loader' And $([System.String]::Copy('%(FullPath)').Replace('\', '/').Contains('/runtimes/win-x64/native/'))" />
+      <!-- net48: the package's net462 assets give no runtimes\ copy-local item, so the loader comes straight from the package folder -->
+      <_EmbedNative Include="$(NuGetPackageRoot)microsoft.web.webview2/$(WebView2Version)/runtimes/win-x64/native/WebView2Loader.dll" Condition="'$(TargetFramework)' == 'net48'" />
       <_IgnoredDll Include="@(_CopyLocalDll)" Condition="'%(Filename)' == 'Microsoft.Web.WebView2.WinForms' Or '%(Filename)' == 'WebView2Loader'" />
       <_ForgottenDll Include="@(_CopyLocalDll)" Exclude="@(_EmbedDll);@(_EmbedNative);@(_IgnoredDll)" />
+    </ItemGroup>
+    <!-- net48 (AutoCAD 2024): what is not embedded stays copy-local, into Contents\2024 beside Retrace.dll (System.Text.Json and what it pulls, OpenXml) -->
+    <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
+      <_KeptDll Include="@(_ForgottenDll)" />
+      <_ForgottenDll Remove="@(_ForgottenDll)" />
     </ItemGroup>
     <Error Condition="'@(_ForgottenDll)' != ''" Text="Retrace.csproj: copy-local dll(s) not embedded: @(_ForgottenDll->'%(Filename)'). Add them to EmbeddedDependencies." />
     <Error Condition="'@(_EmbedDll->Count())' != '$(EmbeddedDependencyCount)' Or '@(_EmbedNative->Count())' != '1'" Text="Retrace.csproj: expected $(EmbeddedDependencyCount) managed dependencies and 1 native loader to embed, found @(_EmbedDll->Count()) and @(_EmbedNative->Count())." />
     <ItemGroup>
       <EmbeddedResource Include="@(_EmbedDll)" LogicalName="Retrace.Deps.%(Filename)%(Extension)" WithCulture="false" Type="Non-Resx" />
       <EmbeddedResource Include="@(_EmbedNative)" LogicalName="Retrace.Deps.native.%(Filename)%(Extension)" WithCulture="false" Type="Non-Resx" />
-      <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)" />
+      <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)" Condition="'$(TargetFramework)' != 'net48'" />
+      <ReferenceCopyLocalPaths Remove="@(_EmbedDll);@(_EmbedNative);@(_IgnoredDll)" Condition="'$(TargetFramework)' == 'net48'" />
     </ItemGroup>
   </Target>
 

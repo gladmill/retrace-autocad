@@ -1,6 +1,5 @@
 using System.Reflection;
 using System.Runtime.InteropServices;
-using System.Runtime.Loader;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.Runtime;
 using Retrace.Ui;
@@ -93,6 +92,7 @@ public sealed class RetraceApp : IExtensionApplication
     [CommandMethod("-RETRACESUITE")] public static void SuiteCommandLine() => Run("-RETRACESUITE", Commands.Instance.SuiteCommandLine);
     [CommandMethod("RETRACEMAP")] public static void MapRibbon() => Run("RETRACEMAP", Commands.Instance.Map);
     [CommandMethod("-RETRACEMAP")] public static void MapRibbonCommandLine() => Run("-RETRACEMAP", Commands.Instance.MapCommandLine);
+    [CommandMethod("RETRACERIBBON")] public static void RestoreRibbon() => Run("RETRACERIBBON", () => Commands.Print(RibbonInstaller.RestoreFromCommand()));
     [CommandMethod("RETRACEFOLDER")] public static void Folder() => Run("RETRACEFOLDER", Commands.Instance.Folder);
     [CommandMethod("RETRACECAPTUREDCL", CommandFlags.Session)] public static void CaptureDcl() => Run("RETRACECAPTUREDCL", DclCapture.Run);
     [CommandMethod("RETRACECAPTURERIBBON")] public static void CaptureRibbon() => Run("RETRACECAPTURERIBBON", RibbonCapture.Run);
@@ -108,7 +108,7 @@ public sealed class RetraceApp : IExtensionApplication
             if (SdiDocs.IsSingleNow()) { Commands.Print("RETRACECLOSEALL: not available with SDI on (single document interface): closing the only drawing would end AutoCAD. Use CLOSE, or set SDI to 0."); return; }
             var docs = AcApp.DocumentManager.Cast<Document>().ToList();
             if (docs.Count == 0) { Commands.Print("No drawings are open."); return; }
-            var names = string.Join("\n", docs.Take(12).Select(d => "  " + System.IO.Path.GetFileName(d.Name))) + (docs.Count > 12 ? $"\n  ... and {docs.Count - 12} more" : "");
+            var names = string.Join("\n", docs.Take(12).Select(d => "  " + Path.GetFileName(d.Name))) + (docs.Count > 12 ? $"\n  ... and {docs.Count - 12} more" : "");
             // OK closes, Cancel or the title-bar X cancels (a Yes/No box was easy to answer the wrong way); Enter is Cancel
             var answer = System.Windows.MessageBox.Show($"Close all {docs.Count} open drawing{(docs.Count == 1 ? "" : "s")} WITHOUT saving?\n\n{names}\n\nUnsaved changes are lost.\n\nOK closes them all. Cancel or the X keeps them open.",
                 "Retrace: close all drawings", System.Windows.MessageBoxButton.OKCancel, System.Windows.MessageBoxImage.Warning, System.Windows.MessageBoxResult.Cancel);
@@ -151,7 +151,7 @@ public sealed class RetraceApp : IExtensionApplication
             if (busy.Count == 0 || tries >= 10)
             {
                 timer.Stop();
-                if (busy.Count > 0) Commands.Print($"Closed {total - busy.Count} of {total} drawings; {string.Join(", ", busy.Select(d => System.IO.Path.GetFileName(d.Name)))} stayed open (busy). See retrace.log.");
+                if (busy.Count > 0) Commands.Print($"Closed {total - busy.Count} of {total} drawings; {string.Join(", ", busy.Select(d => Path.GetFileName(d.Name)))} stayed open (busy). See retrace.log.");
             }
         };
         timer.Start();

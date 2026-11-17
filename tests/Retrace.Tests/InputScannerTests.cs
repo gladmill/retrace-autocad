@@ -84,7 +84,7 @@ public class InputScannerTests
             File.WriteAllText(Path.Combine(root, "a.cs"), "class A {}");
             using var cts = new CancellationTokenSource();
             cts.Cancel();
-            Assert.Throws<OperationCanceledException>(() => InputScanner.Scan(root, ct: cts.Token));
+            Assert.Throws<OperationCanceledException>(() => { InputScanner.Scan(root, ct: cts.Token); });
             Assert.Single(InputScanner.Scan(root).Files);   // and without a token it reads as before
         }
         finally { Directory.Delete(root, true); }

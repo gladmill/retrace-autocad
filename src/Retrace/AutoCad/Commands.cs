@@ -210,8 +210,8 @@ public sealed partial class Commands
             var path = AskSession(ed);
             if (path == null || !File.Exists(path)) { ed.WriteMessage("\nNo recording chosen.\n"); return; }
             var steps = Plan.Build(Plan.ReadEvents(path));
-            var scr = System.IO.Path.ChangeExtension(path, ".scr");
-            File.WriteAllText(scr, ScriptExport.Build(steps, System.IO.Path.GetFileName(path)));
+            var scr = Path.ChangeExtension(path, ".scr");
+            File.WriteAllText(scr, ScriptExport.Build(steps, Path.GetFileName(path)));
             ed.WriteMessage($"\nScript written: {scr}\nRun it with the SCRIPT command.\n");
         }
         catch (Exception ex) { Log.Error("RETRACESCR", ex); ed.WriteMessage($"\nRETRACESCR failed: {ex.Message}\n"); }

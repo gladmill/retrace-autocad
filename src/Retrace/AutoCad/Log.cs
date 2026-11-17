@@ -13,7 +13,7 @@ static class Log
             lock (Lock)
             {
                 _path ??= Paths.LogFile();
-                Directory.CreateDirectory(System.IO.Path.GetDirectoryName(_path)!);
+                Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
                 File.AppendAllText(_path, $"{DateTime.Now:o} {where}: {ex}\n");
             }
         }
@@ -28,7 +28,7 @@ static class Log
             lock (Lock)
             {
                 _path ??= Paths.LogFile();
-                Directory.CreateDirectory(System.IO.Path.GetDirectoryName(_path)!);
+                Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
                 File.AppendAllText(_path, $"{DateTime.Now:o} info: {text}\n");
             }
         }

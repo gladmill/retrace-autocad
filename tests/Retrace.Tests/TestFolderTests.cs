@@ -264,10 +264,10 @@ public class TestFolderTests : IDisposable
         var results = Path.Combine(old, "results");
         Directory.CreateDirectory(results);
         File.WriteAllText(Path.Combine(results, "latest.json"), "{}");
-        File.SetLastWriteTimeUtc(results, DateTime.UtcNow);
-        File.SetLastWriteTimeUtc(old, DateTime.UtcNow);
+        Directory.SetLastWriteTimeUtc(results, DateTime.UtcNow);
+        Directory.SetLastWriteTimeUtc(old, DateTime.UtcNow);
         File.SetLastWriteTimeUtc(Path.Combine(old, "recording.jsonl"), DateTime.UtcNow);   // even the old recording file being touched changes nothing: the header decides
-        File.SetLastWriteTimeUtc(recent, DateTime.UtcNow.AddDays(-30));
+        Directory.SetLastWriteTimeUtc(recent, DateTime.UtcNow.AddDays(-30));
         Assert.Equal(Path.Combine(recent, "recording.jsonl"), TestFolders.Newest(_root));
         Assert.Equal(Path.Combine(recent, "recording.jsonl"), TestFolders.FindRecordings(_root)[0]);
         Assert.Null(TestFolders.Newest(Path.Combine(_root, "empty-none")));   // no test: the button is disabled

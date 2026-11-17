@@ -29,10 +29,10 @@ public static class GuideTree
         var roots = new List<PageNode>();
         if (!Directory.Exists(guideDir)) return roots;
 
-        var index = System.IO.Path.Combine(guideDir, "index.md");
+        var index = Path.Combine(guideDir, "index.md");
         if (File.Exists(index)) roots.Add(new PageNode { Title = TitleOf(index), Path = index, Kind = PageKind.Index });
 
-        var howtoDir = System.IO.Path.Combine(guideDir, "howto");
+        var howtoDir = Path.Combine(guideDir, "howto");
         if (Directory.Exists(howtoDir))
         {
             var g = new PageNode { Title = "How-to", Kind = PageKind.Group };
@@ -41,12 +41,12 @@ public static class GuideTree
             if (g.Children.Count > 0) roots.Add(g);
         }
 
-        var ribbonDir = System.IO.Path.Combine(guideDir, "ribbon");
+        var ribbonDir = Path.Combine(guideDir, "ribbon");
         if (Directory.Exists(ribbonDir))
         {
             var g = new PageNode { Title = "Ribbon tabs", Kind = PageKind.Group };
             var bySource = Directory.EnumerateFiles(ribbonDir, "*.md", SearchOption.AllDirectories)
-                .GroupBy(f => System.IO.Path.GetDirectoryName(System.IO.Path.GetRelativePath(ribbonDir, f))!.Replace('\\', '/'), StringComparer.OrdinalIgnoreCase)
+                .GroupBy(f => Path.GetDirectoryName(Path.GetRelativePath(ribbonDir, f))!.Replace('\\', '/'), StringComparer.OrdinalIgnoreCase)
                 .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase);
             foreach (var grp in bySource)
             {
@@ -59,7 +59,7 @@ public static class GuideTree
         return roots;
     }
 
-    static IEnumerable<string> Sorted(IEnumerable<string> files) => files.OrderBy(f => System.IO.Path.GetFileName(f), StringComparer.OrdinalIgnoreCase);
+    static IEnumerable<string> Sorted(IEnumerable<string> files) => files.OrderBy(f => Path.GetFileName(f), StringComparer.OrdinalIgnoreCase);
 
     /// <summary>First `# ` heading, else the file name without extension.</summary>
     public static string TitleOf(string file)
@@ -70,7 +70,7 @@ public static class GuideTree
                 if (line.StartsWith("# ")) { var t = line[2..].Trim(); if (t.Length > 0) return t; }
         }
         catch (Exception) { }
-        return System.IO.Path.GetFileNameWithoutExtension(file);
+        return Path.GetFileNameWithoutExtension(file);
     }
 }
 
@@ -154,15 +154,15 @@ public static class GuideLinks
     {
         if (!uri.Host.Equals(Host, StringComparison.OrdinalIgnoreCase)) return null;
         var rel = Uri.UnescapeDataString(uri.AbsolutePath).TrimStart('/');
-        var full = System.IO.Path.GetFullPath(System.IO.Path.Combine(root, rel.Replace('/', System.IO.Path.DirectorySeparatorChar)));
-        var rootFull = System.IO.Path.GetFullPath(root).TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar) + System.IO.Path.DirectorySeparatorChar;
+        var full = Path.GetFullPath(Path.Combine(root, rel.Replace('/', Path.DirectorySeparatorChar)));
+        var rootFull = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
         return full.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase) ? full : null;
     }
 
     /// <summary>https://guide.local/guide/howto/x.md for a file under <paramref name="root"/> (optionally with a fragment).</summary>
     public static string ToUrl(string file, string root, string? fragment = null)
     {
-        var rel = System.IO.Path.GetRelativePath(root, file).Replace('\\', '/');
+        var rel = Path.GetRelativePath(root, file).Replace('\\', '/');
         var url = "https://" + Host + "/" + string.Join('/', rel.Split('/').Select(Uri.EscapeDataString));
         return string.IsNullOrEmpty(fragment) ? url : url + "#" + fragment.TrimStart('#');
     }

@@ -1,19 +1,25 @@
 <Project>
   <!--
-    The AutoCAD autoloader bundle. Imported by src/Retrace/Retrace.csproj; runs after every build of it.
+    The AutoCAD autoloader bundle. Imported by src/Retrace/Retrace.csproj, which builds two targets: net8.0-windows (AutoCAD 2026, R25.1) and
+    net48 (AutoCAD 2024, R24.3). One bundle holds both.
 
-    RetraceBundle (any OS) lays out src/Retrace/bin/<Configuration>/Retrace.bundle (a fixed path: it is deleted and rewritten):
-      PackageContents.xml                bundle/PackageContents.template.xml with {Version} (<Version>) and {Series} (<AutoCADSeries>)
-      Contents/Retrace.dll, Retrace.pdb  the build output (one dll: the dependencies are embedded, see Retrace.csproj)
-      Contents/trust-retrace.ps1         scripts/trust-retrace.ps1
-      Contents/LICENSE, THIRD-PARTY-NOTICES.txt
+    Every inner build (one per target framework) puts its own files into src/Retrace/bin/<Configuration>/Retrace.bundle (a fixed path):
+      Contents/Retrace.dll, Retrace.pdb         net8.0-windows (AutoCAD 2026; the path the install, trust and VM scripts have always used);
+                                                one dll: the dependencies are embedded, see Retrace.csproj
+      Contents/2024/Retrace.dll, Retrace.pdb    net48 (AutoCAD 2024), with the dlls that are not embedded beside it (System.Text.Json and what it
+                                                pulls in, DocumentFormat.OpenXml): the .NET Framework has no copy of them that Retrace could rely on
+    The outer build (a build without -f, which is what the solution, Visual Studio, `dotnet build` and scripts/pack.sh do) then deletes the
+    bundle folder first and, once both targets are built, adds
+      PackageContents.xml                       bundle/PackageContents.template.xml: {Version} (<Version>), {Series2024} and {Series2026}
+      Contents/trust-retrace.ps1, LICENSE, THIRD-PARTY-NOTICES.txt
+    A build of one target alone (-f net48) updates only that target's folder and writes no manifest.
 
-    RetraceDeploy then installs it for this Windows user. It runs by default on Windows, outside CI, once this user has started
-    AutoCAD <AutoCADSeries> (its HKCU key holds CurVer). It replaces $(RetraceDeployDir), by default
+    RetraceDeploy then installs it for this Windows user (outer build only). It runs by default on Windows, outside CI, once this user has
+    started AutoCAD <AutoCADSeries2024> or <AutoCADSeries2026> (its HKCU key holds CurVer). It replaces $(RetraceDeployDir), by default
     %APPDATA%\Autodesk\ApplicationPlugins\Retrace.bundle, so AutoCAD loads the new build at its next start, and runs
-    trust-retrace.ps1 on it, which adds the folder to TRUSTEDPATHS in every AutoCAD profile of that release so that AutoCAD does
+    trust-retrace.ps1 on it, which adds the folder to TRUSTEDPATHS in every AutoCAD profile of those two releases so that AutoCAD does
     not stop at "Security - Unsigned Executable File". It changes nothing else (not SECURELOAD).
-    While AutoCAD has the installed Retrace.dll loaded, nothing is replaced (warning); while any AutoCAD runs, the trust step is
+    While AutoCAD has an installed Retrace.dll loaded, nothing is replaced (warning); while any AutoCAD runs, the trust step is
     skipped (warning), because AutoCAD writes its profiles back when it exits.
 
     Switches (also as environment variables): RetraceDeploy=false (bundle only) or true (install even without an AutoCAD
@@ -22,45 +28,94 @@
   <PropertyGroup>
     <_RetraceBundleDir>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', 'bin', '$(Configuration)', 'Retrace.bundle'))</_RetraceBundleDir>
     <_RetraceCI Condition="'$(CI)' == 'true' Or '$(TF_BUILD)' != '' Or '$(JENKINS_URL)' != '' Or '$(TEAMCITY_VERSION)' != '' Or '$(ContinuousIntegrationBuild)' == 'true'">true</_RetraceCI>
-    <_RetraceAcadProfile Condition="'$(OS)' == 'Windows_NT'">$([MSBuild]::GetRegistryValue('HKEY_CURRENT_USER\Software\Autodesk\AutoCAD\$(AutoCADSeries)', 'CurVer'))</_RetraceAcadProfile>
+    <_RetraceAcadProfile Condition="'$(OS)' == 'Windows_NT'">$([MSBuild]::GetRegistryValue('HKEY_CURRENT_USER\Software\Autodesk\AutoCAD\$(AutoCADSeries2026)', 'CurVer'))</_RetraceAcadProfile>
+    <_RetraceAcadProfile Condition="'$(OS)' == 'Windows_NT' And '$(_RetraceAcadProfile)' == ''">$([MSBuild]::GetRegistryValue('HKEY_CURRENT_USER\Software\Autodesk\AutoCAD\$(AutoCADSeries2024)', 'CurVer'))</_RetraceAcadProfile>
     <RetraceDeploy Condition="'$(RetraceDeploy)' == '' And '$(OS)' == 'Windows_NT' And '$(_RetraceCI)' != 'true' And '$(APPDATA)' != '' And '$(_RetraceAcadProfile)' != ''">true</RetraceDeploy>
     <RetraceTrust Condition="'$(RetraceTrust)' == ''">true</RetraceTrust>
     <RetraceDeployDir Condition="'$(RetraceDeployDir)' == '' And '$(APPDATA)' != ''">$(APPDATA)\Autodesk\ApplicationPlugins\Retrace.bundle</RetraceDeployDir>
   </PropertyGroup>
 
-  <Target Name="RetraceBundle" AfterTargets="Build" Condition="'$(DesignTimeBuild)' != 'true'">
-    <Error Condition="'$(AutoCADSeries)' == ''" Text="Retrace.Bundle.targets: set AutoCADSeries (for example R25.1) in Retrace.csproj." />
+  <!-- outer build: start from an empty bundle folder (the inner builds only add their own files) -->
+  <Target Name="RetraceBundleClean" BeforeTargets="DispatchToInnerBuilds" Condition="'$(TargetFramework)' == '' And '$(DesignTimeBuild)' != 'true'">
+    <RemoveDir Directories="$(_RetraceBundleDir)" />
+  </Target>
+
+  <!-- inner build: this target framework's files -->
+  <Target Name="RetraceBundleContents" AfterTargets="Build" Condition="'$(TargetFramework)' != '' And '$(DesignTimeBuild)' != 'true'">
     <PropertyGroup>
-      <_RetraceManifest>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)PackageContents.template.xml').Replace('{Version}', '$(Version)').Replace('{Series}', '$(AutoCADSeries)').TrimEnd())</_RetraceManifest>
+      <_RetraceContentsDir Condition="'$(TargetFramework)' == 'net48'">$(_RetraceBundleDir)Contents/2024/</_RetraceContentsDir>
+      <_RetraceContentsDir Condition="'$(TargetFramework)' != 'net48'">$(_RetraceBundleDir)Contents/</_RetraceContentsDir>
     </PropertyGroup>
     <ItemGroup>
       <_RetraceContents Include="$(TargetPath)" />
       <_RetraceContents Include="$(TargetDir)$(TargetName).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
-      <_RetraceContents Include="$(MSBuildThisFileDirectory)..\scripts\trust-retrace.ps1" />
-      <_RetraceContents Include="$(MSBuildThisFileDirectory)..\LICENSE" />
-      <_RetraceContents Include="$(MSBuildThisFileDirectory)..\THIRD-PARTY-NOTICES.txt" />
+      <!-- net48: what the build left copy-local (EmbedDependencies in Retrace.csproj keeps only these, and only for net48) -->
+      <_RetraceContents Include="@(ReferenceCopyLocalPaths)" Condition="'$(TargetFramework)' == 'net48' And '%(Extension)' == '.dll'" />
     </ItemGroup>
-    <RemoveDir Directories="$(_RetraceBundleDir)" />
-    <Copy SourceFiles="@(_RetraceContents)" DestinationFolder="$(_RetraceBundleDir)Contents" />
+    <!-- net8.0-windows: only the two files it owns are replaced, so Contents\2024 stays; net48: its own folder -->
+    <RemoveDir Condition="'$(TargetFramework)' == 'net48'" Directories="$(_RetraceContentsDir)" />
+    <Delete Condition="'$(TargetFramework)' != 'net48'" Files="$(_RetraceContentsDir)Retrace.dll;$(_RetraceContentsDir)Retrace.pdb" />
+    <Copy SourceFiles="@(_RetraceContents)" DestinationFolder="$(_RetraceContentsDir)" />
+    <Message Importance="high" Text="$(MSBuildProjectName) $(TargetFramework) -> $(_RetraceContentsDir)" />
+  </Target>
+
+  <!-- outer build, after both targets: the manifest and the files both builds share -->
+  <Target Name="RetraceBundle" AfterTargets="Build" Condition="'$(TargetFramework)' == '' And '$(DesignTimeBuild)' != 'true'">
+    <PropertyGroup>
+      <_RetraceManifest>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)PackageContents.template.xml').Replace('{Version}', '$(Version)').Replace('{Series2024}', '$(AutoCADSeries2024)').Replace('{Series2026}', '$(AutoCADSeries2026)').TrimEnd())</_RetraceManifest>
+    </PropertyGroup>
+    <ItemGroup>
+      <_RetraceShared Include="$(MSBuildThisFileDirectory)..\scripts\trust-retrace.ps1" />
+      <_RetraceShared Include="$(MSBuildThisFileDirectory)..\LICENSE" />
+      <_RetraceShared Include="$(MSBuildThisFileDirectory)..\THIRD-PARTY-NOTICES.txt" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_RetraceShared)" DestinationFolder="$(_RetraceBundleDir)Contents" />
     <!-- Escape: the manifest holds characters MSBuild would otherwise treat as list separators or wildcards (Platform="AutoCAD*"). -->
     <WriteLinesToFile File="$(_RetraceBundleDir)PackageContents.xml" Lines="$([MSBuild]::Escape($(_RetraceManifest)))" Overwrite="true" />
     <Message Importance="high" Text="$(MSBuildProjectName) bundle -> $(_RetraceBundleDir)" />
     <Message Importance="high" Condition="'$(OS)' == 'Windows_NT' And '$(RetraceDeploy)' == '' And '$(_RetraceCI)' != 'true'"
-             Text="$(MSBuildProjectName) not installed: this Windows user has not started AutoCAD $(AutoCADSeries) yet. Start it once, close it, and build again (or build with -p:RetraceDeploy=true)." />
+             Text="$(MSBuildProjectName) not installed: this Windows user has not started AutoCAD $(AutoCADSeries2024) or $(AutoCADSeries2026) yet. Start one once, close it, and build again (or build with -p:RetraceDeploy=true)." />
   </Target>
 
-  <Target Name="RetraceDeploy" AfterTargets="RetraceBundle" Condition="'$(RetraceDeploy)' == 'true' And '$(DesignTimeBuild)' != 'true'">
+  <!-- Opens each file for exclusive write and closes it again; InUse lists the existing files that could not be opened (loaded by AutoCAD). Writes nothing. -->
+  <UsingTask TaskName="RetraceProbeInUse" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Files ParameterType="System.String" Required="true" />
+      <InUse ParameterType="System.String" Output="true" />
+    </ParameterGroup>
+    <Task>
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        var busy = new System.Collections.Generic.List<string>();
+        foreach (var f in Files.Split(';'))
+        {
+            if (f.Length == 0 || !System.IO.File.Exists(f)) continue;
+            try { using (new System.IO.FileStream(f, System.IO.FileMode.Open, System.IO.FileAccess.ReadWrite, System.IO.FileShare.None)) { } }
+            catch (System.IO.IOException) { busy.Add(f); }
+            catch (System.UnauthorizedAccessException) { busy.Add(f); }
+        }
+        InUse = string.Join(";", busy);
+      ]]></Code>
+    </Task>
+  </UsingTask>
+
+  <Target Name="RetraceDeploy" AfterTargets="RetraceBundle" Condition="'$(RetraceDeploy)' == 'true' And '$(TargetFramework)' == '' And '$(DesignTimeBuild)' != 'true'">
     <Error Condition="'$(RetraceDeployDir)' == ''" Text="Retrace: APPDATA is not set, so there is no ApplicationPlugins folder to install to. Build with -p:RetraceDeploy=false, or set RetraceDeployDir." />
     <!-- the folder is deleted and rewritten on every build: only ever one *.bundle folder (RemoveDir would split a list at ';') -->
     <Error Condition="$(RetraceDeployDir.Contains(';')) Or $(RetraceDeployDir.Contains('*')) Or $(RetraceDeployDir.Contains('?')) Or !$(RetraceDeployDir.TrimEnd('\').ToLowerInvariant().EndsWith('.bundle'))"
            Text="Retrace: RetraceDeployDir must be one folder whose name ends in .bundle (it is deleted and rewritten), not '$(RetraceDeployDir)'." />
 
-    <!-- AutoCAD keeps a loaded Retrace.dll open: try to remove the installed dll first, and change nothing else if it stays -->
-    <Delete Files="$(RetraceDeployDir)\Contents\Retrace.dll" ContinueOnError="true" />
+    <!-- AutoCAD keeps a loaded Retrace.dll open (share-locked): probe each installed dll by opening it for exclusive write, which changes nothing.
+         If either release has its dll in use, nothing at all is replaced (a half-replaced bundle would point the manifest at a missing dll). -->
+    <RetraceProbeInUse Files="$(RetraceDeployDir)\Contents\Retrace.dll;$(RetraceDeployDir)\Contents\2024\Retrace.dll">
+      <Output TaskParameter="InUse" PropertyName="_RetraceInUseFiles" />
+    </RetraceProbeInUse>
     <PropertyGroup>
-      <_RetraceInUse Condition="Exists('$(RetraceDeployDir)\Contents\Retrace.dll')">true</_RetraceInUse>
+      <_RetraceInUse Condition="'$(_RetraceInUseFiles)' != ''">true</_RetraceInUse>
+      <_RetraceInUseWho Condition="$(_RetraceInUseFiles.Contains('\2024\'))">AutoCAD 2024 ($(AutoCADSeries2024))</_RetraceInUseWho>
+      <_RetraceInUseWho Condition="$(_RetraceInUseFiles.Contains('\Contents\Retrace.dll'))">AutoCAD 2026 ($(AutoCADSeries2026))</_RetraceInUseWho>
+      <_RetraceInUseWho Condition="$(_RetraceInUseFiles.Contains('\2024\')) And $(_RetraceInUseFiles.Contains('\Contents\Retrace.dll'))">AutoCAD 2024 and AutoCAD 2026</_RetraceInUseWho>
     </PropertyGroup>
-    <Warning Condition="'$(_RetraceInUse)' == 'true'" Text="Retrace: $(RetraceDeployDir)\Contents\Retrace.dll is in use (AutoCAD has it loaded), so this build was not installed. Close AutoCAD and build again." />
+    <Warning Condition="'$(_RetraceInUse)' == 'true'" Text="Retrace: $(_RetraceInUseWho) has its installed Retrace.dll loaded ($(_RetraceInUseFiles)), so this build was not installed and nothing was changed. Close it and build again." />
 
     <ItemGroup Condition="'$(_RetraceInUse)' != 'true'">
       <_RetraceBundleFile Include="$(_RetraceBundleDir)**" />
@@ -76,9 +131,9 @@
       <Output TaskParameter="ExitCode" PropertyName="_RetraceTrustExit" />
       <Output TaskParameter="ConsoleOutput" PropertyName="_RetraceTrustOut" />
     </Exec>
-    <Message Condition="'$(_RetraceTrustExit)' == '0'" Importance="high" Text="$(MSBuildProjectName) trusted -> $(RetraceDeployDir.TrimEnd('\'))\... is a Trusted Location in every AutoCAD $(AutoCADSeries) profile" />
+    <Message Condition="'$(_RetraceTrustExit)' == '0'" Importance="high" Text="$(MSBuildProjectName) trusted -> $(RetraceDeployDir.TrimEnd('\'))\... is a Trusted Location in every AutoCAD $(AutoCADSeries2024) / $(AutoCADSeries2026) profile" />
     <Warning Condition="'$(_RetraceTrustExit)' == '2'" Text="Retrace: AutoCAD is running, so the installed bundle was not made a Trusted Location (AutoCAD writes its profiles back when it exits). Close AutoCAD and build again." />
-    <Warning Condition="'$(_RetraceTrustExit)' == '3'" Text="Retrace: this Windows user has no AutoCAD $(AutoCADSeries) profile yet, so the bundle is not a Trusted Location. Start AutoCAD once (answer its security prompt with Load Once), close it, and build again." />
+    <Warning Condition="'$(_RetraceTrustExit)' == '3'" Text="Retrace: this Windows user has no AutoCAD $(AutoCADSeries2024) or $(AutoCADSeries2026) profile yet, so the bundle is not a Trusted Location. Start AutoCAD once (answer its security prompt with Load Once), close it, and build again." />
     <Warning Condition="'$(_RetraceTrustExit)' != '' And '$(_RetraceTrustExit)' != '0' And '$(_RetraceTrustExit)' != '2' And '$(_RetraceTrustExit)' != '3'" Text="Retrace: trust-retrace.ps1 exited with $(_RetraceTrustExit): $(_RetraceTrustOut)" />
   </Target>
 </Project>

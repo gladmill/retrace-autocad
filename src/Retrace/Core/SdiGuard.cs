@@ -21,7 +21,7 @@ public static class SdiGuard
     public static bool IsStaleTemp(DateTime createdUtc, DateTime lastWriteUtc, DateTime nowUtc) => nowUtc - (createdUtc > lastWriteUtc ? createdUtc : lastWriteUtc) > StaleAfter;
 
     /// <summary>The drawing files this session created (see <see cref="SdiOwnFiles"/>); the plugin registers every copy it makes.</summary>
-    public static SdiOwnFiles Own { get; set; } = new(System.IO.Path.GetTempPath());
+    public static SdiOwnFiles Own { get; set; } = new(Path.GetTempPath());
 
     /// <summary>Under SDI an "open" step (RETRACERUN, Tdoc, a suite, a replay) never opens the person's own file: the drawing that is open is replaced, and the test
     /// would change the file the next open meets with unsaved changes. It opens a temp copy, unless the path already is one.</summary>
@@ -52,7 +52,7 @@ public static class SdiGuard
     public static string? Refusal(bool single, IEnumerable<(string Name, bool Modified)> open)
     {
         if (!single) return null;
-        var modified = open.Where(d => d.Modified && !Own.UnsavedIsOurs(d.Name)).Select(d => System.IO.Path.GetFileName(d.Name)).ToList();
+        var modified = open.Where(d => d.Modified && !Own.UnsavedIsOurs(d.Name)).Select(d => Path.GetFileName(d.Name)).ToList();
         if (modified.Count == 0) return null;
         return $"SDI is on (single document interface) and {string.Join(", ", modified)} has unsaved changes: the test opens its own drawing, which would replace it. "
              + "Save it, or reopen its file to discard the changes, or set SDI to 0, then run the test again.";

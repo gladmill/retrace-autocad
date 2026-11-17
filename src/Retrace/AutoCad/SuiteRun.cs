@@ -239,7 +239,7 @@ sealed class SuiteRun : ITestQueueOwner
         _closingSince ??= now;
         if (now - _closingSince > BlockedLimit)
         {
-            Finish($"a drawing could not be closed after {last}: {string.Join(", ", extra.Select(d => System.IO.Path.GetFileName(d.Name)))}");
+            Finish($"a drawing could not be closed after {last}: {string.Join(", ", extra.Select(d => Path.GetFileName(d.Name)))}");
             return QueueGate.Halt;
         }
         CloseExtras(extra);
@@ -294,7 +294,7 @@ sealed class SuiteRun : ITestQueueOwner
                 }
                 d.CloseAndDiscard();
             }
-            catch (Exception ex) { Log.Info($"suite: {System.IO.Path.GetFileName(d.Name)} not closed yet ({ex.Message})"); }
+            catch (Exception ex) { Log.Info($"suite: {Path.GetFileName(d.Name)} not closed yet ({ex.Message})"); }
         }
     }
 
@@ -349,7 +349,7 @@ sealed class SuiteRun : ITestQueueOwner
                 if (AcApp.DocumentManager.MdiActiveDocument != d) AcApp.DocumentManager.MdiActiveDocument = d;
                 SdiDocs.Send(d, "\u0003\u0003", true, false, false);
             }
-            catch (Exception ex) { Log.Info($"suite: cancel in {System.IO.Path.GetFileName(d.Name)} failed ({ex.Message})"); }
+            catch (Exception ex) { Log.Info($"suite: cancel in {Path.GetFileName(d.Name)} failed ({ex.Message})"); }
     }
 
     /// <summary>Closes the drawings that are quiet, without activating them (CloseAndDiscard works on a drawing that is not the active one, from
@@ -358,7 +358,7 @@ sealed class SuiteRun : ITestQueueOwner
     {
         foreach (var d in list)
             try { if (string.IsNullOrEmpty(d.CommandInProgress)) d.CloseAndDiscard(); }
-            catch (Exception ex) { Log.Info($"suite: {System.IO.Path.GetFileName(d.Name)} not closed yet ({ex.Message})"); }
+            catch (Exception ex) { Log.Info($"suite: {Path.GetFileName(d.Name)} not closed yet ({ex.Message})"); }
     }
 
     /// <summary>SDI: the drawing the person had open is opened again in place of the last test's drawing (a temp file, saved first so that nothing asks), or a
@@ -375,7 +375,7 @@ sealed class SuiteRun : ITestQueueOwner
             if (busy && ++tries < 60) return;
             timer.Stop();
             SdiGuard.Own.SuiteEnded();   // a test drawing whose end-of-run save never happened is nobody's now: its unsaved changes count as a person's
-            if (busy) { Log.Info("suite: SDI: the last drawing is still busy after 60 s: left as it is"); Say("left open (close it yourself): " + (doc == null ? "" : System.IO.Path.GetFileName(doc.Name))); return; }
+            if (busy) { Log.Info("suite: SDI: the last drawing is still busy after 60 s: left as it is"); Say("left open (close it yourself): " + (doc == null ? "" : Path.GetFileName(doc.Name))); return; }
             var restored = false;
             try
             {
@@ -423,7 +423,7 @@ sealed class SuiteRun : ITestQueueOwner
             timer.Stop();
             if (extra.Count > 0)
             {
-                var left = string.Join(", ", extra.Select(d => System.IO.Path.GetFileName(d.Name)));
+                var left = string.Join(", ", extra.Select(d => Path.GetFileName(d.Name)));
                 Log.Info("suite: left open after 60 s: " + left);
                 Say("left open (close them yourself): " + left);
             }

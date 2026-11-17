@@ -37,6 +37,11 @@ static class DxfRead
     {
         if (_tried) return _getAdsName != null;
         _tried = true;
+#if NETFRAMEWORK
+        // AutoCAD 2024 (24.x) is not a version these exports were verified on, and NativeLibrary is .NET Core only
+        LogOnce("version", $"DxfRead: AutoCAD {AcApp.Version} is not the version entget was verified on ({VerifiedMajor}.x): layout psltscale and viewport off are left out of snapshots");
+        return false;
+#else
         try
         {
             var major = AcApp.Version.Major;
@@ -58,6 +63,7 @@ static class DxfRead
             LogOnce("init", "DxfRead: entget is not available in this AutoCAD (layout psltscale and viewport off are left out of snapshots)", ex);
             return false;
         }
+#endif
     }
 
     /// <summary>Runs <paramref name="pick"/> over the object's (group code, value) pairs, lazily: it can stop at the group it needs and the rest is
