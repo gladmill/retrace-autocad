@@ -344,10 +344,12 @@ public sealed class Recorder
         _shots.Arrows = settings.TestDocArrows;   // the test document's own setting (the training document's showClickArrows is not read here)
         ButtonNaming.NewSession();
         _shots.Hold = YoungModal;
+        _shots.OpenedProbe = OpenedPaletteFor;
+        _open.Clear(); _endBefore.Clear(); _nestedEnds.Clear();
         _shots.Begin(w.Path, enabled, MainWindowHandle(), () => _modalOpen > 0, (n, file, what) =>
         {
             var ww = _w;   // pool thread: only the writer is touched
-            if (ww != null) { try { ww.Event("shot", null, ("for", n), ("file", file), ("what", what)); } catch (Exception ex) { Log.Error("Emit shot", ex); } }
+            if (ww != null) { try { ww.Event("shot", null, ("for", n), ("file", file), ("what", what), ("opened", _shots.OpenedName(n) is { } pal ? new Dictionary<string, object?> { ["palette"] = pal } : null)); } catch (Exception ex) { Log.Error("Emit shot", ex); } }
         });
     }
 
@@ -569,12 +571,16 @@ public sealed class Recorder
             ShotService.Picture? clickPic = null;
             bool smartPic = false;
             // where the mouse was pressed for this click, read before the picture is taken (a drop-down closes, a palette opens)
+            if (_shots.Enabled) _open.Click(PaletteSnapshot.Read(), _w?.ElapsedMs ?? 0);   // which palettes the click saw (the command it starts keeps them); read here, not in a command-start handler
             var down = Core.RibbonMark.FreshDown(_downX, _downY, _downMsgTime, unchecked((uint)Environment.TickCount), _downInWpf);
+            // a button of the Quick Access Toolbar reports like a ribbon button: the visual that was under the mouse tells them apart (`bar`: "qat"; the ribbon has no field)
+            var bar = TdocTargets.BarOf(item, down, out var barWhy, out var barButton);
+            if (bar != null || (barWhy.Length > 0 && !barWhy.StartsWith("on the ribbon", StringComparison.Ordinal))) Log.Info($"ribbon click ({item.Id}): bar {bar ?? "ribbon"}: {barWhy}");
             if (_shots.Enabled)
             {
                 var main = MainWindowHandle();
-                // smart zoom: the button, its panel and the tab row, as a 1:1 crop (SmartCrop); when its rectangles cannot be read the whole ribbon, and without a ribbon the window as before
-                if (_shots.Smart) { clickPic = SmartShots.RibbonPicture(item.Id, e.Parent?.Id, panel, main); smartPic = clickPic != null; }
+                // a Quick Access Toolbar click is always the whole window (the toolbar is outside any ribbon crop); smart zoom: the button, its panel and the tab row, as a 1:1 crop (SmartCrop); when its rectangles cannot be read the whole ribbon, and without a ribbon the window as before
+                if (_shots.Smart && bar == null) { clickPic = SmartShots.RibbonPicture(item.Id, e.Parent?.Id, panel, main); smartPic = clickPic != null; }
                 clickPic ??= ShotService.CaptureWindow(main)?.Pic;
             }
             var n0 = Emit("ribbon", CurDoc(),
@@ -583,11 +589,11 @@ public sealed class Recorder
                 ("tabId", tab?.Id ?? loc?.TabId), ("tab", tab?.Title ?? loc?.TabTitle),
                 ("panelId", panel?.Source?.Id ?? loc?.PanelId), ("panel", panel?.Source?.Title ?? loc?.PanelTitle), ("path", loc?.Path),
                 ("parent", e.Parent == null ? null : RibbonMap.Label(e.Parent)),
-                ("activeTab", _hookedRibbon?.ActiveTab?.Title));
+                ("activeTab", bar == null ? _hookedRibbon?.ActiveTab?.Title : null), ("bar", bar));
             if (n0 > 0 && clickPic != null)
             {
                 _shots.Suppress(n0);
-                if (_shots.Arrows) NoteRibbonMark(n0, item, e.Parent, down, clickPic.HasOrigin ? new Core.PxRect(clickPic.Left, clickPic.Top, clickPic.Left + clickPic.SrcWidth, clickPic.Top + clickPic.SrcHeight) : null);
+                if (_shots.Arrows) NoteRibbonMark(n0, item, e.Parent, down, barButton, clickPic.HasOrigin ? new Core.PxRect(clickPic.Left, clickPic.Top, clickPic.Left + clickPic.SrcWidth, clickPic.Top + clickPic.SrcHeight) : null);
                 _shots.Write(n0, "ribbon", clickPic, "window", keepSize: smartPic);
             }
         });
@@ -595,7 +601,7 @@ public sealed class Recorder
 
     /// <summary>The green box and arrow of a ribbon click's picture (<see cref="Core.RibbonMark"/>): the clicked item's own rectangle, read now (the object the click ran, wherever it shows), else the button that holds it, else an
     /// arrow at the mouse-down point; when none is known nothing is drawn and retrace.log says why.</summary>
-    void NoteRibbonMark(int n, RibbonItem item, RibbonItem? parent, (int X, int Y)? down, Core.PxRect? picture)
+    void NoteRibbonMark(int n, RibbonItem item, RibbonItem? parent, (int X, int Y)? down, ScreenRect? qatButton, Core.PxRect? picture)
     {
         var clock = System.Diagnostics.Stopwatch.StartNew();
         Core.PxRect? Rect(RibbonItem? it)
@@ -607,7 +613,8 @@ public sealed class Recorder
         }
         // the button that holds the item is looked up only when the item's own rectangle is not used, and only when it is a button-like item (a row panel's rectangle is the whole row)
         var parentType = parent?.GetType().Name;
-        var choice = Core.RibbonMark.Choose(Rect(item), () => parent != null && Core.RibbonMark.IsButtonLike(parentType) ? Rect(parent) : null, down, picture);
+        var choice = Core.RibbonMark.Choose(qatButton is { } qb ? new Core.PxRect(qb.Left, qb.Top, qb.Right, qb.Bottom) : Rect(item),   // a Quick Access Toolbar click: the toolbar's own button, not the ribbon copy of the item
+             () => parent != null && Core.RibbonMark.IsButtonLike(parentType) ? Rect(parent) : null, down, picture);
         switch (choice.Kind)
         {
             case Core.RibbonMarkKind.Box:
@@ -697,12 +704,43 @@ public sealed class Recorder
         _cmdDocument = s as Document;
         _view = ViewControl.Read(_cmdDocument); _viewKey = _view == null ? null : ViewControl.ViewKey();
         var (origin, via) = Attribute(name);
+        // the top-level command a ribbon (or Quick Access Toolbar) click started keeps the palettes that click saw; a nested command changes nothing
+        _open.CommandStart(name, origin == "ribbon", _ctxCmdDepth, _ctxLispDepth, _w?.ElapsedMs ?? 0);
         Emit("cmd_start", DocName(s as Document), ("command", name), ("origin", origin), ("via", via), ("script", ScriptActive()));
     });
 
-    void OnCmdEnded(object? s, CommandEventArgs e) => Log.Safe("CommandEnded", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _kinds.Clear(); _rz.End(s as Document); _rz.EndNow(s as Document, e.GlobalCommandName, null, () => CheckPendingViews(ViewControl.ViewKey())); Emit("cmd_end", DocName(s as Document), ("command", e.GlobalCommandName)); TakePendingMark(); } });
-    void OnCmdCancelled(object? s, CommandEventArgs e) => Log.Safe("CommandCancelled", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _kinds.Clear(); _rz.End(s as Document); _rz.EndNow(s as Document, e.GlobalCommandName, null, () => CheckPendingViews(ViewControl.ViewKey())); Emit("cmd_cancel", DocName(s as Document), ("command", e.GlobalCommandName)); TakePendingMark(); } });
-    void OnCmdFailed(object? s, CommandEventArgs e) => Log.Safe("CommandFailed", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _kinds.Clear(); _rz.End(s as Document); _rz.EndNow(s as Document, e.GlobalCommandName, null, () => CheckPendingViews(ViewControl.ViewKey())); Emit("cmd_fail", DocName(s as Document), ("command", e.GlobalCommandName)); TakePendingMark(); } });
+    readonly Core.OpenedTracker _open = new();   // the palettes a ribbon click saw, kept for the top-level command / LISP it started (Core, tested)
+    /// <summary>The palettes at the start of one top-level command, shared by every end event it wrote (a nested command's end and its own: the scheduler drops a second end picture that comes within 250 ms of the first, so any of them
+    /// may be the one taken). The first of its pictures to be taken claims the box and caption.</summary>
+    sealed class OpenGroup { public required List<Core.PaletteState> Before; public bool Claimed; }
+    readonly Dictionary<int, OpenGroup> _endBefore = new();   // end event n -> its group
+    readonly List<int> _nestedEnds = new();   // cmd_end events of commands nested in the one that is kept
+
+    /// <summary>The palette that opened during the command whose end picture is event <paramref name="n"/>, asked when that picture is taken; null (and one retrace.log line saying why) when none did.</summary>
+    Core.PaletteOpened? OpenedPaletteFor(int n)
+    {
+        if (!_endBefore.Remove(n, out var group) || group.Claimed) return null;
+        var before = group.Before;
+        var main = ShotService.WindowRect(MainWindowHandle());
+        var d = Core.PaletteOpening.Decide(before, PaletteSnapshot.Read(), main);
+        Log.Info($"end picture {n}: {(d.Opened == null ? "no palette box or caption, " : _shots.Arrows ? "palette opened, box requested (a mark left out is logged as shot N), " : "caption only (marks are off: no box), ")}{d.Reason}");
+        if (d.Opened != null) group.Claimed = true;
+        return d.Opened;
+    }
+
+    /// <summary>A LISP expression a ribbon click ran has ended. A LISP's end gets no picture of its own, so one is asked for only when a palette is open now that was not at the click (the whole window, `lisp-end`; its box and caption are decided when it is
+    /// taken, like a command's); otherwise one retrace.log line says why. A palette that shows only after the LISP has ended is not seen.</summary>
+    void LispOpened(int n, List<Core.PaletteState> before)
+    {
+        var d = Core.PaletteOpening.Decide(before, PaletteSnapshot.Read(), ShotService.WindowRect(MainWindowHandle()));
+        if (d.Opened == null) { Log.Info($"lisp end {n}: no palette box or caption, no end picture taken for the LISP; {d.Reason}"); return; }
+        _endBefore[n] = new OpenGroup { Before = before };
+        _shots.Request(ShotRules.LispEnd(n, _w?.ElapsedMs ?? 0));
+    }
+
+    void OnCmdEnded(object? s, CommandEventArgs e) => Log.Safe("CommandEnded", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _kinds.Clear(); _rz.End(s as Document); _rz.EndNow(s as Document, e.GlobalCommandName, null, () => CheckPendingViews(ViewControl.ViewKey())); var endN = Emit("cmd_end", DocName(s as Document), ("command", e.GlobalCommandName)); if (endN > 0 && _open.Keeping && _ctxCmdDepth > 0 && _ctxLispDepth == 0) _nestedEnds.Add(endN); if (_open.CommandEnd(e.GlobalCommandName, _ctxCmdDepth, _ctxLispDepth) is { } kept) { if (endN > 0) { var g = new OpenGroup { Before = kept.ToList() }; _endBefore[endN] = g; foreach (var k in _nestedEnds) _endBefore[k] = g; } _nestedEnds.Clear(); } TakePendingMark(); } });
+    void OnCmdCancelled(object? s, CommandEventArgs e) => Log.Safe("CommandCancelled", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _kinds.Clear(); _rz.End(s as Document); _rz.EndNow(s as Document, e.GlobalCommandName, null, () => CheckPendingViews(ViewControl.ViewKey())); Emit("cmd_cancel", DocName(s as Document), ("command", e.GlobalCommandName)); _open.CommandAborted(e.GlobalCommandName, _ctxCmdDepth, _ctxLispDepth); if (!_open.Keeping) _nestedEnds.Clear(); TakePendingMark(); } });
+    void OnCmdFailed(object? s, CommandEventArgs e) => Log.Safe("CommandFailed", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _kinds.Clear(); _rz.End(s as Document); _rz.EndNow(s as Document, e.GlobalCommandName, null, () => CheckPendingViews(ViewControl.ViewKey())); Emit("cmd_fail", DocName(s as Document), ("command", e.GlobalCommandName)); _open.CommandAborted(e.GlobalCommandName, _ctxCmdDepth, _ctxLispDepth); if (!_open.Keeping) _nestedEnds.Clear(); TakePendingMark(); } });
 
     /// <summary>A command ended: a checkpoint asked for during it is taken now, once AutoCAD has finished ending it (MarkFromKey waits again if
     /// another command is still running).</summary>
@@ -719,10 +757,11 @@ public sealed class Recorder
         _rz.Start(s as Document);
         _sel.LispStart(_ctxCmdDepth > 0 || _ctxLispDepth > 0);   // its own keys come before an ssget; typed inside a prompt (a replay's (handent ..)) it spoils the text
         _cmdDoc = DocName(s as Document);
+        _open.LispStart(_ctxCmdDepth, _ctxLispDepth, _w?.ElapsedMs ?? 0);   // a LISP command a ribbon macro ran keeps the click's palettes, like a command
         Emit("lisp_start", _cmdDoc, ("firstLine", e.FirstLine), ("startup", _startup.IsStartupLisp(_w?.ElapsedMs ?? 0, _lastInputMs)), ("script", ScriptActive()));
     });
-    void OnLispEnded(object? s, EventArgs e) => Log.Safe("LispEnded", () => { _rz.End(s as Document); _rz.EndNow(s as Document, null, null, () => CheckPendingViews(ViewControl.ViewKey())); Emit("lisp_end", DocName(s as Document)); });
-    void OnLispCancelled(object? s, EventArgs e) => Log.Safe("LispCancelled", () => { _rz.End(s as Document); _rz.EndNow(s as Document, null, null, () => CheckPendingViews(ViewControl.ViewKey())); Emit("lisp_cancel", DocName(s as Document)); });
+    void OnLispEnded(object? s, EventArgs e) => Log.Safe("LispEnded", () => { _rz.End(s as Document); _rz.EndNow(s as Document, null, null, () => CheckPendingViews(ViewControl.ViewKey())); var endN = Emit("lisp_end", DocName(s as Document)); if (_open.LispEnd(_ctxCmdDepth, _ctxLispDepth) is { } kept && endN > 0) LispOpened(endN, kept.ToList()); });
+    void OnLispCancelled(object? s, EventArgs e) => Log.Safe("LispCancelled", () => { _rz.End(s as Document); _rz.EndNow(s as Document, null, null, () => CheckPendingViews(ViewControl.ViewKey())); Emit("lisp_cancel", DocName(s as Document)); _open.LispAborted(_ctxCmdDepth, _ctxLispDepth); });
 
     /// <summary>"ribbon" if a ribbon click happened within 2 s and its macro contains the command name (or it has no macro
     /// and the command started within 1 s), else "typed/other".</summary>

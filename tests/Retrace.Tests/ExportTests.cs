@@ -257,7 +257,7 @@ public class ExportTests : IDisposable
         string Cell(int row, int col) => rows[row].Elements<S.Cell>().First(c => c.CellReference!.Value == $"{(char)('A' + col)}{row}").InnerText;
 
         // the table: a header row, then a row per thing the tester does, numbered like the Word document (1, then 1.1, 1.2 ... for its sub-steps)
-        Assert.Equal("#|Action|Where|Details|Expected|Picture|Result|Notes", string.Join("|", Enumerable.Range(0, 8).Select(i => Cell(6, i))));
+        Assert.Equal("#|Action|Where|Details|Expected|Picture|Result|Notes|Evidence", string.Join("|", Enumerable.Range(0, 9).Select(i => Cell(6, i))));
         Assert.Equal("1|1.1|1.2|2|2.1|3", string.Join("|", Enumerable.Range(7, 6).Select(r => Cell(r, 0))));
         Assert.Equal("Click Line", Cell(7, 1));
         Assert.Equal("Ribbon › Home tab › Draw panel", Cell(7, 2));

@@ -385,9 +385,10 @@ public static class StepWording
     static string? FirstNamed(RecordingStep st) =>
         new[] { st.Text, st.Join?.Entry.Title, st.ItemId }.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x))?.Trim();
 
-    /// <summary>The location line of a ribbon click in a script: "Ribbon › Home tab › Draw panel" ("Ribbon › Home tab" when the panel was not recorded, "Ribbon" with neither).</summary>
+    /// <summary>The location line of a ribbon click in a script: "Ribbon › Home tab › Draw panel" ("Ribbon › Home tab" when the panel was not recorded, "Ribbon" with neither); "Quick Access Toolbar" for a click on that bar.</summary>
     public static string RibbonWhere(RecordingStep st) =>
-        string.Join(" › ", new[] { "Ribbon", Named(st.Tab, "tab"), Named(st.Panel, "panel") }.Where(x => x != null));
+        st.Bar == "qat" ? "Quick Access Toolbar"   // a Quick Access Toolbar button has no tab or panel to name (the recording's `bar`)
+        : string.Join(" › ", new[] { "Ribbon", Named(st.Tab, "tab"), Named(st.Panel, "panel") }.Where(x => x != null));
 
     static string? Named(string? name, string noun) => string.IsNullOrWhiteSpace(name) ? null : $"{name.Trim()} {noun}";
 
@@ -446,8 +447,17 @@ public static class StepWording
         ctx.ShotRole = role;
         foreach (var shot in shots)
             if (ctx.ShotHref(shot) is { } href)
+            {
                 sb.Append($"\n{indent}![{alt}]({href})\n\n");
+                if (shot.Opened is { } palette) sb.Append(indent).Append(OpensCaption(palette)).Append("\n\n");   // an end picture with a palette that opened in it
+            }
     }
+
+    /// <summary>The caption under the end picture of a command that opened a palette: "The **Pick** palette opens."</summary>
+    public static string OpensCaption(string palette) => $"The **{Md.Cell(palette)}** palette opens.";
+
+    /// <summary>True for a line <see cref="OpensCaption"/> wrote (plain text, markup removed); the Excel sheet puts it in the row's Expected.</summary>
+    public static bool IsOpensCaption(string text) => text.StartsWith("The ", StringComparison.Ordinal) && text.EndsWith(" palette opens.", StringComparison.Ordinal);
 
     /// <summary>Step text as image alt text: no emphasis, code ticks or brackets; a link keeps only its text.</summary>
     public static string Alt(string text) =>

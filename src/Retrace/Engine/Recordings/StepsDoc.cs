@@ -131,6 +131,7 @@ public sealed class StepsDoc
     {
         string action = "", where = "";
         var own = new List<string>();
+        var opens = new List<string>();   // "The Pick palette opens." under an end picture: what the tester should see
         var subs = new List<ListBlock>();
         foreach (var b in item)
         {
@@ -141,6 +142,7 @@ public sealed class StepsDoc
                 if (t.Length == 0 || (action.Length > 0 && IsPictureCaption(t))) continue;
                 if (action.Length == 0) action = t;
                 else if (where.Length == 0 && IsWhere(p)) where = t;
+                else if (Emit.StepWording.IsOpensCaption(t)) opens.Add(t);
             }
             else if (b is ListBlock l) subs.Add(l);
         }
@@ -161,7 +163,7 @@ public sealed class StepsDoc
             Rows.Add(new SheetRow(number.ToString(), action, where, string.Join("\n", lines), "", own, true));
             return;
         }
-        Rows.Add(new SheetRow(number.ToString(), action, where, "", "", own, false));
+        Rows.Add(new SheetRow(number.ToString(), action, where, "", string.Join("\n", opens), own, false));
         int k = 0;
         foreach (var bu in bullets)
         {

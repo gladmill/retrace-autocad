@@ -41,3 +41,9 @@
   (command "_.SCRIPT" "C:/temp/retrace-chain/inserttwo.scr")
   (princ)
 )
+
+;; PICKLISP: the "Pick by LISP" button of the Marks Test tab (DRAWMARKSTAB). A LISP command that opens the DRAWPICK palette, for checking a palette that a LISP-run ribbon click opens.
+(defun C:PICKLISP ()
+  (command "_.DRAWPICK")
+  (princ)
+)

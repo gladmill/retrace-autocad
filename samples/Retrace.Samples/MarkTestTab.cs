@@ -36,7 +36,7 @@ namespace Retrace.Samples
             if (ribbon == null || ribbon.Tabs.Any(t => t.Id == "MARKS_TEST")) return;
             ribbon.Tabs.Add(Tab("MARKS_OTHER", "Marks Other", Panel("Other", Row(Button("RBNU_200_DUPLI", "Dup A", "DRAWCIRCLE")))));
             ribbon.Tabs.Add(Tab("MARKS_TEST", "Marks Test",
-                Panel("Palettes", Row(Button("MARK_PICK", "Pick palette", "DRAWPICK"), Button("RBNU_200_ABCDE", "Tools palette", "DRAWTOOLS"), Button("RBNU_200_DUPLI", "Dup B", "DRAWLINE"))),
+                Panel("Palettes", Row(Button("MARK_PICK", "Pick palette", "DRAWPICK"), Button("RBNU_200_ABCDE", "Tools palette", "DRAWTOOLS"), Button("RBNU_200_DUPLI", "Dup B", "DRAWLINE"), Button("MARK_NEST", "Pick + zoom", "DRAWPICKNEST"), LispButton("PICKLISP", "Pick by LISP"))),
                 Panel("Split", Row(Split())),
                 SlidePanel()));
         }
@@ -80,6 +80,15 @@ namespace Retrace.Samples
         }
 
         /// <summary>A button with its own id whose click runs <paramref name="command"/>.</summary>
+        /// <summary>A button that runs the LISP command C:&lt;id&gt; (chain.lsp: PICKLISP runs DRAWPICK), like the Dialogs panel's: one LISP expression, so a recording has a lisp_start for it.</summary>
+        static RibbonButton LispButton(string id, string label)
+        {
+            var b = new RibbonButton { Id = id, Name = id, Text = label, ShowText = true, Size = RibbonItemSize.Standard, Orientation = System.Windows.Controls.Orientation.Horizontal };
+            b.CommandHandler = new LispCommandHandler();
+            b.CommandParameter = b;
+            return b;
+        }
+
         static RibbonButton Button(string id, string label, string command)
         {
             var b = new RibbonButton { Id = id, Name = id, Text = label, ShowText = true, Size = RibbonItemSize.Standard, Orientation = System.Windows.Controls.Orientation.Horizontal, Tag = command };

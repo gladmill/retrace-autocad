@@ -83,6 +83,152 @@ static class TdocTargets
         catch (Exception ex) { Log.Error("ribbon item rect (any source)", ex); return null; }
     }
 
+    /// <summary>Whether the clicked ribbon item <paramref name="item"/> was clicked in the Quick Access Toolbar: "qat" when the visual that holds the mouse-down point (<paramref name="near"/>) has a Quick Access Toolbar
+    /// among its ancestors; null for the ribbon and whenever it cannot be told (no mouse-down point and the item shows in both, a visual tree that cannot be read). An item shown in both the toolbar and a tab: the copy under the
+    /// mouse-down point wins. Without a point, the only place the item shows decides. <paramref name="why"/>: what decided, for retrace.log. UI thread; read-only.</summary>
+    public static string? BarOf(object item, (int X, int Y)? near, out string why) => BarOf(item, near, out why, out _);
+
+    /// <summary><see cref="BarOf(object, ValueTuple{int,int}?, out string)"/>; <paramref name="button"/>: for a Quick Access Toolbar click, the rectangle of the toolbar's button under the mouse-down point (its copy of the item; the ribbon's own copy is somewhere else), else null.</summary>
+    public static string? BarOf(object item, (int X, int Y)? near, out string why, out ScreenRect? button)
+    {
+        why = ""; button = null;
+        if (near is { } pt && HitChain(pt, out var hitChain, out var hitQat, out var hitButton, out var hitCopy)) { if (hitQat && !Matches(hitCopy, item, out var matchWhy)) { why = $"not a toolbar click: the toolbar button under the mouse-down point is not the executed item ({matchWhy}); {hitChain}"; return null; } if (hitQat) button = hitButton; why = (hitQat ? "in the Quick Access Toolbar" : "on the ribbon") + $" (under the mouse-down point: {hitChain})"; return hitQat ? "qat" : null; }
+        try
+        {
+            var found = new List<(ScreenRect Rect, bool Qat, string Chain)>();
+            var ribbonSource = Autodesk.Windows.ComponentManager.Ribbon is { } rb ? System.Windows.PresentationSource.FromVisual(rb) : null;
+            foreach (System.Windows.PresentationSource src in System.Windows.PresentationSource.CurrentSources)
+            {
+                try
+                {
+                    if (!src.CheckAccess()) continue;
+                    if (src.RootVisual is not System.Windows.FrameworkElement root || !root.IsVisible) continue;
+                    if (!ReferenceEquals(src, ribbonSource) && root.GetType().Name != "PopupRoot") continue;
+                    if (src is System.Windows.Interop.HwndSource hs && !IsWindowVisible(hs.Handle)) continue;
+                    foreach (var fe in ShownVisuals(root, item))
+                    {
+                    var tl = fe.PointToScreen(new System.Windows.Point(0, 0));
+                    var br = fe.PointToScreen(new System.Windows.Point(fe.ActualWidth, fe.ActualHeight));
+                    var chain = new List<string>();
+                    bool qat = false;
+                    for (System.Windows.DependencyObject? v = fe; v != null && chain.Count < 40; v = v is System.Windows.Media.Visual or System.Windows.Media.Media3D.Visual3D ? System.Windows.Media.VisualTreeHelper.GetParent(v) : null)
+                    {
+                        var name = v.GetType().Name;
+                        chain.Add(name);
+                        if (name.Contains("QuickAccess", StringComparison.OrdinalIgnoreCase)) qat = true;
+                    }
+                    found.Add((new ScreenRect((int)Math.Floor(tl.X), (int)Math.Floor(tl.Y), (int)Math.Ceiling(br.X), (int)Math.Ceiling(br.Y)), qat, string.Join("<", chain.Take(8))));
+                    }
+                }
+                catch (Exception ex) { Log.Error("ribbon bar (one source)", ex); }
+            }
+            if (found.Count == 0) { why = "the item shows nowhere"; return null; }
+            (ScreenRect Rect, bool Qat, string Chain)? pick = null;
+            if (near is { } p)
+                foreach (var f in found)
+                    if (p.X >= f.Rect.Left - 2 && p.X < f.Rect.Right + 2 && p.Y >= f.Rect.Top - 2 && p.Y < f.Rect.Bottom + 2) { pick = f; break; }
+            if (pick == null && found.Select(f => f.Qat).Distinct().Count() == 1) pick = found[0];
+            if (pick is not { } c) { why = $"the item shows in the toolbar and on the ribbon and no mouse-down point tells which ({found.Count} copies)"; return null; }
+            why = (c.Qat ? "in the Quick Access Toolbar" : "on the ribbon") + $" ({found.Count} shown, ancestors {c.Chain})";
+            return c.Qat ? "qat" : null;
+        }
+        catch (Exception ex) { Log.Error("ribbon bar", ex); why = "failed"; return null; }
+    }
+
+    /// <summary>Is the toolbar button's item (<paramref name="copy"/>) the executed <paramref name="item"/>? <see cref="QatMatch"/>: ids, else macros, else texts. <paramref name="why"/> names both for retrace.log.</summary>
+    static bool Matches(Autodesk.Windows.RibbonItem? copy, object item, out string why)
+    {
+        var it = item as Autodesk.Windows.RibbonItem;
+        static string? Macro(Autodesk.Windows.RibbonItem? i) => (i as Autodesk.Windows.RibbonCommandItem)?.CommandParameter as string;
+        static string? Txt(Autodesk.Windows.RibbonItem? i) => i == null ? null : (string.IsNullOrWhiteSpace(i.Text) ? i.Name : i.Text);
+        why = $"toolbar button {copy?.GetType().Name ?? "none"} id '{copy?.Id}' text '{Txt(copy)}', item {it?.GetType().Name ?? "none"} id '{it?.Id}' text '{Txt(it)}'";
+        if (it == null) return false;
+        // some toolbar items are drawn through the toolbar's overflow host (its item is the host's own, id "Id_QuickAccessToolBarOverflowButton"): then the toolbar's list must hold the executed item
+        bool host = copy == null || (copy.Id?.Contains("QuickAccessToolBar", StringComparison.OrdinalIgnoreCase) ?? false);
+        bool holds = host && QatHolds(it, out var info);
+        if (host) { QatHolds(it, out var info2); why += $"; the button is the toolbar's host, the toolbar {(holds ? "holds" : "does not hold")} the item ({info2})"; }
+        return Retrace.Core.QatMatch.Accept(host, holds, !host && Retrace.Core.QatMatch.Same(copy!.Id, Macro(copy), Txt(copy), it.Id, Macro(it), Txt(it)));
+    }
+
+    /// <summary>Does the Quick Access Toolbar's own list of items hold <paramref name="item"/> (the same object, or one with the same id)? <paramref name="info"/> says how many it looked at, for retrace.log.</summary>
+    static bool QatHolds(Autodesk.Windows.RibbonItem item, out string info)
+    {
+        info = "list unreadable";
+        try
+        {
+            var qat = Autodesk.Windows.ComponentManager.QuickAccessToolBar;
+            if (qat?.GetType().GetProperty("Items")?.GetValue(qat) is not System.Collections.IEnumerable items) { info = $"no Items on {qat?.GetType().Name ?? "null"}"; return false; }
+            int n = 0; bool found = false;
+            foreach (var it in items)
+            {
+                n++;
+                if (ReferenceEquals(it, item) || (it is Autodesk.Windows.RibbonItem ri && !string.IsNullOrEmpty(item.Id) && ri.Id == item.Id)) found = true;
+            }
+            info = $"{n} items in {qat.GetType().Name}";
+            return found;
+        }
+        catch (Exception ex) { Log.Error("QAT items", ex); info = "failed"; return false; }
+    }
+
+    /// <summary>The WPF visual under a screen point, in any window of this process that shows it (the toolbar is not necessarily in the ribbon's window): its ancestors' type names, and whether one of them is a Quick Access Toolbar.
+    /// false when no WPF visual is under the point.</summary>
+    static bool HitChain((int X, int Y) p, out string chain, out bool qat, out ScreenRect? button, out Autodesk.Windows.RibbonItem? copy)
+    {
+        chain = ""; qat = false; button = null; copy = null;
+        try
+        {
+            foreach (System.Windows.PresentationSource src in System.Windows.PresentationSource.CurrentSources)
+            {
+                try
+                {
+                    if (!src.CheckAccess() || src is not System.Windows.Interop.HwndSource hs || !IsWindowVisible(hs.Handle) || src.RootVisual is not System.Windows.FrameworkElement root || !root.IsVisible) continue;
+                    if (!GetWindowRect(hs.Handle, out var wr) || p.X < wr.Left || p.X >= wr.Right || p.Y < wr.Top || p.Y >= wr.Bottom) continue;
+                    var local = root.PointFromScreen(new System.Windows.Point(p.X, p.Y));
+                    if (System.Windows.Media.VisualTreeHelper.HitTest(root, local)?.VisualHit is not { } hit) continue;
+                    var names = new List<string>();
+                    for (System.Windows.DependencyObject? v = hit; v != null && names.Count < 40; v = v is System.Windows.Media.Visual or System.Windows.Media.Media3D.Visual3D ? System.Windows.Media.VisualTreeHelper.GetParent(v) : null)
+                    {
+                        var name = v.GetType().Name;
+                        var dcName = v is System.Windows.FrameworkElement { DataContext: { } dc } ? dc.GetType().Name : "";
+                        names.Add(dcName.Length > 0 ? $"{name}[{dcName}]" : name);
+                        // the toolbar's own panel carries the toolbar's source as its DataContext (QuickAccessToolBarSource); its buttons are copies of the ribbon items, not the items
+                        if (name.Contains("QuickAccess", StringComparison.OrdinalIgnoreCase) || dcName.Contains("QuickAccess", StringComparison.OrdinalIgnoreCase)) qat = true;
+                    }
+                    // the button the point is on: the nearest RibbonItemControl above the hit visual
+                    for (System.Windows.DependencyObject? v = hit; v != null && button == null; v = v is System.Windows.Media.Visual or System.Windows.Media.Media3D.Visual3D ? System.Windows.Media.VisualTreeHelper.GetParent(v) : null)
+                        if (v is System.Windows.FrameworkElement { ActualWidth: >= 1, ActualHeight: >= 1 } fe && fe.GetType().Name == "RibbonItemControl")
+                        {
+                            var tl = fe.PointToScreen(new System.Windows.Point(0, 0)); var br = fe.PointToScreen(new System.Windows.Point(fe.ActualWidth, fe.ActualHeight));
+                            button = new ScreenRect((int)Math.Floor(tl.X), (int)Math.Floor(tl.Y), (int)Math.Ceiling(br.X), (int)Math.Ceiling(br.Y));
+                            copy = fe.DataContext as Autodesk.Windows.RibbonItem;
+                        }
+                    chain = string.Join("<", names.Take(10));
+                    return true;
+                }
+                catch (Exception ex) { Log.Error("ribbon bar hit (one source)", ex); }
+            }
+        }
+        catch (Exception ex) { Log.Error("ribbon bar hit", ex); }
+        return false;
+    }
+
+    /// <summary>Every outermost visible element under <paramref name="root"/> whose DataContext is <paramref name="data"/> (a button shown in the toolbar and on a tab is two); what lies inside a match is not searched.</summary>
+    static List<System.Windows.FrameworkElement> ShownVisuals(System.Windows.FrameworkElement root, object data)
+    {
+        var all = new List<System.Windows.FrameworkElement>();
+        var queue = new Queue<System.Windows.DependencyObject>(); queue.Enqueue(root);
+        for (int seen = 0; queue.Count > 0 && seen < 50000; seen++)
+        {
+            var v = queue.Dequeue();
+            if (v is System.Windows.FrameworkElement fe && ReferenceEquals(fe.DataContext, data) && fe.IsVisible && fe.ActualWidth >= 1 && fe.ActualHeight >= 1
+                && System.Windows.PresentationSource.FromVisual(fe) != null)
+            { all.Add(fe); continue; }
+            if (v is System.Windows.Media.Visual || v is System.Windows.Media.Media3D.Visual3D)
+                for (int i = 0, n = System.Windows.Media.VisualTreeHelper.GetChildrenCount(v); i < n; i++) queue.Enqueue(System.Windows.Media.VisualTreeHelper.GetChild(v, i));
+        }
+        return all;
+    }
+
     /// <summary>Whether a ribbon item collection holds <paramref name="target"/>, also inside rows, split buttons and other item lists.</summary>
     internal static bool Holds(System.Collections.IEnumerable? items, object target, int depth)
     {

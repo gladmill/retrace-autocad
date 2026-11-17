@@ -58,6 +58,15 @@ namespace Retrace.Samples
             pickSet.Visible = true;
         }
 
+        /// <summary>DRAWPICKNEST: shows the DRAWPICK palette and then runs a command of its own inside this one (ZOOM Extents through Editor.Command), the shape of a .NET command that calls a transparent or nested command: for checking
+        /// that a ribbon-started command that opens a palette still gets its box and caption when a command ends inside it.</summary>
+        [CommandMethod("DRAWPICKNEST")]
+        public void ShowPickNested()
+        {
+            ShowPick();
+            Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument?.Editor.Command("_.ZOOM", "_E");
+        }
+
         /// <summary>DRAWPICKFLOAT: the DRAWPICK palette, floating (not docked, not auto-hide) with its top left at screen point 760, 80, for checking a palette that lies outside AutoCAD's window (shrink the window first).</summary>
         [CommandMethod("DRAWPICKFLOAT")]
         public void ShowPickFloating()
