@@ -25,7 +25,7 @@ static class SdiDocs
         var acad = ((dynamic)Autodesk.AutoCAD.ApplicationServices.Application.AcadApplication);
         acad.Documents.Open(path);
         Log.Info($"opened {path} through COM Documents.Open (SDI is on)");
-        return dm.MdiActiveDocument ?? throw new InvalidOperationException($"{System.IO.Path.GetFileName(path)} was opened but no drawing is active");
+        return dm.MdiActiveDocument ?? throw new InvalidOperationException($"{Path.GetFileName(path)} was opened but no drawing is active");
     }
 
     /// <summary>One send under SDI: <see cref="Pending"/> until the text is delivered or has failed. A replay keeps the tokens of its own sends and waits only for those.</summary>
@@ -455,7 +455,7 @@ static class SdiDocs
             if (!Retrace.Core.SdiGuard.SaveOwnBeforeOpen(sdi, name)) continue;
             if (!IsModified(d)) continue;
             try { ((dynamic)d.GetAcadDocument()).Save(); Record(name); Log.Info($"SDI: saved the test's own drawing {name} before the next one opens"); }
-            catch (Exception ex) { Log.Info($"SDI: {name} not saved ({ex.Message})"); return $"SDI is on and the test's own drawing {System.IO.Path.GetFileName(name)} could not be saved before the next drawing opens ({ex.Message})"; }
+            catch (Exception ex) { Log.Info($"SDI: {name} not saved ({ex.Message})"); return $"SDI is on and the test's own drawing {Path.GetFileName(name)} could not be saved before the next drawing opens ({ex.Message})"; }
         }
         return null;
     }

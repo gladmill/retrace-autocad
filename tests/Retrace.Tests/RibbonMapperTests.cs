@@ -643,7 +643,7 @@ public class RibbonMapperTests : IDisposable
         Assert.Contains("## Contoso", md);
 
         var csvBytes = File.ReadAllBytes(paths[1]);
-        Assert.Equal(new byte[] { 0xEF, 0xBB, 0xBF }, csvBytes[..3]);
+        Assert.Equal(new byte[] { 0xEF, 0xBB, 0xBF }, csvBytes.Take(3).ToArray());
         Assert.Equal(r.Rows.Count + 1, ReadCsv(File.ReadAllText(paths[1]).TrimStart('﻿')).Count);
     }
 

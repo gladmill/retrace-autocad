@@ -102,6 +102,7 @@ public sealed class Recorder
     // Captured when a command starts. Prompt handlers must not call into the Editor/Document: with mouse picks that made
     // AutoCAD re-issue the prompt in a loop (LINE took no points, the cursor flickered until Esc; seen in R25.1).
     bool _inOwnCmd;
+    int _ownNested;   // commands that started inside one of Retrace's own commands (RETRACERIBBON runs RIBBON): not the user's steps, so no cmd_start / cmd_end
     int _ownModal;   // dialogs Retrace's own commands opened (Settings, the test picker) that are open now: not part of the test
     Matrix3d _ucs = Matrix3d.Identity;
     readonly RecordZoomDriver _rz = new();   // setting recordZoom: the view follows what each command creates (zoomed before that command's result picture)
@@ -531,7 +532,15 @@ public sealed class Recorder
         {
             _map.Invalidate();
             var r = _hookedRibbon;
-            if (r != null) foreach (var t in r.Tabs) HookTab(t);
+            if (r == null) return;
+            var live = new HashSet<RibbonTab>(r.Tabs);
+            foreach (var gone in _hookedTabs.Where(t => !live.Contains(t)).ToList())   // a tab that left the ribbon (a repair rebuilt it): unhook the dead one
+            {
+                gone.Activated -= OnTabActivated;
+                if (gone.Panels is INotifyCollectionChanged dead) { dead.CollectionChanged -= OnTabsChanged; _hookedPanelLists.Remove(dead); }
+                _hookedTabs.Remove(gone);
+            }
+            foreach (var t in r.Tabs) HookTab(t);
         });
     }
 
@@ -694,6 +703,7 @@ public sealed class Recorder
     void OnCmdStart(object? s, CommandEventArgs e) => Log.Safe("CommandWillStart", () =>
     {
         var name = e.GlobalCommandName;
+        if (!IsOurs(name) && _inOwnCmd) { _ownNested++; return; }
         if (IsOurs(name)) { _sel.OwnCommandStart(_ctxCmdDepth > 0 || _ctxLispDepth > 0); _inOwnCmd = true; return; }   // (typed inside a prompt, the keys of 'RETRACEMARK are in the selection buffer: unusable) leaves _openPrompts alone: an own command typed transparently ('RETRACESTATUS) runs inside the user's prompt
         _kinds.Clear();
         _rz.Start(s as Document);
@@ -738,9 +748,9 @@ public sealed class Recorder
         _shots.Request(ShotRules.LispEnd(n, _w?.ElapsedMs ?? 0));
     }
 
-    void OnCmdEnded(object? s, CommandEventArgs e) => Log.Safe("CommandEnded", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _kinds.Clear(); _rz.End(s as Document); _rz.EndNow(s as Document, e.GlobalCommandName, null, () => CheckPendingViews(ViewControl.ViewKey())); var endN = Emit("cmd_end", DocName(s as Document), ("command", e.GlobalCommandName)); if (endN > 0 && _open.Keeping && _ctxCmdDepth > 0 && _ctxLispDepth == 0) _nestedEnds.Add(endN); if (_open.CommandEnd(e.GlobalCommandName, _ctxCmdDepth, _ctxLispDepth) is { } kept) { if (endN > 0) { var g = new OpenGroup { Before = kept.ToList() }; _endBefore[endN] = g; foreach (var k in _nestedEnds) _endBefore[k] = g; } _nestedEnds.Clear(); } TakePendingMark(); } });
-    void OnCmdCancelled(object? s, CommandEventArgs e) => Log.Safe("CommandCancelled", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _kinds.Clear(); _rz.End(s as Document); _rz.EndNow(s as Document, e.GlobalCommandName, null, () => CheckPendingViews(ViewControl.ViewKey())); Emit("cmd_cancel", DocName(s as Document), ("command", e.GlobalCommandName)); _open.CommandAborted(e.GlobalCommandName, _ctxCmdDepth, _ctxLispDepth); if (!_open.Keeping) _nestedEnds.Clear(); TakePendingMark(); } });
-    void OnCmdFailed(object? s, CommandEventArgs e) => Log.Safe("CommandFailed", () => { if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; TakePendingMark(); } else { _kinds.Clear(); _rz.End(s as Document); _rz.EndNow(s as Document, e.GlobalCommandName, null, () => CheckPendingViews(ViewControl.ViewKey())); Emit("cmd_fail", DocName(s as Document), ("command", e.GlobalCommandName)); _open.CommandAborted(e.GlobalCommandName, _ctxCmdDepth, _ctxLispDepth); if (!_open.Keeping) _nestedEnds.Clear(); TakePendingMark(); } });
+    void OnCmdEnded(object? s, CommandEventArgs e) => Log.Safe("CommandEnded", () => { if (!IsOurs(e.GlobalCommandName) && _ownNested > 0) { _ownNested--; return; } if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; _ownNested = 0; TakePendingMark(); } else { _kinds.Clear(); _rz.End(s as Document); _rz.EndNow(s as Document, e.GlobalCommandName, null, () => CheckPendingViews(ViewControl.ViewKey())); var endN = Emit("cmd_end", DocName(s as Document), ("command", e.GlobalCommandName)); if (endN > 0 && _open.Keeping && _ctxCmdDepth > 0 && _ctxLispDepth == 0) _nestedEnds.Add(endN); if (_open.CommandEnd(e.GlobalCommandName, _ctxCmdDepth, _ctxLispDepth) is { } kept) { if (endN > 0) { var g = new OpenGroup { Before = kept.ToList() }; _endBefore[endN] = g; foreach (var k in _nestedEnds) _endBefore[k] = g; } _nestedEnds.Clear(); } TakePendingMark(); } });
+    void OnCmdCancelled(object? s, CommandEventArgs e) => Log.Safe("CommandCancelled", () => { if (!IsOurs(e.GlobalCommandName) && _ownNested > 0) { _ownNested--; return; } if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; _ownNested = 0; TakePendingMark(); } else { _kinds.Clear(); _rz.End(s as Document); _rz.EndNow(s as Document, e.GlobalCommandName, null, () => CheckPendingViews(ViewControl.ViewKey())); Emit("cmd_cancel", DocName(s as Document), ("command", e.GlobalCommandName)); _open.CommandAborted(e.GlobalCommandName, _ctxCmdDepth, _ctxLispDepth); if (!_open.Keeping) _nestedEnds.Clear(); TakePendingMark(); } });
+    void OnCmdFailed(object? s, CommandEventArgs e) => Log.Safe("CommandFailed", () => { if (!IsOurs(e.GlobalCommandName) && _ownNested > 0) { _ownNested--; return; } if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; _ownNested = 0; TakePendingMark(); } else { _kinds.Clear(); _rz.End(s as Document); _rz.EndNow(s as Document, e.GlobalCommandName, null, () => CheckPendingViews(ViewControl.ViewKey())); Emit("cmd_fail", DocName(s as Document), ("command", e.GlobalCommandName)); _open.CommandAborted(e.GlobalCommandName, _ctxCmdDepth, _ctxLispDepth); if (!_open.Keeping) _nestedEnds.Clear(); TakePendingMark(); } });
 
     /// <summary>A command ended: a checkpoint asked for during it is taken now, once AutoCAD has finished ending it (MarkFromKey waits again if
     /// another command is still running).</summary>

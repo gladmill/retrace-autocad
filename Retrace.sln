@@ -23,6 +23,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AcadStatus", "acad-status\s
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AcadStatus.Tests", "acad-status\tests\AcadStatus.Tests\AcadStatus.Tests.csproj", "{CD97560F-29F5-4675-9D6B-C898974667FB}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Retrace.Tests.Net48", "tests\Retrace.Tests.Net48\Retrace.Tests.Net48.csproj", "{BE3B200B-3A5F-435B-81DC-317071062B1F}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -105,6 +107,18 @@ Global
 		{CD97560F-29F5-4675-9D6B-C898974667FB}.Release|Any CPU.Build.0 = Release|Any CPU
 		{CD97560F-29F5-4675-9D6B-C898974667FB}.Release|x86.ActiveCfg = Release|Any CPU
 		{CD97560F-29F5-4675-9D6B-C898974667FB}.Release|x86.Build.0 = Release|Any CPU
+		{BE3B200B-3A5F-435B-81DC-317071062B1F}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{BE3B200B-3A5F-435B-81DC-317071062B1F}.Debug|x64.Build.0 = Debug|Any CPU
+		{BE3B200B-3A5F-435B-81DC-317071062B1F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BE3B200B-3A5F-435B-81DC-317071062B1F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BE3B200B-3A5F-435B-81DC-317071062B1F}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{BE3B200B-3A5F-435B-81DC-317071062B1F}.Debug|x86.Build.0 = Debug|Any CPU
+		{BE3B200B-3A5F-435B-81DC-317071062B1F}.Release|x64.ActiveCfg = Release|Any CPU
+		{BE3B200B-3A5F-435B-81DC-317071062B1F}.Release|x64.Build.0 = Release|Any CPU
+		{BE3B200B-3A5F-435B-81DC-317071062B1F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BE3B200B-3A5F-435B-81DC-317071062B1F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BE3B200B-3A5F-435B-81DC-317071062B1F}.Release|x86.ActiveCfg = Release|Any CPU
+		{BE3B200B-3A5F-435B-81DC-317071062B1F}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -116,5 +130,6 @@ Global
 		{A22D74DB-5938-4C0B-A47F-EEE235C8C0D7} = {B9ADB4A4-C91A-4E6A-A9C5-91A2BBA993F1}
 		{3A22C20C-EF49-4A02-A063-51F619CE3E47} = {1943E651-C2A6-7E3E-44C3-0F4E59206A0F}
 		{CD97560F-29F5-4675-9D6B-C898974667FB} = {1943E651-C2A6-7E3E-44C3-0F4E59206A0F}
+		{BE3B200B-3A5F-435B-81DC-317071062B1F} = {0F55255A-4804-478F-8D48-D56BB76B98CE}
 	EndGlobalSection
 EndGlobal

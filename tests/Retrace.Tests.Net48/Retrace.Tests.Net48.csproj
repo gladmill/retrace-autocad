@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The same unit tests, compiled for .NET Framework 4.8: the runtime AutoCAD 2024 gives Retrace.dll. It links the source files of
+    Retrace.Tests, the engine and the core (as that project does) and the Compat shims of the plugin, so it proves that Engine/ and Core/
+    build for net48 and, run on Windows, that they behave there as on .NET.
+    - Building works anywhere (Mac, Linux, Windows): `dotnet build tests/Retrace.Tests.Net48`.
+    - Running needs Windows (the .NET Framework): `dotnet test tests/Retrace.Tests.Net48` there. Elsewhere IsTestProject is false, so
+      `dotnet test Retrace.sln` on a Mac or Linux box runs only the net10.0 project and skips this one.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Retrace.Tests</RootNamespace>
+    <AssemblyName>Retrace.Tests.Net48</AssemblyName>
+    <IsTestProject Condition="!$([MSBuild]::IsOSPlatform('Windows'))">false</IsTestProject>
+    <!-- the .NET Framework class library has no nullable annotations: the net10.0 project reports the real ones -->
+    <NoWarn>$(NoWarn);CS8600;CS8601;CS8602;CS8603;CS8604;CS8605;CS8619;CS8620;CS8714;CS8767</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <PackageReference Include="PolySharp" Version="1.15.0" PrivateAssets="all" />
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageReference Include="Markdig" Version="0.38.0" />
+    <PackageReference Include="DocumentFormat.OpenXml" Version="2.16.0" />
+    <Reference Include="Microsoft.CSharp" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.Net.Http" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <Using Include="Retrace.Core" />
+    <Using Include="Retrace.Engine.Util" />
+    <Using Include="Retrace.Engine" />
+    <Using Include="Retrace.Engine.Scan" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Retrace.Tests\**\*.cs" LinkBase="Tests" Exclude="..\Retrace.Tests\obj\**;..\Retrace.Tests\bin\**" />
+    <Compile Include="..\..\src\Retrace\Engine\**\*.cs" LinkBase="Engine" />
+    <Compile Include="..\..\src\Retrace\Core\**\*.cs" LinkBase="Core" />
+    <Compile Include="..\..\src\Retrace\Compat\NetFramework.cs" LinkBase="Compat" />
+    <Compile Include="..\..\src\Retrace\Compat\NetPath.cs" LinkBase="Compat" />
+  </ItemGroup>
+
+</Project>

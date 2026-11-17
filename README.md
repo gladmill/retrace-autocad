@@ -7,7 +7,16 @@ tells you pass or fail. It can also read your customization folder (`.cuix`, C#,
 write Markdown docs: ribbons, commands, dialogs, a source map, and an editable user guide with how-tos built from your recordings.
 And it maps each ribbon button to the LISP, C++, C# or VB.NET code it runs.
 
-Status: pre-1.0 (0.6.15). AutoCAD 2026 (R25.1), Windows x64. Written against the `AutoCAD.NET` 25.1.0 packages.
+Status: pre-1.0 (0.6.16). Windows x64. Supported AutoCAD releases:
+
+| AutoCAD | Release | Runtime | Build in the bundle | Written against |
+|---|---|---|---|---|
+| 2026 | R25.1 | .NET 8 | `Contents\Retrace.dll` (`net8.0-windows`) | `AutoCAD.NET` 25.1.0 |
+| 2024 | R24.3 | .NET Framework 4.8 | `Contents\2024\Retrace.dll` (`net48`) | `AutoCAD.NET` 24.3.0 |
+
+One `Retrace.bundle` holds both; AutoCAD loads the one for its own release. AutoCAD 2025 (R25.0) and other releases are not supported (the bundle does not load there).
+Everything described below was run in AutoCAD 2026. The AutoCAD 2024 build compiles from the same source and its engine and core pass the same unit tests on .NET
+Framework 4.8, but it has **not been run in AutoCAD 2024**: see [AutoCAD 2024](#autocad-2024) and [Limitations](#limitations).
 Verified in AutoCAD only in part: see [Limitations](#limitations).
 
 ## Install
@@ -22,23 +31,25 @@ version 2026. AutoCAD is not needed to build: the AutoCAD reference assemblies c
 
 1. **Build.** Close AutoCAD, then in this folder run `dotnet build Retrace.sln` (or build `Retrace.sln` in Visual Studio).
    Every build writes the autoloader bundle to `src/Retrace/bin/<Debug|Release>/Retrace.bundle`: `PackageContents.xml`, generated
-   with the project's version, and `Contents\` with `Retrace.dll` (and its pdb), `trust-retrace.ps1`, `LICENSE` and `THIRD-PARTY-NOTICES.txt`.
-   Retrace.dll is the only dll: Markdig and WebView2 are embedded in it. DocumentFormat.OpenXml (Word/Excel export) is the 2.16.0 copy that AutoCAD 2026 ships.
+   with the project's version (two component entries, R24.3 and R25.1), and `Contents\` with `Retrace.dll` (and its pdb) for AutoCAD 2026,
+   `Contents\2024\` with the AutoCAD 2024 build, `trust-retrace.ps1`, `LICENSE` and `THIRD-PARTY-NOTICES.txt`.
+   For AutoCAD 2026 Retrace.dll is the only dll: Markdig and WebView2 are embedded in it, and DocumentFormat.OpenXml (Word/Excel export) is the 2.16.0 copy that AutoCAD 2026 ships.
+   `Contents\2024\` holds Retrace.dll with the same embedded dependencies plus the dlls .NET Framework does not give it: System.Text.Json and what that needs, and DocumentFormat.OpenXml 2.16.0.
 
-   On Windows, once you have started AutoCAD 2026 at least once (the build looks for your AutoCAD 2026 profile), the build then
+   On Windows, once you have started AutoCAD 2026 or 2024 at least once (the build looks for your profile of either), the build then
    installs the bundle for your Windows user:
-   - it replaces `%APPDATA%\Autodesk\ApplicationPlugins\Retrace.bundle` with the new build, so AutoCAD 2026 loads it on every start;
-   - it runs `trust-retrace.ps1` on that folder, which adds `...\Retrace.bundle\...` to `TRUSTEDPATHS` in every AutoCAD 2026 profile.
+   - it replaces `%APPDATA%\Autodesk\ApplicationPlugins\Retrace.bundle` with the new build, so AutoCAD 2024 or 2026 loads it on every start;
+   - it runs `trust-retrace.ps1` on that folder, which adds `...\Retrace.bundle\...` to `TRUSTEDPATHS` in every AutoCAD 2024 and 2026 profile (a release you never started has none and is skipped).
      Retrace is not code-signed, and with `SECURELOAD` = 1 (the default) AutoCAD otherwise stops at "Security - Unsigned Executable File"
      before it loads a dll from a folder that is not a Trusted Location. Nothing else changes, not `SECURELOAD`.
 
    While AutoCAD has Retrace loaded, the build leaves the installed copy alone, and while any AutoCAD runs it skips the trust step;
    it says so in both cases (AutoCAD locks the dll, and writes its profiles back when it exits): close AutoCAD and build again. Before
-   you have started AutoCAD 2026 once, the build only reports that it did not install. `-p:RetraceDeploy=false` builds the bundle
+   you have started AutoCAD 2024 or 2026 once, the build only reports that it did not install. `-p:RetraceDeploy=false` builds the bundle
    without installing it, `-p:RetraceDeploy=true` installs even without a profile, and `-p:RetraceTrust=false` installs without
    touching `TRUSTEDPATHS`; all also work as environment variables. Builds on other operating systems and CI builds (`CI`, `TF_BUILD`,
-   `JENKINS_URL`, `TEAMCITY_VERSION` or `ContinuousIntegrationBuild` set) never install.
-2. Start AutoCAD 2026. A **Retrace** tab appears in the ribbon, right of Home. Run `RETRACESTATUS` to see the version and the root folder.
+   `JENKINS_URL`, `TEAMCITY_VERSION` or `ContinuousIntegrationBuild` set) never install. A build of one target only (`-f net48`) updates that target's folder in the bundle and installs nothing.
+2. Start AutoCAD 2024 or 2026. A **Retrace** tab appears in the ribbon, right of Home. Run `RETRACESTATUS` to see the version and the root folder.
 
 **Installing a copy by hand** (a machine without the SDK): `scripts/pack.sh <out-dir>` (bash and `python3`) writes
 `<out-dir>/Retrace.bundle` and installs nothing. Copy that folder to `%APPDATA%\Autodesk\ApplicationPlugins\`, then trust it with AutoCAD closed:
@@ -48,13 +59,33 @@ $b = "$env:APPDATA\Autodesk\ApplicationPlugins\Retrace.bundle"
 powershell -NoProfile -ExecutionPolicy Bypass -File "$b\Contents\trust-retrace.ps1" -Folder $b
 ```
 
-`trust-retrace.ps1` adds `<bundle>\...` to `TRUSTEDPATHS` in every AutoCAD 2026 profile of your Windows user (`-Series` picks another release,
-default `R25.1`) and changes nothing else.
-`-Check` only reports; `-Remove` takes the entry out again. Exit codes: 0 done, 1 error, 2 AutoCAD is running, 3 no AutoCAD 2026 profile
+`trust-retrace.ps1` adds `<bundle>\...` to `TRUSTEDPATHS` in every AutoCAD 2024 and 2026 profile of your Windows user (`-Series` picks the releases,
+default `R24.3,R25.1`: the two the bundle loads in, no other) and changes nothing else.
+`-Check` only reports; `-Remove` takes the entry out again. Exit codes: 0 done, 1 error, 2 AutoCAD is running, 3 no AutoCAD 2024 or 2026 profile
 yet (start AutoCAD once), 4 (`-Check`) not trusted everywhere. "Always Load" in AutoCAD's prompt trusts only that one file, so every new
 build would ask again. By hand: Options > Files > Trusted Locations > Add, the bundle folder with `\...` at the end.
 
 The guide palette needs the Microsoft Edge WebView2 Runtime (part of Windows 11 and current Edge / Microsoft 365). Without it, everything else still works.
+
+## AutoCAD 2024
+
+AutoCAD 2024 (R24.3) runs add-ins on .NET Framework 4.8; AutoCAD 2026 runs them on .NET 8. `Retrace.csproj` therefore builds two targets from one source:
+`net8.0-windows` (AutoCAD 2026) and `net48` (AutoCAD 2024, against `AutoCAD.NET` 24.3.0), and the bundle's `PackageContents.xml` has one component entry per release.
+Same commands, same recording format, same `settings.json`, same `C:\temp\retrace` folders.
+
+**Status: built, not run in AutoCAD 2024.** The net48 build compiles, `Engine/` and `Core/` pass the unit tests on .NET Framework 4.8 (`tests/Retrace.Tests.Net48`, run on Windows),
+and the add-in's dependencies resolve on .NET Framework without AutoCAD (checked by loading the dll in a plain .NET Framework process, also with a newer System.Text.Json already loaded). Nobody has loaded it in AutoCAD 2024 yet: the ribbon tab, recording, replay, pictures, dialogs
+and palettes are untested there. The first run in AutoCAD 2024 is the real test: follow [docs/acad2024-checklist.md](docs/acad2024-checklist.md) and report what differs.
+
+What differs on 2024 (all `#if NETFRAMEWORK` or `Compat/`; the AutoCAD API itself needed no change):
+- Newer .NET APIs the code uses come from `src/Retrace/Compat/NetFramework.cs` (C# 14 extension members, so call sites stay as they are) and the PolySharp source generator
+  (language support types); `System.Text.Json` is the 8.0.5 package, shipped in `Contents\2024\` with what it needs and DocumentFormat.OpenXml 2.16.0.
+- The behavior snapshot leaves out a layout's `psltscale` and a viewport's `off` bit: they need two undocumented AutoCAD exports (`DxfRead`), verified only on AutoCAD 2026.
+- Folder pickers (Settings, Map, prompts) are the old Windows folder browser: one folder at a time (the Map window's "Add folders" adds one per click).
+- The guide palette's WebView2 loader is extracted as `WebView2Loader.dll` under `C:\temp\retrace\cache\native\<version>\net48\` (the .NET Framework WebView2 wrapper cannot be pointed at a renamed file).
+- Assembly conflicts: AutoCAD gives an add-in no `app.config`, so no binding redirects. Retrace registers an `AssemblyResolve` handler first thing (module initializer) that loads
+  its embedded dependencies from the dll and the others from `Contents\2024\`, side by side with whatever version another add-in loaded. What stays a risk: an `acad.exe.config`
+  redirect of one of those names to a version Retrace was not built with, and another add-in handing its own copy's types to Retrace.
 
 ## Quick start
 
@@ -107,6 +138,7 @@ All are on the Retrace ribbon tab (panels Record, Test, Guide, Open, Tools) exce
 | `-RETRACEMAP` | The same on the command line, for scripts: asks for the folders (separated by `;`; Enter keeps the ones ticked last time), then whether to map the ribbon AutoCAD shows now. Prints a summary when it is done. Not on the ribbon. |
 | `RETRACEGUIDE` | The guide palette: page tree, live preview, Edit / Save / Revert, Open in editor. |
 | `RETRACESETTINGS`, `-RETRACESETTINGS` | Settings window; the second form asks on the command line (including the checkpoint shortcut). |
+| `RETRACERIBBON` | Put the Retrace tab back: opens the ribbon if it is closed, removes a hidden or doubled Retrace tab, builds a fresh one, places it as `ribbonTabPosition` says and makes it the active tab. Says on the command line what it found. Not on the ribbon (it is for when the tab is gone) and never recorded as a step. See [The Retrace tab is missing](#the-retrace-tab-is-missing). |
 | `RETRACEFOLDER` | Open a folder in Explorer: `Root`, `Tests` (default), `Captures` or `Docs`. Ribbon buttons Tests, Captures and Docs call it. |
 | `RETRACECAPTUREDCL` | Open each DCL dialog of a `.dcl` file or folder and save a picture and geometry (`<stem>__<dialog>.png` + `.json`) in the captures folder. |
 | `RETRACECAPTURERIBBON` | Show each ribbon tab (All: also the hidden and contextual ones, shown for a moment each; Shown; or Current) and save what AutoCAD drew in the captures folder (`ribbon__<tab>.png`, one picture per panel, and a `.json` with where every panel and button is). The next docs build shows these instead of the drawn wireframes. |
@@ -180,7 +212,7 @@ The commands are `ACADSTATUS` (prints the dump) and `ACADSTATUSPANE` (shows or h
 
 Retrace does not need AcadStatus, and AcadStatus does not need Retrace. To use both:
 
-1. With AutoCAD 2026 closed, unzip `Retrace-<version>.zip` and copy **both** folders, `Retrace.bundle` and `AcadStatus.bundle`, to `%APPDATA%\Autodesk\ApplicationPlugins\`.
+1. With AutoCAD closed, unzip `Retrace-<version>.zip` and copy **both** folders, `Retrace.bundle` and `AcadStatus.bundle`, to `%APPDATA%\Autodesk\ApplicationPlugins\`.
 2. Trust each bundle once (each is a separate unsigned dll and a separate Trusted Location):
 
    ```powershell
@@ -211,6 +243,20 @@ The **Prompts** button on the ribbon (Guide panel, right of Settings) switches `
 | Stop | `RETRACESTOP` (opens the Checkpoints window after Stop when `reviewCheckpoints` is on) | `-RETRACESTOP` (no window; says everything on the command line) |
 
 Every other button runs the same command in both modes. Those that ask something (Record, Run test, Step, Tests / Captures / Docs, Build docs, Open-test actions) ask on the command line or in the prompt window by the same setting. Open test, Name checkpoints, Guide and Steps have only a window or document form. Commands typed by hand are unchanged (`RETRACESETTINGS` still opens the window), and a script, LISP or `FILEDIA` 0 always uses the command line.
+
+## The Retrace tab is missing
+
+Normally nothing needs to be typed. Retrace watches the ribbon: when something takes its tab out (a workspace switch, `CUILOAD` / `MENULOAD`, another add-in, a rebuilt ribbon), it builds the tab again at the next idle moment (well under a second) and writes one line to `retrace.log`, for example `ribbon: Retrace tab restored: tab removed from the ribbon (collection changed)`. It waits a moment until AutoCAD has finished changing the ribbon, so one rebuild is one repair. If the tab keeps vanishing (5 repairs within 10 seconds), or cannot be built, it pauses (10 seconds, then 20, 40 ... at most 10 minutes), logs one line per pause, and tries again after it; typing `RETRACERIBBON` starts it afresh. While RETRACECAPTURERIBBON runs, no repair is made.
+
+Two cases are your choice and are left alone: a tab you unticked in the ribbon's right-click **Show Tabs** menu, and a ribbon you closed (`RIBBONCLOSE`). For both, and for anything else, type:
+
+```
+RETRACERIBBON
+```
+
+It opens the ribbon if it is closed, builds a fresh Retrace tab, shows it, puts it where `ribbonTabPosition` says and makes it the active tab (when it had to open the ribbon, the tab is shown as the active one once the ribbon has loaded), and prints one or two lines about what it found (for example "The Retrace tab was hidden (Show Tabs). Built it again and showed it; it is the active tab."). Typing it again is harmless (one tab). If the tab cannot be built, the line says why and `retrace.log` has the exception (once per distinct message). A `ribbonTabPosition` that makes no sense never stops the tab from being built: it falls back to right of Home.
+
+If AutoCAD answers `Unknown command "RETRACERIBBON"`, Retrace is not loaded, and no setting inside Retrace can help: install it again and trust the bundle folder as shown under [Install](#install) ("Installing a copy by hand"), then restart AutoCAD.
 
 ## Ribbon map
 
@@ -321,6 +367,7 @@ Closing the Settings window with the X or Esc after a change asks "Save changes?
 
 ## Limitations
 
+- **AutoCAD 2024 is untested.** The net48 build has not been loaded in AutoCAD 2024; see [AutoCAD 2024](#autocad-2024). Everything below was run in AutoCAD 2026.
 - Pre-1.0. Run in AutoCAD Electrical 2026 (R25.1) on 2026-10-22: the bundle loads, the Retrace tab appears, and record / checkpoint / stop, `steps.md` with Word and Excel export, `RETRACEREPLAY` (PASS), `RETRACEDOCS` and the guide palette work. The ribbon map was run in plain AutoCAD 2026 on 2026-10-28: `-RETRACEMAP` and the Map window (ribbon button, Map, filter, Open code, Add folders) on test folders with CUIX, CUI, LISP, C++, C#, VB.NET and the live ribbon, including a tab a plugin builds at run time. Run it in your AutoCAD before you rely on it.
 - The status board was run in AutoCAD 2026 on 2026-11-05: idle, recording (`owner` `user` after a click on the Record button, none after a refused click and a COM command), `RETRACEREPLAY` Auto (also one that stopped at a LISP `alert` left open: `needs-person` until the alert was closed), `-RETRACESUITE`, the `statusBoard` setting turned off and on (and a `settings.json` that cannot be parsed keeping it off), and AutoCAD closing (`stopped`). The `error` state, a suite stopped by an open dialog, a Tdoc run and a palette step that needs a person were checked in unit tests only.
 - **Single document interface (`SDI` = 1).** `RETRACERECORD` records dialogs, menus and palettes as with `SDI` = 0 (five recordings had `modal_enter` and `modal_title`). `RETRACERUN`, `-RETRACESUITE` and Tdoc cannot add a drawing (`DocumentCollection.Add` is "not available in SDI mode"), so a test opens a copy of the template (a file in `%TEMP%\retrace-sdi`) in place of the drawing that is open. Because that replaces what you have open, a test **stops with a message when the open drawing has unsaved changes of yours** (save it, reopen its file to discard the changes, or set `SDI` to 0); a clean drawing is replaced without asking. A test drawing that Retrace itself made in this AutoCAD session is saved when its run ends and before the next one opens; if you work in it after the run, it counts as yours and stops the next test like any other. A suite puts the drawing back that was open when it started (a blank copy of the template when it was never saved), as a new drawing object. An "open" step of `RETRACERUN`, Tdoc or a suite opens a temp copy of the file, never your own. `RETRACEREPLAY` does the same, but when the replay changed your drawing and the open would replace it, the replay stops for a person (needs-person) with a message that names the step. A recorded step that types `CLOSE`, `CLOSEALL`, `QUIT` or `EXIT` (closing the only drawing ends AutoCAD) stops the test for a person too. A recorded step that types `OPEN`, `QNEW` or `NEW`, or opens a drawing by a double-click in a native palette, cannot be pointed at a copy: with `SDI` = 1 the test stops for a person (run it with `SDI` = 0). Any other drawing that opens during a replay and is neither Retrace's own open step nor a test copy (`RECOVER`, `XOPEN`, a plug-in, AutoCAD Electrical) stops the test for a person too, so the replay does not go on in, and change, your file. A suite that finds the test switched to a drawing that was open before the suite ends that test as ERROR, as with `SDI` = 0. `RETRACECLOSEALL` refuses with `SDI` on (closing the only drawing would end AutoCAD). A temp test drawing in `%TEMP%\retrace-sdi` is deleted after a day only if Retrace made it and nobody saved into it since: a sidecar `.retrace` file keeps its write time and size, and a drawing that has changed, has no record, or is open is never deleted. This runs at start-up and at the end of a suite; a suite's `retrace-suite-*` copy folders are deleted when a day old, as before (a suite does it at its start). The end-of-run save waits until nothing runs in the drawing (never during a command). If it does not happen, a RETRACERUN's test drawing counts as yours (the next test refuses to replace it); in a suite nobody touches the drawing between two tests, so the next test saves it and the suite goes on. A test drawing that already holds unsaved changes when a run begins in it is yours too. When `RETRACERUN` leaves its test drawing open it says once that it is a temp copy: use Save As to keep your work. What AutoCAD 2026 does under SDI: it keeps the drawing in the same `Document` object, so the events hooked to the old drawing (`CommandWillStart` and the others) die and are hooked again on `DocumentCreated`; a text typed with `Document.SendStringToExecute` into a drawing Retrace had opened was, in some runs, never executed (its first line was lost; the cause is inside AutoCAD, not found), so under SDI Retrace opens drawings through COM `Documents.Open` and types the replay's text from inside a command (the internal command `RETRACETYPE`); `EnterModal` and `LeaveModal` were raised for every dialog. Tested on 2026-11-08 with `SDI` = 1: a dialog recorded with `SDI` = 1 replayed with `RETRACERUN` (PASS, also with `SDI` = 0); a three-test `-RETRACESUITE` (PASS, on the final build too); a two-test `-RETRACETDOC`; `RETRACEREPLAY` Auto, then `U` undoes the replayed circle (so `RETRACETYPE` leaves no undo mark); `RETRACESTEP` (Next step runs the step; the replay window sits behind AutoCAD's frame when started over COM, so a script has to raise it); `RETRACERUN` refusing a test drawing the person changed after its run. With `SDI` = 0 on the final build: the 22-test suite gives 20 PASS, stockmenu7 INCOMPLETE and rec5 FAIL, as 0.6.1 does. The open-step stops (typed `OPEN` / `NEW`, palette double-click, `RETRACEREPLAY` after the replay changed the drawing) and the protected-drawing rule on `DocumentCreated` are covered by unit tests of the rules only, not run in AutoCAD. Not tried: the Open test window, xrefs, `RETRACETDOC` with palettes.
@@ -393,7 +440,8 @@ Closing the Settings window with the X or Esc after a change asks "Save changes?
 
 ```sh
 dotnet build Retrace.sln -c Release      # on Windows also installs and trusts the bundle (see Install)
-dotnet test tests/Retrace.Tests
+dotnet test tests/Retrace.Tests                 # the unit tests on .NET 10 (Retrace.sln also builds both targets of the plugin)
+dotnet build tests/Retrace.Tests.Net48        # the same tests for .NET Framework 4.8: compiled anywhere, run on Windows (`dotnet test` there)
 scripts/pack.sh /some/out/dir            # a copy of the bundle to hand out; installs nothing
 ```
 

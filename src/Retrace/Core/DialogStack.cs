@@ -7,7 +7,11 @@ namespace Retrace.Core;
 public interface IStackEntry
 {
     long Window { get; }
+#if NETFRAMEWORK
+    bool Resolved { get; }   // .NET Framework has no default interface members: the one implementer (DialogWatch.Entry) spells it out
+#else
     bool Resolved => Window != 0;
+#endif
     /// <summary>Found by its window, not announced by <c>EnterModal</c>: AutoCAD raises that only for the first modal window, not for a dialog a button of another one opens.</summary>
     bool Synthetic { get; }
     /// <summary>A late <c>EnterModal</c> announced this window: it is already tracked, so the <c>LeaveModal</c> that follows closes it.</summary>

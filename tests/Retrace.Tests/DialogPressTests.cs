@@ -281,6 +281,9 @@ public class DialogPressTests
         public long Window { get; set; }
         public bool Synthetic { get; init; }
         public bool Adopted { get; set; }
+#if NETFRAMEWORK
+        public bool Resolved => Window != 0;   // no default interface members on .NET Framework
+#endif
         public string Name = "";
     }
 

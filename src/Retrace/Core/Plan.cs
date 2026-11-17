@@ -445,11 +445,11 @@ public static class Plan
                     if (palette is { Native.Action: "dblclick", Drawing: null } && steps.Count > 0 && ReferenceEquals(steps[^1], palette) && t - palette.T <= DrawingOpen.StartupMs)
                     {
                         palette.Drawing = path;
-                        palette.Title += $" (opens {System.IO.Path.GetFileName(path.Replace('\\', '/'))})";
+                        palette.Title += $" (opens {Path.GetFileName(path.Replace('\\', '/'))})";
                         break;
                     }
                     cur = null;
-                    steps.Add(new Step { Kind = "open", T = t, Drawing = path, Title = $"Open drawing {System.IO.Path.GetFileName(path.Replace('\\', '/'))}" });
+                    steps.Add(new Step { Kind = "open", T = t, Drawing = path, Title = $"Open drawing {Path.GetFileName(path.Replace('\\', '/'))}" });
                     break;
                 }
                 case "tab":
