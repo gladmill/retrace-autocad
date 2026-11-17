@@ -55,6 +55,16 @@ public static class ShotRules
         _ => null,
     };
 
+    /// <summary>The window picture of a LISP expression a ribbon click ran that opened a palette (asked for only then): `lisp-end`, the whole window.</summary>
+    public static ShotRequest LispEnd(int n, long nowMs) => new(n, "lisp-end", ShotTarget.Window, nowMs + SettleMs);
+
+    /// <summary>The end picture of a command or LISP (`cmd-end`, `lisp-end`): the picture a "this opened a palette" box and caption may go on. It is always the whole AutoCAD window (a window request, taken by
+    /// the scheduler), never a smart-zoom crop: only <see cref="IsCropped"/> kinds are.</summary>
+    public static bool IsEndPicture(string kind) => kind is "cmd-end" or "lisp-end";
+
+    /// <summary>The kinds of picture smart zoom (setting screenshotMode) may replace by a crop: the ribbon click's and a palette step's. No end picture is one.</summary>
+    public static bool IsCropped(string kind) => kind is "ribbon" or "palette";
+
     /// <summary>The window picture of a palette step that ends in a context menu choice (`context_menu` in a palette), like a palette click's.</summary>
     public static ShotRequest Palette(int n, long nowMs) => new(n, "palette", ShotTarget.Window, nowMs + SettleMs);
 

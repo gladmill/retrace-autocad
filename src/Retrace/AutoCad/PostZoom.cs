@@ -18,6 +18,9 @@ static class PostZoom
     public const double MaxSpan = 1e15;          // a box wider than this (an Xline or Ray reports an enormous one) is no usable extents
     public const double PointFraction = 0.05;    // a point-like object: at least 5 % of the current view's height
 
+    /// <summary>The window height the minimum-size (point-like object) rule made last: a zoom to a point-like object keeps it instead of taking 5 % of a view that rule made itself.</summary>
+    static readonly PointZoomMemory PointMemory = new();
+
     /// <summary>The handle seed of the drawing now (objects made after this have handles at or above it); 0 when it cannot be read.</summary>
     public static long Seed(Document doc)
     {
@@ -42,6 +45,9 @@ static class PostZoom
             if (requireCreated && !AnyCreated(db, seed)) return null;
             using var locked = doc.LockDocument();
             var ed = doc.Editor;
+            using var cur = ed.GetCurrentView();
+            // the object size under which the minimum-size rule decides the window (a box that small gets its extents looked at again)
+            var smallSide = (PointMemory.ViewMatches(cur.Height) ? Math.Max(cur.Height * PointFraction, PointMemory.Minimum) : cur.Height * PointFraction) / (1 + 2 * Margin);
             Point3d lo, hi;
             string what;
             if (mode == PostTestZoomModes.Extents)
@@ -53,11 +59,10 @@ static class PostZoom
             else
             {
                 if (seed <= 0) return null;
-                if (!LastCreated(db, seed, out lo, out hi, out what)) return null;
+                if (!LastCreated(db, seed, smallSide, out lo, out hi, out what)) return null;
             }
             if (hi.X < lo.X || hi.Y < lo.Y || hi.Z < lo.Z) return null;
             if (hi.X - lo.X > MaxSpan || hi.Y - lo.Y > MaxSpan || hi.Z - lo.Z > MaxSpan) { Log.Info("post-test zoom: the extents are absurd (an infinite line?); the view is left as it is"); return null; }   // an empty drawing reports a reversed box; checked here, before the corners are turned into the view's coordinates
-            using var cur = ed.GetCurrentView();
             if (cur.Height <= 0 || cur.Width <= 0) return null;
             if (cur.PerspectiveEnabled) { Log.Info("post-test zoom: the view is a perspective view; the view is left as it is"); return null; }
             var toDcs = Dcs(cur).Inverse();
@@ -68,7 +73,7 @@ static class PostZoom
                 x0 = Math.Min(x0, p.X); x1 = Math.Max(x1, p.X); y0 = Math.Min(y0, p.Y); y1 = Math.Max(y1, p.Y);
             }
             var margin = mode == PostTestZoomModes.Extents ? ExtentsMargin : Margin;
-            if (ZoomWindow.Fit(x0, y0, x1, y1, cur.Width / cur.Height, margin, cur.Height * PointFraction) is not { } w) return null;
+            if (ZoomWindow.FitStable(x0, y0, x1, y1, cur.Width, cur.Height, margin, PointFraction, PointMemory, m => Log.Info("post-test zoom: " + m)) is not { } w) return null;
             using var nv = ed.GetCurrentView();   // a copy of the view: every property the zoom does not set stays
             nv.CenterPoint = new Point2d(w.CenterX, w.CenterY);
             nv.Width = w.Width; nv.Height = w.Height;
@@ -94,7 +99,7 @@ static class PostZoom
     /// entity and can be resolved upward to a new object (attribute to its block reference, a piece inside a block definition to the reference made by the same command, a group made by the command
     /// to the whole group), its extents (all members' for a group) in WCS. The walk has a time budget (<see cref="BudgetMs"/>); past it, or when nothing resolves, the newest model-space object is used.
     /// False when the run made none or nothing has usable extents.</summary>
-    static bool LastCreated(Database db, long seed, out Point3d lo, out Point3d hi, out string what)
+    static bool LastCreated(Database db, long seed, double smallSide, out Point3d lo, out Point3d hi, out string what)
     {
         lo = hi = Point3d.Origin; what = "";
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -110,25 +115,86 @@ static class PostZoom
         target ??= NewestInModelSpace(db, seed, tr);
         if (target == null) return false;
         var boxes = new List<ZoomBox>();
+        // Bounds / Explode fall-backs and their log lines only for a single object or a group of at most MaxFallbackMembers: a group of thousands gets none (one summary line), so the work and the log stay bounded
+        bool fallbacks = target.Objects.Count <= MaxFallbackMembers;
+        int logged = 0, pointLike = 0;   // per-object lines: the first 5, then only members that used a fall-back (at most MaxFallbackMembers of them)
         foreach (var o in target.Objects)
         {
             try
             {
                 var ent = tr.GetObject(o.Id, OpenMode.ForRead) as Entity;
                 if (ent == null || ent.BlockId != SymbolUtilityServices.GetBlockModelSpaceId(db)) continue;   // a group member in another space
-                var e = ExtentsOf(ent);
-                boxes.Add(new ZoomBox(e.MinPoint.X, e.MinPoint.Y, e.MinPoint.Z, e.MaxPoint.X, e.MaxPoint.Y, e.MaxPoint.Z));
+                var pick = ExtentsOf(ent, smallSide, fallbacks);
+                if (pick.Rule == ZoomExtentsRule.Point && !fallbacks) pointLike++;
+                if (logged < 5 || (fallbacks && pick.Rule != ZoomExtentsRule.Object))
+                {
+                    logged++;
+                    var cls = ent.GetRXClass();
+                    Log.Info($"post-test zoom: object {o.Id.Handle} class {cls.Name} (DXF {cls.DxfName}), proxy {ent.IsAProxy}: {pick.Seen}; window from: {RuleText(pick.Rule)}");
+                }
+                if (pick.Box is { } pb) boxes.Add(pb);
             }
             catch (Exception ex) { Log.Info("post-test zoom: object " + o.Id.Handle + " has no extents (" + ex.Message + "); left out"); }
         }
+        if (pointLike > 0) Log.Info("post-test zoom: " + pointLike + " member(s) point-like, fall-back not tried (" + target.Objects.Count + " members)");
         if (ZoomBox.Union(boxes, MaxSpan, out var skippedBoxes) is not { } u) { Log.Info("post-test zoom: the last created object has no usable extents (an infinite line?); the view is left as it is"); return false; }
         if (skippedBoxes > 0) Log.Info("post-test zoom: " + skippedBoxes + " member(s) with no usable extents (an infinite line?) left out");
         lo = new Point3d(u.MinX, u.MinY, u.MinZ); hi = new Point3d(u.MaxX, u.MaxY, u.MaxZ); what = "last created " + target.Why + " [" + walkMs + " ms, " + owners.Probes + " handles]";
         return true;
     }
 
-    /// <summary>The extents of an entity in WCS. An MInsert reports only its first cell, so the whole array is that cell plus the cells at the other three corners.</summary>
-    static Extents3d ExtentsOf(Entity ent)
+    static string RuleText(ZoomExtentsRule r) => r switch
+    {
+        ZoomExtentsRule.Object => "object extents",
+        ZoomExtentsRule.Bounds => "Entity.Bounds",
+        ZoomExtentsRule.Exploded => "exploded pieces",
+        ZoomExtentsRule.Point => "point rule (minimum window)",
+        _ => "none",
+    };
+
+    static ZoomBox ToBox(Extents3d e) => new(e.MinPoint.X, e.MinPoint.Y, e.MinPoint.Z, e.MaxPoint.X, e.MaxPoint.Y, e.MaxPoint.Z);
+
+    public const int MaxFallbackMembers = 20;
+
+    /// <summary>The extents of an entity in WCS (<see cref="ZoomExtentsPick"/>). GeometricExtents first; when that is point-like, degenerate, reversed, throws or is so small that the minimum-size rule would
+    /// decide the window (<paramref name="smallSide"/>), and <paramref name="fallbacks"/> is set, Entity.Bounds, then the union of the pieces of a temporary Explode; used only when clearly larger. Entity.Bounds
+    /// is not used for an MInsert (it covers the first cell only; GeometricExtents gets the array's other cells added, Bounds would not). Nothing is opened for write or added to the database.</summary>
+    static ZoomExtentsPick.Result ExtentsOf(Entity ent, double smallSide, bool fallbacks) =>
+        ZoomExtentsPick.Pick(() => ToBox(GeometricOf(ent)), () => ent is MInsertBlock ? null : ent.Bounds is { } b ? ToBox(b) : null, () => ExplodedExtents(ent), MaxSpan, smallSide, fallbacks);
+
+    public const int ExplodeBudgetMs = 100;
+
+    /// <summary>A temporary explode, one level. The time budget is checked between pieces only: it cannot bound <c>Entity.Explode</c> itself. A cut-short walk is no result (never zoom to part of an object).
+    /// Only pieces with a null ObjectId are disposed; a piece that lives in a database (a broken custom entity might return one, or itself) is never disposed and the whole result is discarded.</summary>
+    static ExplodeResult ExplodedExtents(Entity ent)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var pieces = new DBObjectCollection();
+        try
+        {
+            ent.Explode(pieces);
+            int total = pieces.Count;
+            foreach (DBObject o in pieces)
+                if (ReferenceEquals(o, ent) || !o.ObjectId.IsNull) return new ExplodeResult(null, 0, total, "returned a piece that belongs to the database: result discarded");
+            var boxes = new List<ZoomBox>();
+            int used = 0;
+            foreach (DBObject o in pieces)
+            {
+                if (sw.ElapsedMilliseconds > ExplodeBudgetMs) return new ExplodeResult(null, used, total, $"stopped at the time budget after {used} of {total} pieces");
+                used++;
+                try { if (o is Entity pe) boxes.Add(ToBox(pe.GeometricExtents)); } catch { }
+            }
+            return new ExplodeResult(ZoomBox.Union(boxes, MaxSpan, out _), used, total, null);
+        }
+        finally
+        {
+            foreach (DBObject o in pieces)
+                try { if (!ReferenceEquals(o, ent) && o.ObjectId.IsNull) o.Dispose(); } catch { }
+        }
+    }
+
+    /// <summary>GeometricExtents; an MInsert reports only its first cell, so the whole array is that cell plus the cells at the other three corners.</summary>
+    static Extents3d GeometricOf(Entity ent)
     {
         var cell = ent.GeometricExtents;
         var e = cell;

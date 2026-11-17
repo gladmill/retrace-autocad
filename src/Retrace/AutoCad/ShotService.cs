@@ -29,12 +29,28 @@ sealed class ShotService
     readonly Dictionary<int, (int X, int Y)> _clicks = new();
     readonly Dictionary<int, Core.PxRect> _rects = new();
     readonly HashSet<int> _suppressed = new();
+    readonly HashSet<int> _boxOnly = new();   // pictures whose rectangle is a "look here" box: no arrow (a palette that opened)
+    readonly System.Collections.Concurrent.ConcurrentDictionary<int, string> _opened = new();   // event n -> name of the palette its end picture shows opening (written on the shot event)
     readonly PictureFallback _fallback = new();
     readonly Dictionary<int, Picture> _held = new();
     bool _arrows;
 
     /// <summary>Step pictures get a green rectangle and arrow where the click was (setting <c>testDocArrows</c>): drawn into the saved image, never captured from the live overlay.</summary>
-    public bool Arrows { get => _arrows; set { _arrows = value; _clicks.Clear(); _rects.Clear(); } }
+    public bool Arrows { get => _arrows; set { _arrows = value; _clicks.Clear(); _rects.Clear(); _boxOnly.Clear(); } }
+
+    /// <summary>The palette that opened during the command whose end picture is event <paramref name="n"/>, or null (asked when that picture is taken: the palette must be on screen then). Set by the recorder; the
+    /// reason for "none" is its to log.</summary>
+    public Func<int, Core.PaletteOpened?>? OpenedProbe { get; set; }
+
+    /// <summary>The name of the palette picture <paramref name="n"/> shows opening (the `opened` field of its `shot` event), or null. Callable from the pool thread.</summary>
+    public string? OpenedName(int n) => _opened.TryGetValue(n, out var name) ? name : null;
+
+    /// <summary>A green box with no arrow around <paramref name="r"/> for event <paramref name="n"/>'s picture ("look here", not "click here"), only while marks are on.</summary>
+    void NoteBoxOnly(int n, Core.PxRect r)
+    {
+        if (!_arrows || n <= 0 || r.Width <= 0 || r.Height <= 0) return;
+        _rects[n] = r; _clicks.Remove(n); _boxOnly.Add(n);
+    }
 
     /// <summary>The screen rectangle of what the person clicked for event <paramref name="n"/> (an item's row, a button, the ribbon button): its picture gets a green frame around it and an arrow ending on it.
     /// Not noted when the rectangle is empty; a picture the rectangle is not in gets neither (never a guessed spot).</summary>
@@ -90,6 +106,8 @@ sealed class ShotService
         if (!_arrows) return (null, null);
         _clicks.TryGetValue(n, out var click);
         bool haveClick = _clicks.ContainsKey(n);
+        var plan = Core.PictureMarks.Choose(_boxOnly.Contains(n), _rects.ContainsKey(n), haveClick);   // the one rule of what a picture gets (Core, tested)
+        if (plan == Core.PictureMark.None) return (null, null);
         if (_rects.TryGetValue(n, out var r))
         {
             // never a mark that is not inside the picture and on the click (a rectangle read in another coordinate space, a stale one)
@@ -97,6 +115,7 @@ sealed class ShotService
             var box = Annotate.ToPicture(r.Left, r.Top, r.Right, r.Bottom, src.Left, src.Top, src.Width, src.Height, w, h, 0);
             if (box == null) { Log.Info($"shot {n}: green box and arrow left out: the rectangle {r} does not map into the picture {src}"); return (null, null); }
             var pb = new Core.PxRect(box.Value.Left, box.Value.Top, box.Value.Left + box.Value.Width, box.Value.Top + box.Value.Height);
+            if (plan == Core.PictureMark.Box) return (box, null);   // a palette that opened: the box alone says "look here"
             return (box, px => ClickArrow.ForBoxQuiet(pb, src, w, h, px));   // ends at the rectangle's corner, from the side of the picture that is least busy there
         }
         if (haveClick && !Core.MarkGuard.Accept(src, null, click)) { Log.Info($"shot {n}: green arrow left out: the click point {click} is outside the picture {src}"); return (null, null); }
@@ -187,7 +206,7 @@ sealed class ShotService
         _sched.Clear(); _blankLogged.Clear();
         _tasks.Clear();
         _afterTaken.Clear();
-        _clicks.Clear(); _rects.Clear(); _suppressed.Clear(); _deferred.Clear(); _fallback.Clear(); _held.Clear();
+        _clicks.Clear(); _rects.Clear(); _suppressed.Clear(); _deferred.Clear(); _fallback.Clear(); _held.Clear(); _boxOnly.Clear(); _opened.Clear();
         _sessionPath = sessionPath;
         _folder = Path.Combine(Path.GetDirectoryName(sessionPath) ?? "", ShotNaming.FolderFor(sessionPath));
         _enabled = enabled;
@@ -272,6 +291,15 @@ sealed class ShotService
     {
         IntPtr hwnd;
         string what;
+        if (ShotRules.IsEndPicture(r.Kind) && r.Target == ShotTarget.Window && OpenedProbe != null)
+        {
+            // the end picture is always the whole AutoCAD window (never a crop, classic or smart); when a palette opened during the command it gets a box and the document a caption
+            try
+            {
+                if (OpenedProbe(r.N) is { } opened) { _opened[r.N] = opened.Name; NoteBoxOnly(r.N, opened.Rect); }
+            }
+            catch (Exception ex) { Log.Error($"shot {r.N} palette opened", ex); }
+        }
         if (r.Kind is "ribbon" or "palette" && _suppressed.Contains(r.N)) return true;   // the picture was taken when the button was clicked (ribbon), or is the palette's own crop (smart zoom)
         if (r.Target == ShotTarget.Dialog)
         {
@@ -418,7 +446,7 @@ sealed class ShotService
 
     public void End()
     {
-        _clicks.Clear(); _rects.Clear(); _suppressed.Clear(); _deferred.Clear(); _fallback.Clear(); _held.Clear();
+        _clicks.Clear(); _rects.Clear(); _suppressed.Clear(); _deferred.Clear(); _fallback.Clear(); _held.Clear(); _boxOnly.Clear();
         _sched.Clear();
         _enabled = false;
         _onShot = (_, _, _) => { };

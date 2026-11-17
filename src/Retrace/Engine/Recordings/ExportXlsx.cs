@@ -10,19 +10,27 @@ namespace Retrace.Engine.Recordings;
 
 public static class ExportXlsx
 {
-    public static readonly string[] Headers = ["#", "Action", "Where", "Details", "Expected", "Picture", "Result", "Notes"];
-    static readonly double[] Widths = [6, 34, 30, 44, 30, 62, 12, 28];
+    public static readonly string[] Headers = ["#", "Action", "Where", "Details", "Expected", "Picture", "Result", "Notes", "Evidence"];
+    // Evidence (last, I): empty cells for the tester's own screenshots, as wide as Picture (62) so a pasted picture is readable; Retrace writes nothing into it
+    static readonly double[] Widths = [6, 34, 30, 44, 30, 62, 12, 28, 62];
 
     /// <summary>The values of the Result drop-down; a row starts as "Not run".</summary>
     public static readonly string[] Results = ["Pass", "Fail", "Blocked", "Not run"];
 
     // cell format ids of the stylesheet below
-    const uint Plain = 0, Head = 1, Wrap = 2, Link = 3, Bold = 4, Cell = 5, CellBold = 6, PicLink = 7, Title = 8, Label = 9, Input = 10, Centered = 11;
+    const uint Plain = 0, Head = 1, Wrap = 2, Link = 3, Bold = 4, Cell = 5, CellBold = 6, PicLink = 7, Title = 8, Label = 9, Input = 10, Centered = 11, Hint = 12;
 
     const int HeaderRow = 6;                 // rows 1-4: the top block, 5: a thin spacer, 6: the table's header (frozen and repeated when printed)
     const int PictureCol = 5, ResultCol = 6; // zero-based: F, G
     const int ThumbWidthPx = 420, ThumbMaxHeightPx = 380;
     const long EmuPerPx = 9525;
+
+    /// <summary>The how-to note in G3 (merged with H3, above Result and Notes): Excel shows a drop-down's arrow only at the corner of the selected cell, which is hard to hit in a tall picture row. Always true: typing the word
+    /// works in every Excel (the list is a validation list, so only these four words are accepted); Alt+Down opens the list.</summary>
+    public const string ResultHint = "Result: select the cell, then press Alt+Down and pick (Pass, Fail, Blocked, Not run), or type the word.";
+
+    /// <summary>The how-to note in I3 (above the Evidence column), same secondary style as <see cref="ResultHint"/>.</summary>
+    public const string EvidenceHint = "Evidence: press Win+Shift+S, drag over AutoCAD, click the cell in this column and press Ctrl+V.";
 
     /// <summary>Writes the workbook; returns the number of step rows (steps, not sub-steps).</summary>
     public static int Write(StepsDoc doc, string folder, string path, Func<string, int, (byte[] Png, int Width, int Height)?>? rescale = null)
@@ -57,7 +65,8 @@ public static class ExportXlsx
                 new Font(new FontSize { Val = 11 }, new FontName { Val = "Calibri" }),
                 new Font(new Bold(), new FontSize { Val = 11 }, new FontName { Val = "Calibri" }),
                 new Font(new Underline(), new FontSize { Val = 11 }, new Color { Rgb = "FF0563C1" }, new FontName { Val = "Calibri" }),
-                new Font(new Bold(), new FontSize { Val = 16 }, new FontName { Val = "Calibri" })),
+                new Font(new Bold(), new FontSize { Val = 16 }, new FontName { Val = "Calibri" }),
+                new Font(new FontSize { Val = 9 }, new Color { Rgb = "FF6B6B6B" }, new FontName { Val = "Calibri" })),
             new Fills(
                 new Fill(new PatternFill { PatternType = PatternValues.None }),
                 new Fill(new PatternFill { PatternType = PatternValues.Gray125 }),
@@ -84,7 +93,8 @@ public static class ExportXlsx
                 new CellFormat(new Alignment { Vertical = VerticalAlignmentValues.Center, WrapText = true }) { NumberFormatId = 0, FontId = 3, FillId = 0, BorderId = 0, FormatId = 0, ApplyFont = true, ApplyAlignment = true },   // 8 Title
                 Fmt(1, 3, 1, Top()),                                                                                         // 9 Label
                 Fmt(0, 0, 1, Top()),                                                                                         // 10 Input (a blank bordered cell)
-                Fmt(0, 0, 1, Top(center: true))),                                                                            // 11 Centered
+                Fmt(0, 0, 1, Top(center: true)),                                                                             // 11 Centered
+                new CellFormat(new Alignment { Vertical = VerticalAlignmentValues.Top, WrapText = true }) { NumberFormatId = 0, FontId = 4, FillId = 0, BorderId = 0, FormatId = 0, ApplyFont = true, ApplyAlignment = true }),   // 12 Hint: small grey wrapped note
             new CellStyles(new CellStyle { Name = "Normal", FormatId = 0, BuiltinId = 0 }),
             new DifferentialFormats(Dxf("FFC6EFCE"), Dxf("FFFFC7CE"), Dxf("FFFFEB9C")) { Count = 3U });   // Pass green, Fail red, Blocked amber
     }
@@ -129,7 +139,9 @@ public static class ExportXlsx
         var r2 = Top(2); r2.Append(Str(1, 2, "Recorded", Label), Str(2, 2, doc.Meta.TrimEnd('.').StartsWith("Recorded ", StringComparison.Ordinal) ? doc.Meta.TrimEnd('.')["Recorded ".Length..] : doc.Meta.TrimEnd('.'), Wrap), Str(3, 2, "", Plain), Str(4, 2, "Date", Label), Str(5, 2, "", Input));
         var r3 = Top(3, 48); r3.Append(Str(1, 3, "Starts with", Label), Str(2, 3, doc.StartWith.TrimEnd('.'), Wrap), Str(3, 3, "", Plain), Str(4, 3, "Overall result", Label),
             rows.Count == 0 ? Str(5, 3, "In progress", CellBold)
-            : Formula(5, 3, $"IF(COUNTIF({range},\"Fail\")>0,\"Fail\",IF(COUNTIF({range},\"Pass\")=ROWS({range}),\"Pass\",\"In progress\"))", "In progress", CellBold));
+            : Formula(5, 3, $"IF(COUNTIF({range},\"Fail\")>0,\"Fail\",IF(COUNTIF({range},\"Pass\")=ROWS({range}),\"Pass\",\"In progress\"))", "In progress", CellBold),
+            Str(ResultCol, 3, ResultHint, Hint), Str(ResultCol + 1, 3, "", Hint),   // G3:H3, merged below
+            Str(ResultCol + 2, 3, EvidenceHint, Hint));
         var r4 = Top(4); r4.Append(Str(1, 4, "Counts", Label), rows.Count == 0 ? Str(2, 4, "Pass: 0   Fail: 0   Blocked: 0   Not run: 0", Wrap) : Formula(2, 4,
             $"\"Pass: \"&COUNTIF({range},\"Pass\")&\"   Fail: \"&COUNTIF({range},\"Fail\")&\"   Blocked: \"&COUNTIF({range},\"Blocked\")&\"   Not run: \"&(COUNTIF({range},\"Not run\")+COUNTBLANK({range}))",
             $"Pass: 0   Fail: 0   Blocked: 0   Not run: {rows.Count}", Wrap), Str(3, 4, "", Plain));
@@ -172,6 +184,7 @@ public static class ExportXlsx
             else row.Append(Str(PictureCol, r, "", Cell));
             row.Append(Str(ResultCol, r, "Not run", Centered));
             row.Append(Str(ResultCol + 1, r, "", Input));
+            row.Append(Str(ResultCol + 2, r, "", Input));   // Evidence: the tester pastes their own pictures here
             row.Height = Math.Min(409, height); row.CustomHeight = true;   // always set: text and picture both decide, never auto-fit
             data.Append(row);
         }
@@ -185,7 +198,7 @@ public static class ExportXlsx
         ws.Append(new SheetFormatProperties { DefaultRowHeight = 15D });
         ws.Append(Columns());
         ws.Append(data);
-        ws.Append(new MergeCells(new MergeCell { Reference = "C1:D1" }, new MergeCell { Reference = "C2:D2" }, new MergeCell { Reference = "C3:D3" }, new MergeCell { Reference = "C4:D4" }) { Count = 4U });
+        ws.Append(new MergeCells(new MergeCell { Reference = "C1:D1" }, new MergeCell { Reference = "C2:D2" }, new MergeCell { Reference = "C3:D3" }, new MergeCell { Reference = "C4:D4" }, new MergeCell { Reference = "G3:H3" }) { Count = 5U });
         ws.Append(new ConditionalFormatting(
             new ConditionalFormattingRule(new Formula("\"Pass\"")) { Type = ConditionalFormatValues.CellIs, Operator = ConditionalFormattingOperatorValues.Equal, Priority = 1, FormatId = 0U },
             new ConditionalFormattingRule(new Formula("\"Fail\"")) { Type = ConditionalFormatValues.CellIs, Operator = ConditionalFormattingOperatorValues.Equal, Priority = 2, FormatId = 1U },

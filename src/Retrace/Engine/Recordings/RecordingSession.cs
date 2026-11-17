@@ -6,8 +6,8 @@ using System.Text.Json;
 namespace Retrace.Engine.Recordings;
 
 /// <summary>A screenshot the recorder took for an event (a `shot` event): File as recorded (relative to the session file, '/'),
-/// Abs the path on this machine.</summary>
-public sealed record RecordingShot(string File, string What, string Abs);
+/// Abs the path on this machine. Opened: the name of the palette the picture shows opening (the `opened.palette` of the `shot` event; an end picture only), null for every other picture and every old recording.</summary>
+public sealed record RecordingShot(string File, string What, string Abs, string? Opened = null);
 
 public sealed class RecordingEvent
 {
@@ -17,6 +17,10 @@ public sealed class RecordingEvent
     public string Type { get; init; } = "";
     public string? Doc { get; init; }
     public JsonElement Raw { get; init; }
+
+    /// <summary>The `opened.palette` of a `shot` event: the palette its picture shows opening; null when the field is missing or has no name (old recordings, other events).</summary>
+    public string? OpenedPalette =>
+        Raw.ValueKind == JsonValueKind.Object && Raw.TryGetProperty("opened", out var o) && o.ValueKind == JsonValueKind.Object && o.TryGetProperty("palette", out var p) && p.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(p.GetString()) ? p.GetString()!.Trim() : null;
 
     public string? Str(string key) => Raw.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 }
@@ -214,6 +218,8 @@ public sealed class RecordingStep
     public string? Panel { get; set; }
     public string? Macro { get; set; }
     public string? ItemType { get; set; }
+    /// <summary>Ribbon click: `bar` of the event, "qat" when the button was in the Quick Access Toolbar; null for the ribbon and for every old recording.</summary>
+    public string? Bar { get; set; }
     // command / lisp
     public string? Command { get; set; }
     public string? Lisp { get; set; }
@@ -428,7 +434,7 @@ public static class RecordingReader
                     cur = lastRibbon = new RecordingStep
                     {
                         Kind = "ribbon", T = e.T, ItemId = e.Str("id"), Text = e.Str("text") ?? e.Str("name"), Tab = e.Str("tab"), TabId = e.Str("tabId"), Panel = e.Str("panel"),
-                        Macro = CleanMacro(e.Str("macro")), ItemType = e.Str("itemType"),
+                        Macro = CleanMacro(e.Str("macro")), ItemType = e.Str("itemType"), Bar = e.Str("bar"),
                     };
                     ribbonConsumed = false;
                     ribbonAt[idx] = cur;
@@ -684,7 +690,7 @@ public static class RecordingReader
             if (!e.Raw.TryGetProperty("for", out var fv) || fv.ValueKind != JsonValueKind.Number || !fv.TryGetInt64(out var target)) continue;
             if (!targets.TryGetValue(target, out var list)) continue;
             var norm = file.Replace('\\', '/');
-            list.Add(new RecordingShot(norm, e.Str("what") ?? "window", Path.Combine(dir, norm.Replace('/', Path.DirectorySeparatorChar))));
+            list.Add(new RecordingShot(norm, e.Str("what") ?? "window", Path.Combine(dir, norm.Replace('/', Path.DirectorySeparatorChar)), e.OpenedPalette));
         }
         // a palette click's pictures are listed click first, then the palette close-up, whichever was written first (a message box the click opens delays the window picture until it is closed)
         foreach (var st in s.Steps.Where(x => x.Kind == "palette" && x.Shots.Count > 1))
