@@ -9,7 +9,7 @@ using Retrace.AutoCad;
 namespace Retrace.Ui;
 
 /// <summary>Small modeless always-on-top panel that shows the current/next step. Built in code (no XAML) so the project stays one dll.
-/// It opens on the right, away from where palettes usually float, never takes the keyboard focus, and moves to the other side when the UI
+/// It opens in the lower right corner of the AutoCAD monitor's work area (<see cref="WindowPlacement.Progress"/>), never takes the keyboard focus, and moves to the other side when the UI
 /// being driven (a palette, a dialog) would be under it (<see cref="Avoid"/>).</summary>
 sealed class ReplayWindow : Window
 {
@@ -29,10 +29,8 @@ sealed class ReplayWindow : Window
         Topmost = true;
         ShowInTaskbar = false;
         ResizeMode = ResizeMode.NoResize;
-        WindowStartupLocation = WindowStartupLocation.Manual;
         ShowActivated = false;   // AutoCAD keeps the focus: the steps type into it
-        var work = SystemParameters.WorkArea;
-        Left = work.Right - Width - 40; Top = work.Top + 160;
+        WindowPlacement.Progress(this);   // lower right corner of AutoCAD's monitor work area, topmost, owned by AutoCAD, not activated
         var panel = new StackPanel { Margin = new Thickness(12) };
         panel.Children.Add(_head);
         panel.Children.Add(_body);
@@ -43,7 +41,6 @@ sealed class ReplayWindow : Window
         row.Children.Add(_stop);
         panel.Children.Add(row);
         Content = panel;
-        try { new WindowInteropHelper(this).Owner = AcApp.MainWindow.Handle; } catch { /* unowned is fine */ }
         Closed += (_, _) => StopClicked?.Invoke();
     }
 

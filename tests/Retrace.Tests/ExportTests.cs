@@ -280,9 +280,9 @@ public class ExportTests : IDisposable
         var wide = anchors[0].Extent!;           // 2000 x 1000 px: 420 px wide, 210 px high
         Assert.Equal(420L * 9525, wide.Cx!.Value);
         Assert.Equal(210L * 9525, wide.Cy!.Value);
-        Assert.Equal("step-01-click.png", Cell(7, 5));   // the file name, linked to screenshots/step-01-click.png
-        Assert.Equal(4, steps.HyperlinkRelationships.Count());
-        Assert.All(steps.HyperlinkRelationships, r => Assert.False(Path.IsPathRooted(r.Uri.OriginalString)));
+        Assert.Equal("", Cell(7, 5));   // no file name and no link under the picture
+        Assert.Empty(steps.HyperlinkRelationships);
+        Assert.Empty(steps.Worksheet!.Descendants<S.Hyperlink>());
         Assert.True(double.Parse(rows[7].Height!.Value.ToString(System.Globalization.CultureInfo.InvariantCulture), System.Globalization.CultureInfo.InvariantCulture) >= 210 * 0.75);   // the row is as high as the picture
 
         // Result: a drop-down with colours; Overall result: a formula; the table's header is frozen and repeated when printed
@@ -324,7 +324,8 @@ public class ExportTests : IDisposable
         Assert.Equal("screenshots/step-02-after.png", doc.Rows[1].Picture);   // a dialog: the filled-in one
         Assert.Equal("Set Rows to 5\nClick OK", doc.Rows[1].Details);
         Directory.CreateDirectory(Path.Combine(_root, "screenshots"));
-        foreach (var f in new[] { "step-01-a", "step-01-b x", "step-02-before", "step-02-after" }) File.WriteAllBytes(Path.Combine(_root, "screenshots", f + ".png"), PngOf(840, 300));
+        foreach (var f in new[] { "step-01-a", "step-01-b x", "step-02-before" }) File.WriteAllBytes(Path.Combine(_root, "screenshots", f + ".png"), PngOf(840, 300));
+        File.WriteAllBytes(Path.Combine(_root, "screenshots", "step-02-after.png"), PngOf(600, 300));   // a different size: which picture sits on which row shows in the anchors
         var xlsx = Path.Combine(_root, "multi.xlsx");
         Retrace.Engine.Recordings.ExportXlsx.Write(doc, _root, xlsx);
         using var xl = SpreadsheetDocument.Open(xlsx, false);
@@ -332,7 +333,11 @@ public class ExportTests : IDisposable
         var wb = xl.WorkbookPart!;
         var sheet = (WorksheetPart)wb.GetPartById(wb.Workbook!.Sheets!.Elements<S.Sheet>().First().Id!);
         Assert.Equal(2, sheet.DrawingsPart!.ImageParts.Count());   // never two pictures of one moment: one per row
-        Assert.Equal(new[] { "screenshots/step-01-a.png", "screenshots/step-02-after.png" }, sheet.HyperlinkRelationships.Select(r => r.Uri.OriginalString));
+        Assert.Empty(sheet.HyperlinkRelationships);
+        // which picture is on which row: a click shows its first picture (840 x 300: 420 x 150 px) on row 7, the dialog its filled-in one (600 x 300: 420 x 210 px) on row 8
+        var anchors = sheet.DrawingsPart!.WorksheetDrawing!.Descendants<DocumentFormat.OpenXml.Drawing.Spreadsheet.OneCellAnchor>().ToList();
+        Assert.Equal(new[] { "6", "7" }, anchors.Select(x => x.FromMarker!.RowId!.Text));
+        Assert.Equal(new[] { 150L * 9525, 210L * 9525 }, anchors.Select(x => x.Extent!.Cy!.Value));
         Assert.Equal("Set Rows to 5\nClick OK", sheet.Worksheet!.Descendants<S.Row>().First(r => r.RowIndex!.Value == 8).Elements<S.Cell>().First(c => c.CellReference!.Value == "D8").InnerText);
     }
 

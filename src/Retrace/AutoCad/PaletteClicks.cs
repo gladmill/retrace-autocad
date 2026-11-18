@@ -48,7 +48,7 @@ static class PaletteClickDetect
 {
     [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h, out Win32.RECT r);
 
-    public static PaletteClickInfo? Detect(IntPtr page, IntPtr hwnd, uint message, IntPtr lParam)
+    public static PaletteClickInfo? Detect(IntPtr page, IntPtr hwnd, uint message, IntPtr lParam, bool strict = true)
     {
         try
         {
@@ -62,8 +62,15 @@ static class PaletteClickDetect
             if (seg is "static" or "window" && ToolStripControls.StripOf(hwnd) is { } strip0) return Strip(page, hwnd, strip0, x, y);
             if (message == LBUTTONDBLCLK) return null;
             if (seg == "syslistview32") return List(page, hwnd, x, y);
-            if (seg is "static" or "window") return PictureOrPoint(page, hwnd, seg, x, y);
-            if (!KnownQuiet(seg) && !seg.StartsWith("hwndwrapper", StringComparison.Ordinal)) Ignored(hwnd, "no kind of click is recorded for this control class");   // a WPF palette's buttons are recorded by their own path
+            if (seg is "static" or "window") return PictureOrPoint(page, hwnd, seg, x, y, strict);
+            if (seg.StartsWith("hwndwrapper", StringComparison.Ordinal))
+            {
+                if (WpfPalette.PointAt(hwnd, lParam) is { } wp) return wp;   // WPF content that is no push button or field: a control Retrace does not follow, or the add-in's own element
+                return null;
+            }
+            // a window class that is no standard control (a third-party grid or tree, a class the add-in registered): a point click, found again by class and place
+            if (PaneClicks.UnknownClassIsPoint(seg) && HostedByAddIn(page, hwnd)) return UnknownClass(page, hwnd, seg, x, y);   // AutoCAD's own managed palettes hold such classes too (rich edit, DirectUI, shell views): only an add-in's content makes a point
+            if (!KnownQuiet(seg)) Ignored(hwnd, "no kind of click is recorded for this control class");
             return null;
         }
         catch (Exception ex) { Log.Error("palette click", ex); return null; }
@@ -72,9 +79,7 @@ static class PaletteClickDetect
     // ---- toolbars -----------------------------------------------------------------------------------------------------------------------
 
     /// <summary>Window classes whose clicks are the values of the field they edit (or no action at all): a click on one is no step of its own and needs no line in the log.</summary>
-    static bool KnownQuiet(string seg) =>
-        seg is "edit" or "combobox" or "comboboxex32" or "combolbox" or "listbox" or "button" or "systabcontrol32" or "scrollbar" or "msctls_updown32" or "msctls_trackbar32" or "msctls_progress32"
-            or "sysdatetimepick32" or "sysmonthcal32" or "sysipaddress32" or "msctls_hotkey32" or "richedit20w" or "richedit50w" or "systreeview32" or "syslistview32" or "sysheader32" or "msctls_statusbar32" or "tooltips_class32";
+    static bool KnownQuiet(string seg) => PaneClicks.KnownQuiet(seg);
 
     static readonly HashSet<string> Logged = new();
 
@@ -90,7 +95,9 @@ static class PaletteClickDetect
             var net = WinFormsControls.Control(hwnd)?.GetType().FullName;
             // once per control class and reason in a recording, not per click
             if (!Logged.Add(cls + "|" + why)) return;
-            Log.Info($"palette click not recorded: {why}; control class {cls}" + (net != null ? $" ({net})" : ""));
+            var classes = new List<string>();
+            for (var p = hwnd; p != IntPtr.Zero && classes.Count < 12; p = DialogReader.GetParent(p)) classes.Add(DialogReader.ClassOf(p));
+            Log.Info($"palette click not recorded: {why}; control class {cls}" + (net != null ? $" ({net})" : "") + $"; window chain {PaneClicks.ChainText(classes)}");
         }
         catch (Exception) { }
     }
@@ -267,9 +274,32 @@ static class PaletteClickDetect
     delegate bool EnumProc(IntPtr h, IntPtr lp);
     [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, EnumProc cb, IntPtr lp);
 
-    static PaletteClickInfo? PictureOrPoint(IntPtr page, IntPtr h, string seg, int x, int y)
+    /// <summary>Is the managed content around <paramref name="hwnd"/> (the child of the palette page it sits in) an add-in's (<see cref="PaneWindows.HostedContentIsAddIn"/>)?</summary>
+    static bool HostedByAddIn(IntPtr page, IntPtr hwnd)
     {
-        if (WinFormsControls.ClickKindOf(h) is not { } kind) { Ignored(h, "not a WinForms control"); return null; }
+        var h = hwnd;
+        for (int i = 0; i < 40 && h != IntPtr.Zero; i++)
+        {
+            var parent = DialogReader.GetParent(h);
+            if (parent == page || parent == IntPtr.Zero) return PaneWindows.HostedContentIsAddIn(h);
+            h = parent;
+        }
+        return false;
+    }
+
+    static PaletteClickInfo? UnknownClass(IntPtr page, IntPtr h, string seg, int x, int y)
+    {
+        GetClientRect(h, out var rc);
+        var same = Children(page, hidden: false).Where(c => DialogReader.Segment(DialogReader.ClassOf(c)) == seg).ToList();
+        int ci = same.IndexOf(h) + 1;
+        if (ci <= 0) { Ignored(h, "the control is not among the visible controls of its class on the page"); return null; }
+        var name = WinFormsControls.ClickKindOf(h)?.Name ?? "";
+        return new PaletteClickInfo(PaletteClickKinds.Point, name.Length > 0 ? name : seg, null, 1, 0, 0, "", "", "", new PaletteHit(Class: seg, ClassIndex: ci, Name: name, Fx: PaletteClickKinds.Fraction(x, rc.Right), Fy: PaletteClickKinds.Fraction(y, rc.Bottom)));
+    }
+
+    static PaletteClickInfo? PictureOrPoint(IntPtr page, IntPtr h, string seg, int x, int y, bool strict = true)
+    {
+        if (WinFormsControls.ClickKindOf(h, strict) is not { } kind) { Ignored(h, "not a WinForms control"); return null; }
         if (!kind.Clickable) { Ignored(h, "the control has no click handler of its own and is no known clickable kind"); return null; }
         GetClientRect(h, out var rc);
         double fx = PaletteClickKinds.Fraction(x, rc.Right), fy = PaletteClickKinds.Fraction(y, rc.Bottom);
@@ -287,7 +317,7 @@ static class PaletteClickDetect
         // a control with no name of its own: its class and place among the controls of that class
         var same = Children(page, hidden: false).Where(c => DialogReader.Segment(DialogReader.ClassOf(c)) == seg).ToList();
         int ci = same.IndexOf(h) + 1;
-        if (ci <= 0) return null;
+        if (ci <= 0) { Ignored(h, h == page ? "a click on the pane window itself (a self-painting form or window: Retrace cannot find it again by class and place)" : "the control is not among the visible controls of its class on the page"); return null; }
         return new PaletteClickInfo(PaletteClickKinds.Point, kind.Name.Length > 0 ? kind.Name : seg, null, 1, 0, 0, "", "", "", new PaletteHit(Class: seg, ClassIndex: ci, Name: kind.Name, Fx: fx, Fy: fy));
     }
 }

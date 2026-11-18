@@ -28,6 +28,7 @@ public sealed partial class Commands
         public string? ExpectedPath;  // SDI: the copy RETRACERUN opened (null: the drawing was added, SDI is off)
         public TdocCapture? Tdoc;   // set by a Tdoc run (RETRACETDOC) for the test it sent here
         public SuiteHook? Suite;    // set by a suite run (RETRACESUITE) for the test it sent here
+        public EvidenceCapture? Evidence;   // set when the test was started for evidence (RETRACEEVIDENCE: Run with evidence, -RETRACEEVIDENCE)
     }
 
     PendingTest? _pending;
@@ -40,6 +41,7 @@ public sealed partial class Commands
         TdocRun.Abort();
         SuiteRun.Abort();
         CloseTdoc();
+        CloseEvidence();
         CloseOpenTest();
         CloseCheckpoints();
         CloseMap();
@@ -74,6 +76,7 @@ public sealed partial class Commands
     public void Test()
     {
         var ed = Ed; if (ed == null) return;
+        var evidenceFor = TakeEvidenceWanted();   // taken and cleared first: every way out of this method leaves no evidence request behind
         try
         {
             // a suite or Tdoc run owns RETRACERUN while it runs: only the run's own typed RETRACERUN (it expects one) may start a test
@@ -81,7 +84,9 @@ public sealed partial class Commands
             // a Tdoc run that sent this RETRACERUN skips its test at once instead of waiting out its 90 s watchdog
             if (Replayer.Current != null) { ed.WriteMessage("\nA replay is already running.\n"); TestQueue.StartFailed("a replay was already running"); return; }
             if (Recorder.Instance.IsRecording) { ed.WriteMessage("\nStop the recording first (RETRACESTOP): a test opens a new drawing and replays into it.\n"); TestQueue.StartFailed("a recording was running"); return; }
-            var path = TestQueue.TakeExpected() ?? TakeQueuedTest() ?? PickSession(ed);   // a Tdoc run names its test; the "Open test" window queues its recording; else ask
+            var expected = TestQueue.TakeExpected();
+            var queued = expected == null ? TakeQueuedTest() : null;
+            var path = expected ?? queued ?? PickSession(ed);   // a Tdoc run names its test; the "Open test" window queues its recording; else ask
             if (path == null || !File.Exists(path)) { ed.WriteMessage("\nNo recording chosen; test cancelled.\n"); TestQueue.StartFailed("the recording was not found"); return; }
             var events = Plan.ReadEvents(path);
             var steps = Plan.Build(events).Where(s => s.Kind != "tab").ToList();
@@ -95,7 +100,7 @@ public sealed partial class Commands
             var (doc, copyPath, templateNote) = NewTestDocument(ed, single, recordedTemplate, initial);
             if (doc == null) return;
             dm.MdiActiveDocument = doc;
-            _pending = new PendingTest { TemplateNote = templateNote, Doc = doc, Steps = steps, Path = path, Initial = initial, Events = events, Tdoc = TdocRun.CaptureFor(path, steps), Suite = SuiteRun.HookFor(path), ExpectedPath = copyPath, Single = single };
+            _pending = new PendingTest { TemplateNote = templateNote, Doc = doc, Steps = steps, Path = path, Initial = initial, Events = events, Tdoc = TdocRun.CaptureFor(path, steps), Suite = SuiteRun.HookFor(path), Evidence = MakeEvidence(evidenceFor, queued, path, steps), ExpectedPath = copyPath, Single = single };
             if (!_testIdleHooked) { AcApp.Idle += OnTestIdle; _testIdleHooked = true; }
             // the new drawing is active now: the old one's editor rejects messages (eNotApplicable)
             doc.Editor.WriteMessage($"\nRETRACERUN: new drawing opened; the test starts when it is ready ({steps.Count} steps, Auto).\n");
@@ -228,8 +233,9 @@ public sealed partial class Commands
             AcApp.Idle -= OnTestIdle; _testIdleHooked = false; _pending = null;
             // a Tdoc run shows no verdict box between its tests and hears when the test is over
             var tdoc = p.Tdoc; var suite = p.Suite;
-            Action<ReplayResult>? finished = tdoc != null ? r => TdocRun.Finished(tdoc, r) : suite != null ? r => SuiteRun.Finished(suite, p.Path, r) : null;
-            if (!Replayer.Start(p.Steps, ReplayMode.Auto, p.Path, p.Initial, out var msg, alert: tdoc == null && suite == null, interactive: true, tdoc: tdoc, finished: finished, suite: suite, single: p.Single, ownStart: true, events: p.Events))
+            var evidence = p.Evidence;
+            Action<ReplayResult>? finished = evidence != null ? r => EvidenceCapture.Finished(evidence, r) : tdoc != null ? r => TdocRun.Finished(tdoc, r) : suite != null ? r => SuiteRun.Finished(suite, p.Path, r) : null;
+            if (!Replayer.Start(p.Steps, ReplayMode.Auto, p.Path, p.Initial, out var msg, alert: tdoc == null && suite == null && evidence == null, interactive: true, tdoc: tdoc, finished: finished, suite: suite, single: p.Single, ownStart: true, events: p.Events, evidence: evidence))
             {
                 SdiDocs.AbandonCopy(p.ExpectedPath, p.Tdoc != null || p.Suite != null);
                 Print("RETRACERUN: " + msg);
@@ -413,11 +419,19 @@ public sealed partial class Commands
                     if (!PostTestZoomModes.IsKnown(rzt)) ed.WriteMessage($"\nTest record execution not changed: \"{rzt}\" is not none, extents or lastEntity.\n");
                     else n.RecordZoom = rzv;
                 }
+                var rs = Ask.String(ed, $"\nWhen a recording starts from the Retrace tab, switch the ribbon to (recordStartTab): home, last or stay <{Retrace.Core.RecordStartTab.Normalize(s.RecordStartTab)}>: ");
+                if (rs.Status == PromptStatus.Cancel) return;
+                var rst = (rs.StringResult ?? "").Trim();
+                if (rst.Length > 0)
+                {
+                    if (!Retrace.Core.RecordStartTab.IsKnown(rst)) ed.WriteMessage($"\nRecord start tab not changed: \"{rst}\" is not home, last or stay.\n");
+                    else n.RecordStartTab = rst;
+                }
                 SaveAndReport(ed, n);
                 return;
             }
             var w = new SettingsWindow(s);
-            AcApp.ShowModalWindow(w);
+            AcApp.ShowModalWindow(AcApp.MainWindow.Handle, w, false);   // not persisted: WindowPlacement centres it on AutoCAD every time
             if (w.Saved) SaveAndReport(ed, w.Result);
             else ed.WriteMessage("\nSettings unchanged.\n");
         }
@@ -464,6 +478,7 @@ public sealed partial class Commands
                $"  Word export      : {(s.ExportDocx ? "on" : "off")} (steps.docx next to steps.md)\n" +
                $"  Excel export     : {(s.ExportXlsx ? "on" : "off")} (steps.xlsx next to steps.md)\n" +
                $"  Ribbon tab       : {RibbonTabPosition.Normalize(s.RibbonTabPosition)} (afterHome, first, last, after:<tab id or title>)\n" +
+               $"  Record start tab : {Retrace.Core.RecordStartTab.Normalize(s.RecordStartTab)} (home, last, stay: the ribbon tab shown once a recording has started from the Retrace tab)\n" +
                $"  Capture ribbon   : {(s.CaptureRibbon ? "on (Build Docs captures every ribbon tab first: pictures, not wireframes)" : "off (the last captures, else wireframes)")}\n" +
                $"  All workspaces   : {(s.CaptureAllWorkspaces ? "on (the capture also visits the other workspaces; unsaved workspace changes are lost)" : "off")}\n" +
                $"  Loaded CUIX      : {(s.LoadedCustomization ? "documented too (the main .cuix, partials, enterprise file AutoCAD has loaded)" : "not documented")}\n" +

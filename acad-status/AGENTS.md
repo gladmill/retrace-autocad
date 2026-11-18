@@ -20,8 +20,8 @@ The build setup is Retrace's, copied (see [../AGENTS.md](../AGENTS.md), "Build, 
   package, so `AcadStatus.dll` is the only file of the plugin. `ImplicitUsings` is off (WinForms would add `System.Drawing` and
   `System.Windows.Forms` to every file and clash with the names in `Core/`): every file spells out its usings.
 - **The bundle.** `bundle/AcadStatus.Bundle.targets`, imported at the end of `AcadStatus.csproj`, runs after every build. It writes
-  `src/AcadStatus/bin/<Configuration>/AcadStatus.bundle` (`PackageContents.xml` from `bundle/PackageContents.template.xml`, and `Contents/`
-  with the dll, pdb, `trust-acadstatus.ps1` and `LICENSE`). On Windows outside CI, once the user has started AutoCAD 2026 (`HKCU\Software\Autodesk\AutoCAD\R25.1`
+  `src/AcadStatus/bin/<Configuration>/AcadStatus.bundle` (`PackageContents.xml` from `bundle/PackageContents.template.xml`, and `Contents/2026/`
+  with the dll and pdb, `Contents/` with `trust-acadstatus.ps1` and `LICENSE`). On Windows outside CI, once the user has started AutoCAD 2026 (`HKCU\Software\Autodesk\AutoCAD\R25.1`
   has `CurVer`), it replaces `%APPDATA%\Autodesk\ApplicationPlugins\AcadStatus.bundle` with that folder (not while the installed dll is
   loaded) and runs `trust-acadstatus.ps1` on it (exit 2 while any AutoCAD runs). Switches: `AcadStatusDeploy` (`false`, or `true` to install
   without a profile), `AcadStatusTrust=false`, `AcadStatusDeployDir` (one folder ending in `.bundle`: it is deleted and rewritten).

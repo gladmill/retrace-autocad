@@ -27,7 +27,7 @@ sealed class SysvarWindow : Window
         Add = new List<string>(add); Remove = new List<string>(remove);
         Title = "Retrace: system variables";
         Width = 480; MinWidth = 480; SizeToContent = SizeToContent.Height; ResizeMode = ResizeMode.NoResize;
-        WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        Retrace.AutoCad.WindowPlacement.MainInterface(this);
         ShowInTaskbar = false;
 
         var root = new StackPanel { Margin = new Thickness(14) };

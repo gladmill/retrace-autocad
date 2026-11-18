@@ -65,6 +65,7 @@ static class WpfPalette
     /// <summary>The first WPF host window (HwndWrapper) under <paramref name="page"/>, or zero.</summary>
     public static IntPtr Host(IntPtr page)
     {
+        if (DialogReader.ClassOf(page).StartsWith("HwndWrapper", StringComparison.Ordinal)) return page;   // a modeless WPF window is its own host
         var found = IntPtr.Zero;
         EnumChildWindows(page, (h, _) =>
         {
@@ -346,6 +347,63 @@ static class WpfPalette
         }
         catch (Exception ex) { Log.Error("palette click (wpf)", ex); }
         return false;
+    }
+
+    static readonly string[] MouseOverrides = { "OnMouseDown", "OnMouseUp", "OnMouseLeftButtonDown", "OnMouseLeftButtonUp", "OnPreviewMouseDown", "OnPreviewMouseUp", "OnPreviewMouseLeftButtonDown", "OnPreviewMouseLeftButtonUp" };
+
+    /// <summary>Does the element handle the mouse itself: a type of the add-in's (the element's own or a base type that is an add-in's) declares a mouse override, or an instance handler of a mouse button event is attached? A plain label or icon
+    /// subclass does neither. Never throws.</summary>
+    static bool DeclaresMouseHandling(FrameworkElement e)
+    {
+        try
+        {
+            for (var t = e.GetType(); t != null && PaneWindows.IsAddInType(t); t = t.BaseType)
+                foreach (var m in MouseOverrides)
+                    if (t.GetMethod(m, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly, null, new[] { m.Contains("Left") ? typeof(System.Windows.Input.MouseButtonEventArgs) : typeof(System.Windows.Input.MouseButtonEventArgs) }, null) != null) return true;
+            var prop = typeof(UIElement).GetProperty("EventHandlersStore", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            if (prop?.GetValue(e) is { } store && store.GetType().GetMethod("GetRoutedEventHandlers") is { } get)
+                foreach (var ev in new[] { UIElement.MouseLeftButtonDownEvent, UIElement.MouseDownEvent, UIElement.PreviewMouseLeftButtonDownEvent, UIElement.PreviewMouseDownEvent, UIElement.MouseLeftButtonUpEvent, UIElement.MouseUpEvent })
+                    if (get.Invoke(store, new object[] { ev }) is Array handlers && handlers.Length > 0) return true;
+        }
+        catch (Exception) { }
+        return false;
+    }
+
+    /// <summary>Is the element inside a framework input control (a button, list or tree item, grid cell, combo item, menu item, text box, slider, scroll bar)? Its click is the control's, whatever add-in content a template puts inside.</summary>
+    static bool InsideInputControl(DependencyObject e)
+    {
+        int guard = 0;
+        for (var d = e; d != null && guard++ < 120; d = d is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(d) ?? LogicalTreeHelper.GetParent(d) : LogicalTreeHelper.GetParent(d))
+            if (d is ButtonBase or ListBoxItem or TreeViewItem or System.Windows.Controls.DataGridCell or ComboBoxItem or MenuItem or System.Windows.Controls.Primitives.TextBoxBase or PasswordBox
+                or System.Windows.Controls.Primitives.RangeBase or System.Windows.Controls.Primitives.ScrollBar or System.Windows.Controls.Primitives.Thumb) return true;
+        return false;
+    }
+
+    /// <summary>A click in WPF content that is a custom drawn element of the add-in: the innermost element under the point is of an add-in's own type and has no visual children (<see cref="Retrace.Core.PaneClicks.WpfLeafClick"/>). It is written as a
+    /// `point` click (class "wpf", the element's name or type, the point as a fraction of the element) with the element's rectangle for the green box. Null for anything else: a framework control (input controls, buttons: their own steps), a label,
+    /// a margin, blank space, a tab page's content, a parent view. AutoCAD's own WPF palettes therefore write what they always did.</summary>
+    internal static PaletteClickInfo? PointAt(IntPtr hwnd, IntPtr lParam)
+    {
+        try
+        {
+            long lp = lParam.ToInt64();
+            if (HwndSource.FromHwnd(hwnd) is not { RootVisual: UIElement root } src) return null;
+            var dev = new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF));
+            var pt = src.CompositionTarget?.TransformFromDevice.Transform(dev) ?? dev;
+            if (root.InputHitTest(pt) is not FrameworkElement target || target is System.Windows.Controls.Primitives.ButtonBase) return null;
+            int kids = VisualTreeHelper.GetChildrenCount(target);
+            if (!Retrace.Core.PaneClicks.WpfLeafClick(PaneWindows.IsAddInType(target.GetType()), kids, DeclaresMouseHandling(target), InsideInputControl(target)) || target.IsEnabled == false) return null;
+            double fx = -1, fy = -1;
+            if (target.ActualWidth > 0 && target.ActualHeight > 0)
+            {
+                var local = root.TranslatePoint(pt, target);
+                fx = Math.Round(Math.Clamp(local.X / target.ActualWidth, 0, 1), 3); fy = Math.Round(Math.Clamp(local.Y / target.ActualHeight, 0, 1), 3);
+            }
+            string name = !string.IsNullOrEmpty(target.Name) ? target.Name : target.GetType().Name;
+            ScreenRect? rect = ScreenRect(target) is { } r && r.Width > 0 && r.Height > 0 ? new ScreenRect((int)r.Left, (int)r.Top, (int)r.Right, (int)r.Bottom) : null;
+            return new PaletteClickInfo(PaletteClickKinds.Point, name, null, 1, 0, 0, "", "", "", new PaletteHit(Class: Retrace.Core.PaneClicks.WpfClass, ClassIndex: 1, Name: name, Fx: fx, Fy: fy), Rect: rect);
+        }
+        catch (Exception ex) { Log.Error("palette point click (wpf)", ex); return null; }
     }
 
     /// <summary>The element under a point on the screen inside <paramref name="hwnd"/> (a WPF host), walked up to the nearest field or button;

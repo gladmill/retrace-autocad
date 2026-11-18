@@ -2,7 +2,7 @@
 # Builds the Retrace plugin (Release, both targets) and copies the autoloader bundle that the build lays out (bundle/Retrace.Bundle.targets) to
 # <out-dir>/Retrace.bundle:
 #   PackageContents.xml                    written by the build from bundle/PackageContents.template.xml (version; two component entries: R24.3 and R25.1)
-#   Contents/Retrace.dll (+ Retrace.pdb)   AutoCAD 2026 (R25.1, net8.0-windows): one dll, Markdig, WebView2 and the native WebView2 loader are embedded in it
+#   Contents/2026/Retrace.dll (+ .pdb)     AutoCAD 2026 (R25.1, net8.0-windows): one dll, Markdig, WebView2 and the native WebView2 loader are embedded in it
 #                                          (AutoCAD supplies OpenXml)
 #   Contents/2024/Retrace.dll (+ .pdb)     AutoCAD 2024 (R24.3, net48): the same embedded dependencies, and beside it the dlls that are not embedded:
 #                                          System.Text.Json and what it pulls in, DocumentFormat.OpenXml (the list is checked below)
@@ -12,7 +12,7 @@
 # local folder names out of the dlls and pdbs (source paths become /_/...); Source Link and the commit hash in the version are off, so
 # neither names the repo it was built from. Fails if a Retrace dll or pdb still holds this folder, the home folder or the checkout's git remote
 # (UTF-8 and UTF-16) or this account's user name.
-# Fails if Contents holds any other .dll or .exe than the ones listed, if an embedded dependency is missing from either Retrace.dll, or if the
+# Fails if Contents holds a dll or exe outside Contents/2026 and Contents/2024 (nothing version-specific is loose in Contents), if either folder holds an unlisted one, if an embedded dependency is missing from either Retrace.dll, or if the
 # manifest does not have exactly the two entries.
 # The samples plugin (Retrace.Samples) is not part of the bundle.
 # Usage: pack.sh <out-dir>
@@ -69,12 +69,14 @@ rm -rf "$bundle"
 mkdir -p "$out"
 cp -R "$here/src/Retrace/bin/Release/Retrace.bundle" "$bundle"
 
-# Contents holds the 2026 Retrace.dll alone; Contents/2024 holds the 2024 Retrace.dll and exactly the dependencies listed here (a new package must be
+# Contents/2026 holds the 2026 Retrace.dll alone; Contents/2024 holds the 2024 Retrace.dll and exactly the dependencies listed here (a new package must be
 # added here on purpose, and to THIRD-PARTY-NOTICES.txt)
 deps48="DocumentFormat.OpenXml Microsoft.Bcl.AsyncInterfaces Retrace System.Buffers System.Memory System.Numerics.Vectors System.Runtime.CompilerServices.Unsafe System.Text.Encodings.Web System.Text.Json System.Threading.Tasks.Extensions System.ValueTuple"
-odd="$(find "$bundle" -type f \( -iname '*.dll' -o -iname '*.exe' \) ! -path "$bundle/Contents/Retrace.dll" ! -path "$bundle/Contents/2024/*" -print)"
-[ -z "$odd" ] || { echo "pack.sh: Contents must hold Retrace.dll as its only dll/exe, also found:" >&2; echo "$odd" >&2; exit 1; }
-[ -f "$bundle/Contents/Retrace.dll" ] || { echo "pack.sh: Contents/Retrace.dll is missing" >&2; exit 1; }
+odd="$(find "$bundle" -type f \( -iname '*.dll' -o -iname '*.exe' \) ! -path "$bundle/Contents/2026/Retrace.dll" ! -path "$bundle/Contents/2024/*" -print)"
+[ -z "$odd" ] || { echo "pack.sh: Contents/2026 must hold Retrace.dll as its only dll/exe and nothing else may hold one outside Contents/2024, also found:" >&2; echo "$odd" >&2; exit 1; }
+[ -f "$bundle/Contents/2026/Retrace.dll" ] || { echo "pack.sh: Contents/2026/Retrace.dll is missing" >&2; exit 1; }
+[ -f "$bundle/Contents/2024/Retrace.dll" ] || { echo "pack.sh: Contents/2024/Retrace.dll is missing" >&2; exit 1; }
+[ ! -e "$bundle/Contents/Retrace.dll" ] || { echo "pack.sh: Contents/Retrace.dll must not exist (the 2026 build is Contents/2026)" >&2; exit 1; }
 for f in "$bundle"/Contents/2024/*; do
   [ -e "$f" ] || continue
   case "$f" in *.dll|*.exe) ;; *.pdb) continue;; *) echo "pack.sh: Contents/2024 holds an unlisted file: $(basename "$f")" >&2; exit 1;; esac
@@ -90,7 +92,7 @@ text = re.sub(r"<!--.*?-->", "", open(sys.argv[1], encoding="utf-8").read(), fla
 got = sorted((m.group(1), m.group(2), m.group(3)) for m in re.finditer(
     r'<Components\b[^>]*>\s*<RuntimeRequirements\b[^>]*SeriesMin="([^"]+)"[^>]*SeriesMax="([^"]+)"[^>]*/>\s*<ComponentEntry\b[^>]*ModuleName="([^"]+)"', text))
 if text.count("<Components") != 2: sys.exit("pack.sh: PackageContents.xml must have exactly two Components blocks")
-want = [("R24.3", "R24.3", "./Contents/2024/Retrace.dll"), ("R25.1", "R25.1", "./Contents/Retrace.dll")]
+want = [("R24.3", "R24.3", "./Contents/2024/Retrace.dll"), ("R25.1", "R25.1", "./Contents/2026/Retrace.dll")]
 if got != want: sys.exit("pack.sh: PackageContents.xml entries are %r, expected %r" % (got, want))
 PY
 

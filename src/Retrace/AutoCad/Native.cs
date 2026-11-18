@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using AcApp = Autodesk.AutoCAD.ApplicationServices.Core.Application;
 
 namespace Retrace.AutoCad;
 
@@ -266,6 +267,36 @@ static class Native
 
     /// <summary>The top-level windows of the UI thread (AutoCAD's), front first, as <see cref="Retrace.Core.WindowFacts"/>. UI thread only. Includes the windows an owner owns (EnumThreadWindows lists every top-level window).</summary>
     public static List<Retrace.Core.WindowFacts> WindowsOfThisThread() => WindowsOfThread(GetCurrentThreadId());
+
+    /// <summary>Hides every visible window of Retrace's own on the UI thread (the replay window, Open test, the Evidence window ...: a picture of AutoCAD must show none of them) and returns their handles for <see cref="RestoreWindows"/>.
+    /// UI thread only. Never throws.</summary>
+    public static List<IntPtr> HideRetraceWindows()
+    {
+        var hidden = new List<IntPtr>();
+        try
+        {
+            var main = AcApp.MainWindow.Handle;
+            foreach (var w in WindowsOfThisThread())
+            {
+                var h = (IntPtr)w.Handle;
+                if (!w.Retrace || !w.Visible || h == main) continue;
+                ShowWindow(h, 0 /* SW_HIDE */);
+                hidden.Add(h);
+            }
+        }
+        catch (Exception ex) { Log.Error("hide retrace windows", ex); }
+        return hidden;
+    }
+
+    /// <summary>Shows the windows <see cref="HideRetraceWindows"/> hid, without activating them (AutoCAD keeps the keyboard focus). Windows that are gone are skipped.</summary>
+    public static void RestoreWindows(IEnumerable<IntPtr> windows)
+    {
+        foreach (var h in windows)
+        {
+            try { if (Exists(h)) ShowWindow(h, 4 /* SW_SHOWNOACTIVATE */); }
+            catch (Exception ex) { Log.Error("restore retrace window", ex); }
+        }
+    }
 
     /// <summary>The visible top-level windows of <paramref name="thread"/>, front first (the one enumeration the dialog-window rules share, see <see cref="ModalAbove.Find"/>).</summary>
     public static List<Retrace.Core.WindowFacts> WindowsOfThread(uint thread)

@@ -40,7 +40,7 @@ public sealed partial class Commands
             var w = new CheckpointsWindow(this, recording, afterStop);
             w.Closed += (_, _) => { if (_checkpointsWins.TryGetValue(key, out var x) && ReferenceEquals(x, w)) _checkpointsWins.Remove(key); };
             _checkpointsWins[key] = w;
-            AcApp.ShowModelessWindow(w);
+            AcApp.ShowModelessWindow(AcApp.MainWindow.Handle, w, false);   // not persisted: WindowPlacement centres it on AutoCAD every time
         }
         catch (Exception ex) { Log.Error("checkpoints window", ex); _checkpointsWins.Remove(Path.GetFullPath(recording)); PrintLine("The checkpoints window could not open: " + ex.Message); }
     }

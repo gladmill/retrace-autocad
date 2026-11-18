@@ -63,9 +63,11 @@ public sealed partial class Commands
         var ed = Ed; if (ed == null) return;
         try
         {
+            var ribbon = RibbonInstaller.CaptureForRecordStart();   // before the prompt: was the Retrace tab the active one, and which tab was before it
             var r = Ask.String(ed, "\nTest name <test>: ");
             if (r.Status == PromptStatus.Cancel) return;
             var path = Recorder.Instance.Start(r.Status == PromptStatus.OK ? r.StringResult : null);
+            RibbonInstaller.ApplyRecordStart(ribbon);   // setting recordStartTab: the recording has started, now the ribbon may leave the Retrace tab
             ed.WriteMessage($"\nRetrace recording started: {path}\nClick Checkpoint (RETRACEMARK) at each result worth checking; RETRACESTOP to finish.\n");
         }
         catch (Exception ex) { Log.Error("RETRACERECORD", ex); ed.WriteMessage($"\nRETRACERECORD failed: {ex.Message}\n"); }

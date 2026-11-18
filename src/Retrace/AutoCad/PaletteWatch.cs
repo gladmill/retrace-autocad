@@ -18,7 +18,7 @@ sealed class PaletteWatch
     const uint WM_LBUTTONDBLCLK = 0x0203, WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202, WM_KEYDOWN = 0x0100;
 
     /// <summary>Where input landed: the palette's window (its tab in the set), the palette's name and the palette set's title.</summary>
-    public sealed record Spot(IntPtr Page, string Palette, string Set);
+    public sealed record Spot(IntPtr Page, string Palette, string Set, string? PaneType = null, bool Strict = true);
 
     /// <summary>Values the user changed in <see cref="Where"/> since the last result. Source: "win32" | "wpf"; Read: fields seen. Picture: the
     /// palette as it last looked while open (it may have rolled up or slid away since), or null.</summary>
@@ -93,22 +93,129 @@ sealed class PaletteWatch
     public static Spot? Locate(IntPtr h)
     {
         bool managed = false;
+        IntPtr topManaged = IntPtr.Zero;
+        var start = h;
         for (int i = 0; i < 40 && h != IntPtr.Zero; i++, h = GetParent(h))
         {
             var cls = DialogReader.ClassOf(h);
-            if (cls.StartsWith("WindowsForms", StringComparison.Ordinal) || cls.StartsWith("HwndWrapper", StringComparison.Ordinal)) { managed = true; continue; }
+            if (cls.StartsWith("WindowsForms", StringComparison.Ordinal) || cls.StartsWith("HwndWrapper", StringComparison.Ordinal)) { managed = true; topManaged = h; continue; }
             if (!cls.StartsWith("AfxWnd", StringComparison.Ordinal)) continue;
             if (!managed) return null;   // native content
             var set = GetParent(h);
-            if (!DialogReader.ClassOf(set).StartsWith("AfxWnd", StringComparison.Ordinal)) return null;
-            if (!DialogReader.ClassOf(GetParent(set)).StartsWith("AfxControlBar", StringComparison.Ordinal)) return null;
-            var ribbon = RibbonHost();
-            if (ribbon != IntPtr.Zero && (ribbon == h || IsChild(h, ribbon))) return null;
-            var setTitle = Native.TitleOf(set);
-            if (setTitle == Retrace.Ui.GuidePalette.SetTitle) return null;
-            return new Spot(h, Native.TitleOf(h), setTitle);
+            bool framed = DialogReader.ClassOf(set).StartsWith("AfxWnd", StringComparison.Ordinal) && DialogReader.ClassOf(GetParent(set)).StartsWith("AfxControlBar", StringComparison.Ordinal);
+            if (framed)
+            {
+                // the frame seen in R25.1 (floating and docked): the first choice everywhere, so AutoCAD 2026 and every recording made so far stay as they were
+                var ribbon = RibbonHost();
+                if (ribbon != IntPtr.Zero && (ribbon == h || IsChild(h, ribbon))) return null;
+                var setTitle = Native.TitleOf(set);
+                if (setTitle == Retrace.Ui.GuidePalette.SetTitle) return null;
+                return new Spot(h, Native.TitleOf(h), setTitle);
+            }
+            return LooseFrame(h, topManaged, start);
+        }
+        // managed content with no palette frame above it: a modeless form or window of an add-in (never AutoCAD's own, a pop-up, Retrace's, or a modal dialog's)
+        if (managed && !IsModal())
+        {
+            // the decision is kept per window for the recording: no reflection or visual walk on every key and click in a window that is not a pane
+            if (_paneCache.TryGetValue(topManaged, out var known) && IsWindow(topManaged)) return known;
+            var spot = PaneWindows.KindOf(topManaged) != null ? new Spot(topManaged, Native.TitleOf(topManaged), "", PaneWindows.TypeNameOf(topManaged), Strict: false) : null;
+            _paneCache[topManaged] = spot;
+            return spot;
         }
         return null;
+    }
+
+    /// <summary>A palette page in a frame that is not the R25.1 one (another AutoCAD version builds it differently): followed only when the content it hosts is an add-in's (by its root type), the page has a title, a titled ancestor names the set,
+    /// and it is not the ribbon, the Guide or a modal dialog's. One log line says the rule was used, so a user's log shows which frame their AutoCAD builds.</summary>
+    static Spot? LooseFrame(IntPtr page, IntPtr content, IntPtr clicked)
+    {
+        if (IsModal()) return null;
+        if (_looseCache.TryGetValue(page, out var known) && IsWindow(page)) return known;
+        var spot = LooseFrameCompute(page, content, clicked);
+        _looseCache[page] = spot;
+        return spot;
+    }
+
+    static readonly Dictionary<IntPtr, Spot?> _paneCache = new(), _looseCache = new();
+
+    static Spot? LooseFrameCompute(IntPtr page, IntPtr content, IntPtr clicked)
+    {
+        var title = Native.TitleOf(page);
+        if (title.Length == 0 || !PaneWindows.HostedContentIsAddIn(content)) return null;
+        var ribbon = RibbonHost();
+        if (ribbon != IntPtr.Zero && (ribbon == page || IsChild(page, ribbon))) return null;
+        string set = "";
+        var up = GetParent(page);
+        for (int i = 0; i < 6 && up != IntPtr.Zero && set.Length == 0; i++, up = GetParent(up))
+        {
+            var cls = DialogReader.ClassOf(up);
+            if (!cls.StartsWith("Afx", StringComparison.Ordinal) || cls.StartsWith("Afx:", StringComparison.Ordinal) || cls.StartsWith("AfxMDI", StringComparison.Ordinal)) break;   // the top-level frame's title is the drawing's name
+            var t = Native.TitleOf(up);
+            if (t == Retrace.Ui.GuidePalette.SetTitle) return null;
+            if (t.Length > 0) set = t;
+        }
+        if (set.Length == 0) return null;
+        try
+        {
+            var classes = new List<string>(12);
+            for (var x = clicked; x != IntPtr.Zero && classes.Count < 12; x = GetParent(x)) classes.Add(DialogReader.ClassOf(x));
+            var chain = PaneClicks.ChainText(classes);
+            if (LooseGate.Allow("loose|" + chain, Environment.TickCount64, out _)) Log.Info($"pane frame: loose rule, chain {chain}; palette \"{title}\" in \"{set}\"");
+        }
+        catch (Exception) { }
+        return new Spot(page, title, set, Strict: false);
+    }
+
+    /// <summary>A modal dialog is open: the recorder says so (<see cref="ModalNow"/>), and a main window that is disabled is one too (a modal WPF window from ShowDialog may raise no EnterModal).</summary>
+    static bool IsModal()
+    {
+        if (ModalNow) return true;
+        try { var main = Autodesk.AutoCAD.ApplicationServices.Application.MainWindow.Handle; return main != IntPtr.Zero && !IsWindowEnabled(main); }
+        catch (Exception) { return false; }
+    }
+
+    [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr h);
+
+    /// <summary>A modal dialog is open (the recorder sets it): the dialog's own watch follows it, so no pane window is taken meanwhile.</summary>
+    public static bool ModalNow;
+
+    static readonly PaneClicks.LogGate PaneGate = new(), LooseGate = new();
+    static readonly HashSet<IntPtr> _unfollowed = new();   // top-level windows a click in was already logged as not followed
+
+    /// <summary>A new recording starts: the "pane click not recorded" lines are allowed again.</summary>
+    public static void NewSession() { PaneGate.Reset(); LooseGate.Reset(); _paneCache.Clear(); _looseCache.Clear(); _unfollowed.Clear(); ModalNow = false; }
+
+    /// <summary>The recording stops: one line says how many lines were left out by the rate limit.</summary>
+    public static void EndSession() { ModalNow = false; try { if (PaneGate.Skipped > 0) Log.Info($"pane click lines: {PaneGate.Skipped} more left out by the rate limit"); } catch (Exception) { } }
+
+    /// <summary>A left click that is in no followed pane. When the window chain holds managed (WinForms / WPF) content, one rate-limited line in retrace.log names the chain and why it was not followed, so a user's log says
+    /// what was clicked. Native windows (the drawing, AutoCAD's own palettes) leave no line. The chain is read only here, for a left button-down outside every pane.</summary>
+    static void LogUnfollowed(IntPtr hwnd, long nowMs)
+    {
+        try
+        {
+            IntPtr top = hwnd;
+            for (int i = 0; i < 12 && top != IntPtr.Zero; i++) { var up = GetParent(top); if (up == IntPtr.Zero) break; top = up; }
+            if (_unfollowed.Contains(top)) return;   // a click in this window was logged already: no string work on every click
+            var classes = new List<string>(12);
+            for (var h = hwnd; h != IntPtr.Zero && classes.Count < 12; h = GetParent(h)) classes.Add(DialogReader.ClassOf(h));
+            var kind = PaneClicks.Classify(classes);
+            if (kind == PaneChain.Native || kind == PaneChain.InPaletteSet) return;   // a framed page that Locate refused is the ribbon or the guide: no pane
+            string why;
+            if (IsModal()) why = "a modal dialog is open (its own watch follows it)";
+            else if (kind == PaneChain.ManagedTopLevel)
+            {
+                var root = PaneWindows.DescribeRoot(top);
+                why = PaneWindows.KindOf(top) == null ? $"not a form or window of an add-in (root {root}): not an add-in's (AutoCAD's own, Retrace's, a pop-up or a tool tip)" : "form or window of an add-in not followed";
+            }
+            else why = "palette frame of an unknown shape";
+            var chain = PaneClicks.ChainText(classes);
+            if (!PaneGate.Allow(chain + "|" + why, nowMs, out var skipped)) return;
+            _unfollowed.Add(top);
+            Log.Info($"pane click not recorded: {why}; window chain {chain}" + (skipped > 0 ? $" (+{skipped} more not logged)" : ""));
+        }
+        catch (Exception) { }
     }
 
     /// <summary>The window of AutoCAD's ribbon (WPF), or zero before the ribbon exists.</summary>
@@ -156,7 +263,7 @@ sealed class PaletteWatch
         // the palette
         // (a click in the drop-down menu of a toolbar item that is no choice, a sub menu that only opens, a separator, a disabled item, padding, is work in the palette too)
         if (spot == null && _cur != null && (DialogReader.ClassOf(hwnd) == "ComboLBox" || WpfPalette.IsPopup(hwnd) || ToolStripControls.IsDropDownWindow(hwnd))) return (null, null, null, 0, null);
-        if (spot == null) return (Flush(nowMs, drop: true), null, null, 0, null);
+        if (spot == null) { if (message == WM_LBUTTONDOWN) LogUnfollowed(hwnd, nowMs); return (Flush(nowMs, drop: true), null, null, 0, null); }
         Values? left = null;
         if (_cur == null || _cur.Where.Page != spot.Page) { left = Flush(nowMs, drop: true); Begin(spot, nowMs); }
         string? button = null;
@@ -169,7 +276,7 @@ sealed class PaletteWatch
             button = rec?.Name;
         }
         else if (message == WM_LBUTTONDBLCLK && TreeDoubleClick(hwnd, spot, lParam) is { } dbl) { Double = dbl.Info; button = dbl.Text; }
-        if (upClick == null && button == null && message is WM_LBUTTONDOWN or WM_LBUTTONDBLCLK && (dropChoice ?? PaletteClickDetect.Detect(spot.Page, hwnd, message, lParam)) is { } ic)
+        if (upClick == null && button == null && message is WM_LBUTTONDOWN or WM_LBUTTONDBLCLK && (dropChoice ?? PaletteClickDetect.Detect(spot.Page, hwnd, message, lParam, spot.Strict)) is { } ic)
         {
             if (ic.Kind is PaletteClickKinds.ToolStrip or PaletteClickKinds.Toolbar) { _pend = new Pend(spot, ic, hwnd); return (left, null, null, 0, null); }   // recorded at the button-up
             Intermediate = ic; button = ic.Button; rec = null;

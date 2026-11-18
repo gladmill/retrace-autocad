@@ -48,7 +48,7 @@ the pane only activates AutoCAD (Windows eats it); click again.
 AcadStatus comes in the Retrace release zip. Download `Retrace-<version>.zip` from the [Releases](https://github.com/gladmill/retrace-autocad/releases) page
 and unzip it. It holds two folders side by side: `Retrace.bundle` and `AcadStatus.bundle`. They are independent: AcadStatus works without Retrace, and Retrace
 without AcadStatus. With AutoCAD 2026 **closed**, copy `AcadStatus.bundle` (and `Retrace.bundle`, if you want Retrace) to
-`%APPDATA%\Autodesk\ApplicationPlugins\`, replacing an older copy. Then trust the folder once, so AutoCAD does not stop at
+`%APPDATA%\Autodesk\ApplicationPlugins\`. Delete an older `AcadStatus.bundle` first, do not copy over it: 0.6.16 and earlier kept the dll in `Contents\`, the new layout has it in `Contents\2026\`. Then trust the folder once, so AutoCAD does not stop at
 "Security - Unsigned Executable File" at every start:
 
 ```powershell

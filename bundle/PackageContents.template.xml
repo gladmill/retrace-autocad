@@ -18,12 +18,12 @@
                     LoadOnAutoCADStartup="True"
                     LoadOnCommandInvocation="False" />
   </Components>
-  <!-- AutoCAD 2026 (.NET 8): the net8.0-windows build, one dll -->
+  <!-- AutoCAD 2026 (.NET 8): the net8.0-windows build, one dll. Each build has its own Contents\<year> folder; nothing version-specific is loose in Contents. -->
   <Components Description="Retrace for AutoCAD 2026">
     <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SeriesMin="{Series2026}" SeriesMax="{Series2026}" />
     <ComponentEntry AppName="Retrace"
                     Version="{Version}"
-                    ModuleName="./Contents/Retrace.dll"
+                    ModuleName="./Contents/2026/Retrace.dll"
                     AppDescription="Retrace recorder, replayer and documentation builder"
                     LoadOnAutoCADStartup="True"
                     LoadOnCommandInvocation="False" />

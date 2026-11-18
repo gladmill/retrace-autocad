@@ -387,13 +387,14 @@ public static class StepWording
 
     /// <summary>The location line of a ribbon click in a script: "Ribbon › Home tab › Draw panel" ("Ribbon › Home tab" when the panel was not recorded, "Ribbon" with neither); "Quick Access Toolbar" for a click on that bar.</summary>
     public static string RibbonWhere(RecordingStep st) =>
-        st.Bar == "qat" ? "Quick Access Toolbar"   // a Quick Access Toolbar button has no tab or panel to name (the recording's `bar`)
+        st.Bar == "appmenu" ? "Application menu"
+        : st.Bar == "qat" ? "Quick Access Toolbar"   // a Quick Access Toolbar button has no tab or panel to name (the recording's `bar`)
         : string.Join(" › ", new[] { "Ribbon", Named(st.Tab, "tab"), Named(st.Panel, "panel") }.Where(x => x != null));
 
     static string? Named(string? name, string noun) => string.IsNullOrWhiteSpace(name) ? null : $"{name.Trim()} {noun}";
 
     /// <summary>"Pick palette": the palette a step happens in, without markup (the palette set is left out: it names nothing a tester sees).</summary>
-    static string PaletteName(RecordingStep st) => string.IsNullOrWhiteSpace(st.DialogTitle) ? "Palette" : $"{st.DialogTitle.Trim()} palette";
+    static string PaletteName(RecordingStep st) => string.IsNullOrWhiteSpace(st.DialogTitle) ? "Palette" : string.IsNullOrWhiteSpace(st.Panel) ? $"{st.DialogTitle.Trim()} window" : $"{st.DialogTitle.Trim()} palette";
 
     /// <summary>A palette step in a script: the short action, the location line, and the click that ends a step with changes (the changes come between, as sub-items).
     /// "Click **B12**" / "Pick palette › Catalog tree › Cabinets › Base"; "Fill in the **Box** palette" / "Box palette" with "Click **Draw box**" last.</summary>

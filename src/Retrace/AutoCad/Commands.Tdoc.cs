@@ -21,7 +21,7 @@ public sealed partial class Commands
             var w = new TdocWindow(this);
             w.Closed += (_, _) => { if (ReferenceEquals(_tdocWin, w)) _tdocWin = null; };
             _tdocWin = w;
-            AcApp.ShowModelessWindow(w);
+            AcApp.ShowModelessWindow(AcApp.MainWindow.Handle, w, false);   // not persisted: WindowPlacement centres it on AutoCAD every time
         }
         catch (Exception ex) { Log.Error("RETRACETDOC", ex); _tdocWin = null; ed?.WriteMessage($"\nRETRACETDOC failed: {ex.Message}\n"); }
     }

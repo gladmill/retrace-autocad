@@ -157,6 +157,9 @@ static class PaletteFill
         // an intermediate click is a click whatever its name (an older recording may hold an empty one): it is never skipped as "no button"
         if (Retrace.Core.PaletteClickKinds.IsIntermediate(s.ClickKind))
         {
+            // a click on WPF content (a custom element) cannot be replayed: the test stops for a person at once, not after the palette's wait
+            if (s.ClickKind == Retrace.Core.PaletteClickKinds.Point && s.Hit?.Class == Retrace.Core.PaneClicks.WpfClass)
+            { FailLater($"the click on {(string.IsNullOrEmpty(s.Hit.Name) ? "a WPF element" : s.Hit.Name)} in the {s.DialogTitle} pane is WPF content, which Retrace cannot click again", needsPerson: true); return null; }
             if (wpf) return $"a {s.ClickKind} click needs a WinForms palette";
             return PaletteClickFill.Run(s, page, hidden, win32);
         }
@@ -272,12 +275,16 @@ static class PaletteFill
     }
 
     /// <summary>The window of the step's palette, or zero.</summary>
-    public static IntPtr FindPage(Retrace.Core.Step s) => Find(s.Panel, s.DialogTitle);
+    public static IntPtr FindPage(Retrace.Core.Step s) => Find(s.Panel, s.DialogTitle, s.PaneType);
 
-    /// <summary>The palette <paramref name="palette"/> (shown, or auto-hidden) of the palette set titled <paramref name="set"/> in this process, or zero.</summary>
-    static IntPtr Find(string? set, string? palette)
+    /// <summary>The palette <paramref name="palette"/> (shown, or auto-hidden) of the palette set titled <paramref name="set"/> in this process, or zero. A step with no set was recorded in a modeless form or window of an add-in: that window is found by its
+    /// title (loosely) and type, and when several match the one of that type, else the first, is taken and retrace.log says so. A palette in a frame of another shape (the loose rule of <see cref="PaletteWatch.Locate"/>) is found by its title and the title of
+    /// its nearest titled ancestor. Never "any window with no title".</summary>
+    static IntPtr Find(string? set, string? palette, string? paneType = null)
     {
+        // the palette sets first, as before (a set with no title included); only then a modeless form or window
         var found = IntPtr.Zero;
+        var loose = IntPtr.Zero;
         uint me = (uint)Environment.ProcessId;
         EnumWindows((top, _) =>
         {
@@ -286,13 +293,34 @@ static class PaletteFill
             EnumChildWindows(top, (h, _) =>
             {
                 if (Native.TitleOf(h) != palette || !DialogReader.ClassOf(h).StartsWith("AfxWnd", StringComparison.Ordinal)) return true;
-                if (!IsPage(h, set)) return true;
+                if (!IsPage(h, set)) { if (loose == IntPtr.Zero && !string.IsNullOrEmpty(set) && PaneClicks.SameTitle(set, NearestTitledAncestor(h))) loose = h; return true; }
                 found = h;
                 return false;
             }, IntPtr.Zero);
             return found == IntPtr.Zero;
         }, IntPtr.Zero);
-        return found;
+        if (found != IntPtr.Zero) return found;
+        if (loose != IntPtr.Zero) return loose;
+        if (string.IsNullOrEmpty(set) && !string.IsNullOrEmpty(palette))
+        {
+            var pane = PaneWindows.Find(palette, paneType, out var count);
+            if (count > 1) Log.Info($"pane \"{palette}\": {count} windows match; taking {(paneType != null ? "the best match (title, then type)" : "the first")}");
+            return pane;
+        }
+        return IntPtr.Zero;
+    }
+
+    static string NearestTitledAncestor(IntPtr h)
+    {
+        // only palette frame windows (AfxWnd / AfxControlBar): the top-level frame's title is the drawing's name
+        var up = DialogReader.GetParent(h);
+        for (int i = 0; i < 6 && up != IntPtr.Zero; i++, up = DialogReader.GetParent(up))
+        {
+            if (!DialogReader.ClassOf(up).StartsWith("Afx", StringComparison.Ordinal) || DialogReader.ClassOf(up).StartsWith("Afx:", StringComparison.Ordinal) || DialogReader.ClassOf(up).StartsWith("AfxMDI", StringComparison.Ordinal)) break;
+            var t = Native.TitleOf(up);
+            if (t.Length > 0) return t;
+        }
+        return "";
     }
 
     /// <summary>true if <paramref name="h"/> is a palette window of the set titled <paramref name="set"/> (palette, set, control bar).</summary>

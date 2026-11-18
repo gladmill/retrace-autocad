@@ -20,7 +20,7 @@ if (Get-Process acad -ErrorAction SilentlyContinue) { Write-Output 'AutoCAD is r
 if (Test-Path -LiteralPath $Folder.Trim() -PathType Container) { $folder = (Resolve-Path -LiteralPath $Folder.Trim()).ProviderPath.TrimEnd('\') }
 elseif ($Remove) { $folder = [System.IO.Path]::GetFullPath($Folder.Trim()).TrimEnd('\') }
 else { Write-Output "Folder not found: $Folder"; exit 1 }
-$entry = "$folder\..."   # "\..." = this folder and its subfolders (Contents\, Contents\)
+$entry = "$folder\..."   # "\..." = this folder and its subfolders (Contents\, Contents\2026)
 # Compare whole entries (case-insensitive, trailing '\' ignored), keeping '\...': a plain "...\AcadStatus.bundle" entry trusts only that
 # folder, not Contents\ where the dlls are, so it does not count, and -Remove leaves such a hand-made entry alone.
 function Norm([string]$p) { $p.Trim().TrimEnd('\') }

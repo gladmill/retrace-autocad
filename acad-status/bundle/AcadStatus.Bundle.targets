@@ -4,7 +4,7 @@
 
     AcadStatusBundle (any OS) lays out src/AcadStatus/bin/<Configuration>/AcadStatus.bundle (a fixed path: it is deleted and rewritten):
       PackageContents.xml                bundle/PackageContents.template.xml with {Version} (<Version>) and {Series} (<AutoCADSeries>)
-      Contents/AcadStatus.dll, AcadStatus.pdb  the build output (one dll: it uses only the framework and AutoCAD's own assemblies)
+      Contents/2026/AcadStatus.dll, AcadStatus.pdb  the AutoCAD 2026 (R25.1) build output (one dll: it uses only the framework and AutoCAD's own assemblies)
       Contents/trust-acadstatus.ps1         scripts/trust-acadstatus.ps1
       Contents/LICENSE                      LICENSE (MIT)
 
@@ -36,11 +36,13 @@
     <ItemGroup>
       <_AcadStatusContents Include="$(TargetPath)" />
       <_AcadStatusContents Include="$(TargetDir)$(TargetName).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')" />
-      <_AcadStatusContents Include="$(MSBuildThisFileDirectory)..\scripts\trust-acadstatus.ps1" />
-      <_AcadStatusContents Include="$(MSBuildThisFileDirectory)..\LICENSE" />
+      <_AcadStatusShared Include="$(MSBuildThisFileDirectory)..\scripts\trust-acadstatus.ps1" />
+      <_AcadStatusShared Include="$(MSBuildThisFileDirectory)..\LICENSE" />
     </ItemGroup>
     <RemoveDir Directories="$(_AcadStatusBundleDir)" />
-    <Copy SourceFiles="@(_AcadStatusContents)" DestinationFolder="$(_AcadStatusBundleDir)Contents" />
+    <!-- the build goes in a folder named for the AutoCAD release (Contents\2026), like Retrace; nothing version-specific is loose in Contents -->
+    <Copy SourceFiles="@(_AcadStatusContents)" DestinationFolder="$(_AcadStatusBundleDir)Contents/2026" />
+    <Copy SourceFiles="@(_AcadStatusShared)" DestinationFolder="$(_AcadStatusBundleDir)Contents" />
     <!-- Escape: the manifest holds characters MSBuild would otherwise treat as list separators or wildcards (Platform="AutoCAD*"). -->
     <WriteLinesToFile File="$(_AcadStatusBundleDir)PackageContents.xml" Lines="$([MSBuild]::Escape($(_AcadStatusManifest)))" Overwrite="true" />
     <Message Importance="high" Text="$(MSBuildProjectName) bundle -> $(_AcadStatusBundleDir)" />
@@ -54,12 +56,13 @@
     <Error Condition="$(AcadStatusDeployDir.Contains(';')) Or $(AcadStatusDeployDir.Contains('*')) Or $(AcadStatusDeployDir.Contains('?')) Or !$(AcadStatusDeployDir.TrimEnd('\').ToLowerInvariant().EndsWith('.bundle'))"
            Text="AcadStatus: AcadStatusDeployDir must be one folder whose name ends in .bundle (it is deleted and rewritten), not '$(AcadStatusDeployDir)'." />
 
-    <!-- AutoCAD keeps a loaded AcadStatus.dll open: try to remove the installed dll first, and change nothing else if it stays -->
-    <Delete Files="$(AcadStatusDeployDir)\Contents\AcadStatus.dll" ContinueOnError="true" />
+    <!-- AutoCAD keeps a loaded AcadStatus.dll open: try to remove the installed dll first (the Contents\2026 one, and the Contents one of an install
+         from before the 2026 folder existed), and change nothing else if it stays -->
+    <Delete Files="$(AcadStatusDeployDir)\Contents\2026\AcadStatus.dll;$(AcadStatusDeployDir)\Contents\AcadStatus.dll" ContinueOnError="true" />
     <PropertyGroup>
-      <_AcadStatusInUse Condition="Exists('$(AcadStatusDeployDir)\Contents\AcadStatus.dll')">true</_AcadStatusInUse>
+      <_AcadStatusInUse Condition="Exists('$(AcadStatusDeployDir)\Contents\2026\AcadStatus.dll') Or Exists('$(AcadStatusDeployDir)\Contents\AcadStatus.dll')">true</_AcadStatusInUse>
     </PropertyGroup>
-    <Warning Condition="'$(_AcadStatusInUse)' == 'true'" Text="AcadStatus: $(AcadStatusDeployDir)\Contents\AcadStatus.dll is in use (AutoCAD has it loaded), so this build was not installed. Close AutoCAD and build again." />
+    <Warning Condition="'$(_AcadStatusInUse)' == 'true'" Text="AcadStatus: the installed AcadStatus.dll under $(AcadStatusDeployDir)\Contents is in use (AutoCAD has it loaded), so this build was not installed. Close AutoCAD and build again." />
 
     <ItemGroup Condition="'$(_AcadStatusInUse)' != 'true'">
       <_AcadStatusBundleFile Include="$(_AcadStatusBundleDir)**" />

@@ -114,18 +114,26 @@ static class WinFormsControls
 
     /// <summary>What a click on a WinForms control that is no field and no push button is: <c>Picture</c> (a PictureBox), <c>Clickable</c> (the control is made to be clicked: a type of the program's own with no child controls, or one whose Click /
     /// MouseDown / MouseUp event has a handler; never a form's own client area) and its <c>Name</c>. Null when <paramref name="h"/> is no WinForms control.</summary>
-    public static (bool Picture, bool Clickable, string Name)? ClickKindOf(IntPtr h)
+    public static (bool Picture, bool Clickable, string Name)? ClickKindOf(IntPtr h, bool strictFrame = true)
     {
         if (Control(h) is not { } c) return null;
         try
         {
             var t = c.GetType();
             var name = t.GetProperty("Name")?.GetValue(c) as string ?? "";
+            if (name.StartsWith("ControlAx", StringComparison.Ordinal)) name = "";   // the name AutoCAD gives a palette page it hosts: no label
             if (IsA(t, "System.Windows.Forms.PictureBox")) return (true, true, name);
-            if (t.GetProperty("Parent")?.GetValue(c) == null) return (false, false, name);   // the top of what the palette hosts: its blank area is not a control
+            bool addIn = strictFrame ? t.Assembly.GetName().Name != "System.Windows.Forms" : PaneWindows.IsAddInType(t);   // a palette set AutoCAD 2026 frames: the rule 0.6.16 had (any type outside System.Windows.Forms); a pane in another frame or window: an add-in by location
+            if (t.GetProperty("Parent")?.GetValue(c) == null)
+            {
+                // the top of what the palette hosts: its blank area is not a control, unless it has no child controls (then it is the pane itself: a custom drawn canvas)
+                int kids = t.GetProperty("Controls")?.GetValue(c) is System.Collections.ICollection k ? k.Count : 1;
+                return (false, Retrace.Core.PaneClicks.WinFormsClickable(HasClickHandler(c), addIn, true, kids), name);
+            }
             if (HasClickHandler(c)) return (false, true, name);
-            bool own = t.Assembly.GetName().Name != "System.Windows.Forms" && t.GetProperty("Controls")?.GetValue(c) is System.Collections.ICollection { Count: 0 };
-            return (false, own, name);
+            // a type of the add-in's own with no child controls is custom drawn or works from mouse messages: a click on it is a click on the pane; a container's blank area is not (as before)
+            int own = t.GetProperty("Controls")?.GetValue(c) is System.Collections.ICollection oc ? oc.Count : 1;
+            return (false, Retrace.Core.PaneClicks.WinFormsClickable(false, addIn, false, own), name);
         }
         catch (Exception) { return (false, false, ""); }
     }

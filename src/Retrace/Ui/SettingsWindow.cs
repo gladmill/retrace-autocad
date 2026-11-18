@@ -63,6 +63,13 @@ sealed class SettingsWindow : Window
     readonly TextBox _suiteTimeout = new() { Width = 70, Padding = new Thickness(3), Margin = new Thickness(8, 0, 0, 0), ToolTip = "RETRACESUITE: a test step that runs longer than this many seconds is cancelled and the test is recorded as ERROR. 5 to 3600." };
     readonly TextBlock _suiteTimeoutMsg = new() { Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
     readonly TextBlock _tdocDelayMsg = new() { Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+    static readonly (string Value, string Text)[] StartTabChoices =
+    {
+        (RecordStartTab.Home, "Go to the Home tab (default)"),
+        (RecordStartTab.Last, "Go back to the tab that was active before the Retrace tab"),
+        (RecordStartTab.Stay, "Stay on the Retrace tab"),
+    };
+    readonly ComboBox _startTab = new() { MinWidth = 360, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(8, 0, 0, 0), ToolTip = "Applies when you click Record on the Retrace tab and give the test a name: as soon as the recording has started, the ribbon switches tab so the first steps are made where you work. The switch is not recorded and takes no picture. It switches only when the Retrace tab was the active tab when the recording was started (a start with another tab active, for example typed or from the Quick Access Toolbar, scripts and replays do not switch) and is still active when the recording has started. If the earlier tab is gone or hidden, Home is used. Settings key: recordStartTab (home, last, stay)." };
     readonly ComboBox _tabPos = new() { MinWidth = 320, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(8, 0, 0, 0) };
     readonly List<string> _tabPosValues = new();
     readonly TextBox _key = new() { Width = 180, IsReadOnly = true, IsReadOnlyCaretVisible = false, Padding = new Thickness(3), Margin = new Thickness(8, 0, 0, 0), ToolTip = "Click here, then press the keys. Backspace or Delete turns the shortcut off." };
@@ -86,7 +93,7 @@ sealed class SettingsWindow : Window
         Result = current.Clone();
         Title = "Retrace settings";
         Width = 820; SizeToContent = SizeToContent.Height; ResizeMode = ResizeMode.NoResize; // the content scrolls when the screen is short
-        WindowStartupLocation = WindowStartupLocation.CenterScreen;
+        Retrace.AutoCad.WindowPlacement.MainInterface(this);
         ShowInTaskbar = false;
 
         var root = new StackPanel { Margin = new Thickness(14) };
@@ -180,6 +187,13 @@ sealed class SettingsWindow : Window
         posRow.Children.Add(_tabPos);
         root.Children.Add(posRow);
 
+        var startRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
+        startRow.Children.Add(new TextBlock { Text = "When a recording starts", VerticalAlignment = VerticalAlignment.Center });
+        foreach (var (_, text) in StartTabChoices) _startTab.Items.Add(text);
+        _startTab.SelectedIndex = Math.Max(0, Array.FindIndex(StartTabChoices, c => c.Value == RecordStartTab.Normalize(current.RecordStartTab)));
+        startRow.Children.Add(_startTab);
+        root.Children.Add(startRow);
+
         var keyRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
         keyRow.Children.Add(new TextBlock { Text = "Checkpoint shortcut", VerticalAlignment = VerticalAlignment.Center });
         SetKey(KeyChord.IsOff(current.CheckpointKey) ? "None" : current.CheckpointKey);
@@ -197,7 +211,6 @@ sealed class SettingsWindow : Window
         buttons.Children.Add(reset); buttons.Children.Add(save); buttons.Children.Add(cancel);
         root.Children.Add(buttons);
         Content = new ScrollViewer { Content = root, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        MaxHeight = Math.Max(400, SystemParameters.WorkArea.Height - 40);
         _baseline = RawState();   // what the controls hold as it opens: a change is measured against this (not against validated settings, so a window that opens with an invalid combination still asks), and a value changed and changed back is no change
         KeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Escape && !e.Handled) { e.Handled = true; Close(); } };   // Esc (not used by a drop-down or the shortcut box) closes like the X: it asks when something changed
     }
@@ -442,6 +455,7 @@ sealed class SettingsWindow : Window
         _recordZoom.SelectedIndex = 0;
         _shotMode.SelectedIndex = Math.Max(0, Array.FindIndex(ShotModeChoices, c => c.Value == new RetraceSettings().ScreenshotMode));
         _tabPos.SelectedIndex = 0;
+        _startTab.SelectedIndex = 0;
         var dflt = new RetraceSettings();
         _autoDetect.IsChecked = dflt.AutoDetectBehavior;
         _checkModelSpace.IsChecked = dflt.CheckModelSpace;
@@ -475,7 +489,7 @@ sealed class SettingsWindow : Window
     {
         _rows.Select(r => r.Box.Text), _shots.IsChecked, _dialogValues.IsChecked, _autoFill.IsChecked, _review.IsChecked, _showUi.IsChecked, _uiPrompts.IsChecked, _loadedCuix.IsChecked,
         _captureRibbon.IsChecked, _allWorkspaces.IsChecked, _statusBoard.IsChecked, _showClickArrows.IsChecked, _testDocArrows.IsChecked, _docx.IsChecked, _xlsx.IsChecked,
-        _tdocFront.IsChecked, _tdocAnnotate.IsChecked, _tdocDelay.Text, _suiteTimeout.Text, _postZoom.SelectedIndex, _recordZoom.SelectedIndex, _shotMode.SelectedIndex, _tabPos.SelectedIndex,
+        _tdocFront.IsChecked, _tdocAnnotate.IsChecked, _tdocDelay.Text, _suiteTimeout.Text, _postZoom.SelectedIndex, _recordZoom.SelectedIndex, _shotMode.SelectedIndex, _tabPos.SelectedIndex, _startTab.SelectedIndex,
         _keyValue, _autoDetect.IsChecked, _checkModelSpace.IsChecked, _basicCheck.IsChecked, _basicItems.Select(b => b.Box.IsChecked), _behaviorBoxes.Select(b => b.Box.IsChecked),
         _recordBoxes.Select(b => b.Box.IsChecked), _sysAdd, _sysRemove,
     });
@@ -532,6 +546,7 @@ sealed class SettingsWindow : Window
         s.ScreenshotMode = _shotMode.SelectedIndex >= 0 ? ShotModeChoices[_shotMode.SelectedIndex].Value : new RetraceSettings().ScreenshotMode;
         var pos = _tabPos.SelectedIndex >= 0 ? _tabPosValues[_tabPos.SelectedIndex] : RibbonTabPosition.AfterHome;
         s.RibbonTabPosition = pos == RibbonTabPosition.AfterHome ? "" : pos;
+        s.RecordStartTab = _startTab.SelectedIndex >= 0 ? StartTabChoices[_startTab.SelectedIndex].Value : RecordStartTab.Home;
         s.CheckpointKey = _keyValue;
         s.AutoDetectBehavior = _autoDetect.IsChecked == true;
         s.CheckModelSpace = _checkModelSpace.IsChecked == true;
