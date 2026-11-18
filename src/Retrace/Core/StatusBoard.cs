@@ -75,7 +75,7 @@ public static class StatusBoard
     /// <summary>`retrace-4812.json`: the AutoCAD process id is the instance, so two AutoCAD sessions never share a file.</summary>
     public static string FileName(int pid) => $"{Source}-{pid}.json";
 
-    /// <summary>"Retrace 0.6.17": the version without the build metadata (`+commit`) the SDK may append.</summary>
+    /// <summary>"Retrace 0.6.18": the version without the build metadata (`+commit`) the SDK may append.</summary>
     public static string WriterName(string? version)
     {
         var v = (version ?? "").Trim();
@@ -261,8 +261,9 @@ public static class StatusBoard
     public static bool CountsAsStep(string type, string? origin, int commandDepth, int lispDepth = 0, string? path = null, string? tabId = null) => type switch
     {
         "ribbon" or "lisp_start" or "mark" or "palette_values" or "palette_click" or "native_click" or "native_select" => true,
+        "statusbar_click" => commandDepth == 0 && lispDepth == 0,   // a click during a running command is inline in that step
         "tab" => !Plan.IsOwnTab(tabId),
-        "cmd_start" => commandDepth == 0 && origin is not ("ribbon" or "palette"),
+        "cmd_start" => commandDepth == 0 && origin is not ("ribbon" or "palette" or "statusbar" or "dialog"),
         "doc_created" => commandDepth == 0 && lispDepth == 0 && path != null && DrawingOpen.IsWindowsFullPath(path),
         _ => false,
     };

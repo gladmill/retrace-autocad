@@ -23,7 +23,7 @@ namespace Retrace.Samples
     }
 
     /// <summary>
-    /// DRAWMARKSTAB: adds the ribbon tabs "Marks Test" and "Marks Other" (not at start-up; the docs scan does not list them) for checking the green box and arrow of a ribbon click's picture:
+    /// DRAWMARKSTAB (the "Marks Other" tab also has a Panes panel: buttons that open the DRAWPANES set with auto roll-up on, docked or floating, close it, or open it plainly, for the auto-hide palette checks): adds the ribbon tabs "Marks Test" and "Marks Other" (not at start-up; the docs scan does not list them) for checking the green box and arrow of a ribbon click's picture:
     /// a button whose command opens a palette at once (DRAWPICK, DRAWTOOLS), a button with a custom id, a split button with two items, a panel with a slide-out, and one id used on two tabs
     /// (the first of them is "Marks Other", which comes first in the ribbon, so a lookup by id finds that one, not the one that was clicked).
     /// </summary>
@@ -34,7 +34,8 @@ namespace Retrace.Samples
         {
             var ribbon = ComponentManager.Ribbon;
             if (ribbon == null || ribbon.Tabs.Any(t => t.Id == "MARKS_TEST")) return;
-            ribbon.Tabs.Add(Tab("MARKS_OTHER", "Marks Other", Panel("Other", Row(Button("RBNU_200_DUPLI", "Dup A", "DRAWCIRCLE")))));
+            ribbon.Tabs.Add(Tab("MARKS_OTHER", "Marks Other", Panel("Other", Row(Button("RBNU_200_DUPLI", "Dup A", "DRAWCIRCLE"))),
+                Panel("Panes", Row(Button("MARK_PANEROLL", "Panes roll", "DRAWPANEROLL"), Button("MARK_PANEDOCK", "Panes dock roll", "DRAWPANEROLLDOCK"), Button("MARK_PANECLOSE", "Panes close", "DRAWPANECLOSE"), Button("MARK_PANEPLAIN", "Panes plain", "DRAWPANES")))));
             ribbon.Tabs.Add(Tab("MARKS_TEST", "Marks Test",
                 Panel("Palettes", Row(Button("MARK_PICK", "Pick palette", "DRAWPICK"), Button("RBNU_200_ABCDE", "Tools palette", "DRAWTOOLS"), Button("RBNU_200_DUPLI", "Dup B", "DRAWLINE"), Button("MARK_NEST", "Pick + zoom", "DRAWPICKNEST"), LispButton("PICKLISP", "Pick by LISP"))),
                 Panel("Split", Row(Split())),

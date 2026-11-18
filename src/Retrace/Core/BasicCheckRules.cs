@@ -47,7 +47,7 @@ public static class BasicCheckRules
     {
         "cmd_start" => !OwnCommands.IsOwnCommand(Str(e, "command")),
         "ribbon" => !OwnCommands.IsOwnTab(Str(e, "tabId")) && !OwnCommands.IsOwnCommand(Str(e, "id")),
-        "lisp_start" or "palette_click" or "palette_values" or "native_click" or "native_select" or "native_value" or "dialog_click" or "dialog_values" or "context_menu" or "doc_created" => true,
+        "lisp_start" or "statusbar_click" or "palette_click" or "palette_values" or "native_click" or "native_select" or "native_value" or "dialog_click" or "dialog_values" or "context_menu" or "doc_created" => true,
         _ => false,
     };
 

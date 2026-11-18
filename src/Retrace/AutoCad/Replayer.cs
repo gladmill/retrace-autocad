@@ -853,7 +853,7 @@ sealed class Replayer
         if (_tdoc != null && !_tdoc.BeforeStep(_i, s, DateTime.Now)) return;   // Tdoc: the picture of the step is taken first
 
         if (s.Kind != "open") NoteZoomSeed();   // postTestZoom: the drawing this step runs in, before it makes anything (palette steps too)
-        if (s.Kind == "palette") { TickPalette(s); return; }
+        if (s.Kind is "palette" or "statusbar") { TickPalette(s); return; }
 
         // a dialog step needs a person; unattended (Auto) the run cannot go on
         if (s.Kind == "dialog" && _mode == ReplayMode.Auto)
@@ -1178,22 +1178,23 @@ sealed class Replayer
         if (_paletteForPerson)
         {
             if (!_userNext) return;
-            _result.Steps.Add(new StepResult { Index = _i + 1, Kind = "palette", Title = s.Title, WaitedForPerson = true });
+            _result.Steps.Add(new StepResult { Index = _i + 1, Kind = s.Kind, Title = s.Title, WaitedForPerson = true });
             NextPaletteStep();
             return;
         }
-        if (_showUi && !_revealDone && !Reveal(s, now)) return;
+        if (s.Kind == "palette" && _showUi && !_revealDone && !Reveal(s, now)) return;
         if (_paletteSince == DateTime.MinValue) _paletteSince = now;
         if (now < _paletteRetryAt) return;
         NoteSent(s.Command);   // the click may start the palette button's command at once (and a retry refreshes the time)
-        var problem = s.Native != null
+        var problem = s.Kind == "statusbar" ? StatusBarReplay.Run(s, (l, t, r, b) => _win.Avoid(l, t, r, b))
+            : s.Native != null
             ? NativePalette.Run(s, (x, y) => { if (_cursorHome == null && PaletteReveal.GetCursorPos(out var home)) _cursorHome = home; MoveCursor(new PaletteReveal.POINT { X = x, Y = y }); })
             : PaletteFill.Run(s, _paletteFill);
         if (PaletteFill.TakeNote() is { } paletteNote) { _warnings.Add($"step {_i + 1}: {paletteNote}"); Say($"\n  Note: {paletteNote}.\n"); }
         if (problem == null)
         {
-            Say($"\n  Palette \"{s.DialogTitle}\": done.\n");
-            _result.Steps.Add(new StepResult { Index = _i + 1, Kind = "palette", Title = s.Title });
+            Say(s.Kind == "statusbar" ? $"\n  {s.Title}: done.\n" : $"\n  Palette \"{s.DialogTitle}\": done.\n");
+            _result.Steps.Add(new StepResult { Index = _i + 1, Kind = s.Kind, Title = s.Title });
             // a right-click in a native palette: its menu is not replayed, the command picked from it is typed (the item is selected now)
             if (s.Native is { Action: "rclick" } && s.Command != null)
             {
@@ -1213,13 +1214,21 @@ sealed class Replayer
         bool menuFinal = PaletteFill.TakeMenuFinal();   // always asked: a final failure must not leak into the next step
         if (now - _paletteSince < PaletteWait && !menuFinal) { _paletteRetryAt = now.AddMilliseconds(500); return; }
         PaletteFill.Abandon();   // a context menu the step opened is closed before a person gets it
-        if (_mode == ReplayMode.Auto && Unattended)
+        if (s.Kind == "statusbar" && _mode != ReplayMode.Step)
         {
-            StopForPerson("palette", s.Title, problem, $"needs a person: palette {s.DialogTitle} ({problem})");
+            // the item is not in the status bar (or is hidden, disabled, covered): the step fails with the reason, never a pass
+            _result.Steps.Add(new StepResult { Index = _i + 1, Kind = "statusbar", Title = s.Title, Status = "failed", Message = problem });
+            Finish(false, true, "the status bar item could not be clicked");
             return;
         }
-        Say($"\n  Palette \"{s.DialogTitle}\": {problem}. Do it by hand, then click Next.\n");
-        _win.Show($"Step {_i + 1}/{_steps.Count}: palette", $"{s.Title}\nRetrace could not do it: {problem}.\nDo it in the palette, then click Next.", true);
+        if (_mode == ReplayMode.Auto && Unattended)
+        {
+            StopForPerson(s.Kind, s.Title, problem, s.Kind == "statusbar" ? $"needs a person: {s.Title} ({problem})" : $"needs a person: palette {s.DialogTitle} ({problem})");
+            return;
+        }
+        var where = s.Kind == "statusbar" ? "the status bar" : "the palette";
+        Say(s.Kind == "statusbar" ? $"\n  {s.Title}: {problem}. Do it by hand, then click Next.\n" : $"\n  Palette \"{s.DialogTitle}\": {problem}. Do it by hand, then click Next.\n");
+        _win.Show($"Step {_i + 1}/{_steps.Count}: {s.Kind}", $"{s.Title}\nRetrace could not do it: {problem}.\nDo it in {where}, then click Next.", true);
         _userNext = false;
         _paletteForPerson = true;
     }
@@ -1244,7 +1253,7 @@ sealed class Replayer
         if (DateTime.Now - _paletteClickedAt > TimeSpan.FromSeconds(30))   // as long as the recorder links a command to a click (an awaited call first)
         {
             _paletteCommand = null;
-            Finish(false, true, $"the {s.Button} button in the {s.DialogTitle} palette did not start {s.Command}");
+            Finish(false, true, s.Kind == "statusbar" ? $"{s.Title} did not start {s.Command}" : $"the {s.Button} button in the {s.DialogTitle} palette did not start {s.Command}");
         }
     }
 
@@ -1331,7 +1340,7 @@ sealed class Replayer
     static string Describe(Step s)
     {
         var t = s.Title;
-        if (s.Kind is "ribbon" or "command" or "lisp" && s.Answers.Count > 0)
+        if (s.Kind is "ribbon" or "command" or "lisp" or "statusbar" && s.Answers.Count > 0)
             t += "\nThen answer: " + string.Join(" | ", s.Answers.Select(a => $"{a.Message ?? a.Kind} -> {Summ(a)}"));
         return t;
     }

@@ -215,6 +215,19 @@ sealed class TdocCapture : IDisposable
         if (s.Kind == "palette" && !continuation) { ShootPalette(i, s); return; }
         // smart zoom: a ribbon click shows the button, its panel and the tab row, 1:1; the pictures of the drawing (commands, checkpoints, prompts) stay the whole window
         var crop = _smart && !continuation && s.Kind == "ribbon" ? SmartShots.RibbonPicture(s.ItemId, null, null, _main, workArea: true) : null;
+        // a status bar click: the item as the replay found it (the same finder), the bar strip with context in smart zoom
+        StatusBarWatch.Item? barItem = null;
+        if (s.Kind == "statusbar" && !continuation)
+        {
+            var (found, _, why) = StatusBarReplay.Find(s);
+            if (found == null || why != null) Log.Info($"tdoc: step {i + 1}: {why}; no box");
+            else
+            {
+                barItem = found;
+                if (_smart && ShotService.WindowRect(_main, true) is { } win && StatusBarPicture.Crop(win, StatusBarWatch.BarRect(StatusBarWatch.BarWindow()), found.Rect) is { } sc)
+                    crop = ShotService.CaptureRect(sc.Left, sc.Top, sc.Right, sc.Bottom, _main);
+            }
+        }
         var w = crop != null ? (crop, crop.Left, crop.Top) : ShotService.CaptureWindow(_main, workArea: true);
         if (w == null) { Log.Info($"tdoc: no picture of step {i + 1} (AutoCAD's window is hidden or minimized)"); return; }
         var targets = new List<(string Text, ScreenRect? Rect)>();
@@ -240,6 +253,7 @@ sealed class TdocCapture : IDisposable
                     // the button sits in a collapsed panel: the box is on the panel, and the legend says to open it first
                     targets.Add((hit is { Panel: true } ? $"Open the {(string.IsNullOrWhiteSpace(s.Panel) ? "collapsed" : s.Panel.Trim())} panel, then {char.ToLowerInvariant(p.Text[0])}{p.Text[1..]}" : p.Text, hit?.Rect));
                 }
+                else if (p.Role == CalloutRole.StatusBarItem) targets.Add((p.Text, barItem is { } bi ? new ScreenRect(bi.Rect.Left, bi.Rect.Top, bi.Rect.Right, bi.Rect.Bottom) : null));
                 else targets.Add((p.Text, p.Role == CalloutRole.CommandLine ? TdocTargets.CommandLineRect(_main) : null));
             }
         Save(i, w.Value.Pic, w.Value.Left, w.Value.Top, targets, TdocPlan.Caption(s), arrowAt is { } ra ? [new ArrowAt(ra, false, _annotate ? 0 : -1)] : null, keepSize: crop != null);
