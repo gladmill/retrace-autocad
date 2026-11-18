@@ -98,6 +98,11 @@ public sealed class RetraceSettings
     /// <summary>Where the Retrace ribbon tab goes: "" / "afterHome" (right of Home), "first", "last" or "after:&lt;tab id or title&gt;".</summary>
     [JsonPropertyName("ribbonTabPosition")] public string RibbonTabPosition { get; set; } = "";
 
+    /// <summary>What the ribbon does when a recording has started (after the test name was given), when it was started from the Retrace tab: "home" (default; the Home tab of the current workspace), "last" (the tab that was
+    /// active before the Retrace tab) or "stay" (the Retrace tab stays active). An unknown value reads as "home". See <see cref="Retrace.Core.RecordStartTab"/>.</summary>
+    [JsonPropertyName("recordStartTab")] public string RecordStartTab { get => _recordStartTab; set => _recordStartTab = Retrace.Core.RecordStartTab.Normalize(value); }
+    string _recordStartTab = Retrace.Core.RecordStartTab.Home;
+
     /// <summary>Keyboard shortcut that adds a checkpoint while recording, e.g. "Ctrl+Shift+K" or "F8". "" or "None" = off. An invalid value falls back to the default.</summary>
     [JsonPropertyName("checkpointKey")] public string CheckpointKey { get; set; } = KeyChord.Default;
 

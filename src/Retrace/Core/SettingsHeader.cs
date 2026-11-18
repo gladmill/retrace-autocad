@@ -44,6 +44,7 @@ public static class SettingsHeader
         ["suiteStepTimeoutSeconds"] = s.SuiteStepTimeoutSeconds,
         ["statusBoard"] = s.StatusBoard,
         ["ribbonTabPosition"] = s.RibbonTabPosition,
+        ["recordStartTab"] = s.RecordStartTab,
         ["checkpointKey"] = s.CheckpointChord(out _)?.Format() ?? "None",   // as the shortcut is used: an invalid value falls back to the default, off is "None"
         ["loadedCustomization"] = s.LoadedCustomization,
         ["captureRibbon"] = s.CaptureRibbon,

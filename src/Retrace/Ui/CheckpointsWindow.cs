@@ -63,7 +63,7 @@ sealed class CheckpointsWindow : Window
         _afterStop = afterStop;
         Title = "Retrace: checkpoints";
         Width = 900; Height = 680; MinWidth = 640; MinHeight = 420;
-        WindowStartupLocation = WindowStartupLocation.CenterScreen;
+        Retrace.AutoCad.WindowPlacement.MainInterface(this);
         ShowInTaskbar = false;
         Background = Brushes.White;
 

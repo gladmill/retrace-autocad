@@ -4,8 +4,7 @@
     net48 (AutoCAD 2024, R24.3). One bundle holds both.
 
     Every inner build (one per target framework) puts its own files into src/Retrace/bin/<Configuration>/Retrace.bundle (a fixed path):
-      Contents/Retrace.dll, Retrace.pdb         net8.0-windows (AutoCAD 2026; the path the install, trust and VM scripts have always used);
-                                                one dll: the dependencies are embedded, see Retrace.csproj
+      Contents/2026/Retrace.dll, Retrace.pdb    net8.0-windows (AutoCAD 2026); one dll: the dependencies are embedded, see Retrace.csproj
       Contents/2024/Retrace.dll, Retrace.pdb    net48 (AutoCAD 2024), with the dlls that are not embedded beside it (System.Text.Json and what it
                                                 pulls in, DocumentFormat.OpenXml): the .NET Framework has no copy of them that Retrace could rely on
     The outer build (a build without -f, which is what the solution, Visual Studio, `dotnet build` and scripts/pack.sh do) then deletes the
@@ -44,7 +43,7 @@
   <Target Name="RetraceBundleContents" AfterTargets="Build" Condition="'$(TargetFramework)' != '' And '$(DesignTimeBuild)' != 'true'">
     <PropertyGroup>
       <_RetraceContentsDir Condition="'$(TargetFramework)' == 'net48'">$(_RetraceBundleDir)Contents/2024/</_RetraceContentsDir>
-      <_RetraceContentsDir Condition="'$(TargetFramework)' != 'net48'">$(_RetraceBundleDir)Contents/</_RetraceContentsDir>
+      <_RetraceContentsDir Condition="'$(TargetFramework)' != 'net48'">$(_RetraceBundleDir)Contents/2026/</_RetraceContentsDir>
     </PropertyGroup>
     <ItemGroup>
       <_RetraceContents Include="$(TargetPath)" />
@@ -52,9 +51,8 @@
       <!-- net48: what the build left copy-local (EmbedDependencies in Retrace.csproj keeps only these, and only for net48) -->
       <_RetraceContents Include="@(ReferenceCopyLocalPaths)" Condition="'$(TargetFramework)' == 'net48' And '%(Extension)' == '.dll'" />
     </ItemGroup>
-    <!-- net8.0-windows: only the two files it owns are replaced, so Contents\2024 stays; net48: its own folder -->
-    <RemoveDir Condition="'$(TargetFramework)' == 'net48'" Directories="$(_RetraceContentsDir)" />
-    <Delete Condition="'$(TargetFramework)' != 'net48'" Files="$(_RetraceContentsDir)Retrace.dll;$(_RetraceContentsDir)Retrace.pdb" />
+    <!-- each target owns its folder (Contents\2026 or Contents\2024): an inner build replaces only that one -->
+    <RemoveDir Directories="$(_RetraceContentsDir)" />
     <Copy SourceFiles="@(_RetraceContents)" DestinationFolder="$(_RetraceContentsDir)" />
     <Message Importance="high" Text="$(MSBuildProjectName) $(TargetFramework) -> $(_RetraceContentsDir)" />
   </Target>
@@ -106,14 +104,15 @@
 
     <!-- AutoCAD keeps a loaded Retrace.dll open (share-locked): probe each installed dll by opening it for exclusive write, which changes nothing.
          If either release has its dll in use, nothing at all is replaced (a half-replaced bundle would point the manifest at a missing dll). -->
-    <RetraceProbeInUse Files="$(RetraceDeployDir)\Contents\Retrace.dll;$(RetraceDeployDir)\Contents\2024\Retrace.dll">
+    <!-- Contents\Retrace.dll is where 0.6.16 and earlier kept the 2026 build: if that one is loaded, the folder cannot be replaced either -->
+    <RetraceProbeInUse Files="$(RetraceDeployDir)\Contents\2026\Retrace.dll;$(RetraceDeployDir)\Contents\Retrace.dll;$(RetraceDeployDir)\Contents\2024\Retrace.dll">
       <Output TaskParameter="InUse" PropertyName="_RetraceInUseFiles" />
     </RetraceProbeInUse>
     <PropertyGroup>
       <_RetraceInUse Condition="'$(_RetraceInUseFiles)' != ''">true</_RetraceInUse>
-      <_RetraceInUseWho Condition="$(_RetraceInUseFiles.Contains('\2024\'))">AutoCAD 2024 ($(AutoCADSeries2024))</_RetraceInUseWho>
-      <_RetraceInUseWho Condition="$(_RetraceInUseFiles.Contains('\Contents\Retrace.dll'))">AutoCAD 2026 ($(AutoCADSeries2026))</_RetraceInUseWho>
-      <_RetraceInUseWho Condition="$(_RetraceInUseFiles.Contains('\2024\')) And $(_RetraceInUseFiles.Contains('\Contents\Retrace.dll'))">AutoCAD 2024 and AutoCAD 2026</_RetraceInUseWho>
+      <_RetraceInUseWho Condition="$(_RetraceInUseFiles.Contains('\Contents\2024\'))">AutoCAD 2024 ($(AutoCADSeries2024))</_RetraceInUseWho>
+      <_RetraceInUseWho Condition="($(_RetraceInUseFiles.Contains('\Contents\2026\')) Or $(_RetraceInUseFiles.Contains('\Contents\Retrace.dll')))">AutoCAD 2026 ($(AutoCADSeries2026))</_RetraceInUseWho>
+      <_RetraceInUseWho Condition="$(_RetraceInUseFiles.Contains('\Contents\2024\')) And ($(_RetraceInUseFiles.Contains('\Contents\2026\')) Or $(_RetraceInUseFiles.Contains('\Contents\Retrace.dll')))">AutoCAD 2024 and AutoCAD 2026</_RetraceInUseWho>
     </PropertyGroup>
     <Warning Condition="'$(_RetraceInUse)' == 'true'" Text="Retrace: $(_RetraceInUseWho) has its installed Retrace.dll loaded ($(_RetraceInUseFiles)), so this build was not installed and nothing was changed. Close it and build again." />
 

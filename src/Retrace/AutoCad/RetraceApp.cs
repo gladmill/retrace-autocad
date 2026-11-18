@@ -88,6 +88,8 @@ public sealed class RetraceApp : IExtensionApplication
     [CommandMethod("RETRACEOPEN")] public static void OpenTestWindow() => Run("RETRACEOPEN", Commands.Instance.OpenTest);
     [CommandMethod("RETRACETDOC")] public static void TrainingDoc() => Run("RETRACETDOC", Commands.Instance.Tdoc);
     [CommandMethod("-RETRACETDOC")] public static void TrainingDocCommandLine() => Run("-RETRACETDOC", Commands.Instance.TdocCommandLine);
+    [CommandMethod("RETRACEEVIDENCE")] public static void EvidenceOpen() => Run("RETRACEEVIDENCE", Commands.Instance.Evidence);
+    [CommandMethod("-RETRACEEVIDENCE")] public static void EvidenceCommandLine() => Run("-RETRACEEVIDENCE", Commands.Instance.EvidenceCommandLine);
     [CommandMethod("RETRACESUITE")] public static void Suite() => Run("RETRACESUITE", Commands.Instance.Suite);
     [CommandMethod("-RETRACESUITE")] public static void SuiteCommandLine() => Run("-RETRACESUITE", Commands.Instance.SuiteCommandLine);
     [CommandMethod("RETRACEMAP")] public static void MapRibbon() => Run("RETRACEMAP", Commands.Instance.Map);

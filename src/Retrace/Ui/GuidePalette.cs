@@ -32,6 +32,16 @@ static class GuidePalette
         _control!.RefreshTree();
     }
 
+    /// <summary>A floating Guide palette is hidden for a picture of AutoCAD (a docked one is part of AutoCAD's layout and stays). True when it was hidden: <see cref="ShowAgain"/> puts it back.</summary>
+    public static bool HideFloating()
+    {
+        if (_set is not { Visible: true } set || set.Dock != DockSides.None) return false;
+        set.Visible = false;
+        return true;
+    }
+
+    public static void ShowAgain() { if (_set != null) _set.Visible = true; }
+
     public static void Dispose()
     {
         try { _control?.ConfirmShutdown(); } catch (Exception) { }

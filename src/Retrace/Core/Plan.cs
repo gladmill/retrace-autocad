@@ -31,6 +31,8 @@ public sealed class Step
     public string ClickTreeLabel = "";
     /// <summary>palette: what a click of kind listview / point holds beyond the tree fields (<see cref="PaletteHit"/>); null for the other kinds and older recordings.</summary>
     public PaletteHit? Hit;
+    /// <summary>palette: the type name of the modeless form or window a pane step was recorded in (`paneType`, optional: older recordings and palette sets have none); the replay prefers the window of that type.</summary>
+    public string? PaneType;
     /// <summary>palette: the context menu choice that ends the step (a `context_menu` event); <see cref="Button"/> then holds the menu path, so a command it starts is linked to the step.</summary>
     public MenuChoice? Menu;
     public string? Note;
@@ -631,7 +633,7 @@ public static class Plan
                     string? name = Str(e, "palette"), set = Str(e, "set");
                     bool join = type == "palette_click" && palette != null && steps.Count > 0 && ReferenceEquals(steps[^1], palette)
                                 && palette.Button == null && palette.DialogTitle == name && palette.Panel == set;
-                    if (!join) { palette = new Step { Kind = "palette", T = t, DialogTitle = name, Panel = set }; steps.Add(palette); }
+                    if (!join) { palette = new Step { Kind = "palette", T = t, DialogTitle = name, Panel = set, PaneType = Str(e, "paneType") }; steps.Add(palette); }
                     if (type == "palette_click")
                     {
                         palette!.Button = Str(e, "button");

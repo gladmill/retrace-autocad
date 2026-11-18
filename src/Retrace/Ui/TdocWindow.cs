@@ -25,7 +25,7 @@ sealed class TdocWindow : Window
         _core = core;
         Title = "Retrace: training document";
         Width = 820; Height = 560; MinWidth = 640; MinHeight = 420;
-        WindowStartupLocation = WindowStartupLocation.CenterScreen;
+        Retrace.AutoCad.WindowPlacement.MainInterface(this);
         ShowInTaskbar = false;
 
         var root = new Grid { Margin = new Thickness(12) };

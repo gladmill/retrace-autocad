@@ -12,7 +12,7 @@
     <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SeriesMin="{Series}" SeriesMax="{Series}" />
     <ComponentEntry AppName="AcadStatus"
                     Version="{Version}"
-                    ModuleName="./Contents/AcadStatus.dll"
+                    ModuleName="./Contents/2026/AcadStatus.dll"
                     AppDescription="AcadStatus status file writer and status bar pane"
                     LoadOnAutoCADStartup="True"
                     LoadOnCommandInvocation="False" />

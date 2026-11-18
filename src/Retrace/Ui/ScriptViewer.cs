@@ -28,10 +28,11 @@ public static class ScriptViewer
                 var web = new WebPreview();
                 web.MarkdownLinkClicked = (f, _) => web.Navigate(GuideLinks.ToUrl(f, _dir));
                 var win = new Window { Title = "Retrace test script", Width = 920, Height = 720, Content = web, ShowInTaskbar = false };
+                Retrace.AutoCad.WindowPlacement.MainInterface(win);
                 win.Closed += (_, _) => { try { _web?.Close(); } catch (Exception) { } _web = null; _win = null; };
                 _win = win; _web = web;
                 _dir = dir;
-                Autodesk.AutoCAD.ApplicationServices.Application.ShowModelessWindow(win);
+                Autodesk.AutoCAD.ApplicationServices.Application.ShowModelessWindow(Autodesk.AutoCAD.ApplicationServices.Application.MainWindow.Handle, win, false);
                 _ = StartAsync(web, dir, mdPath);
             }
             else

@@ -20,6 +20,7 @@ public static class RibbonInstaller
     static string? _pending;                                   // the reason of a check that is waiting (for the ribbon to settle, or for a capture to end)
     static long _lastChange;                                   // when the tab collection last changed (set by the handler)
     static long _activateUntil;                                // RETRACERIBBON asked for the tab to be active; honoured by the next repair until this tick
+    static readonly LastTabTracker _lastTab = new();           // the tab that was active before the Retrace tab (setting recordStartTab = last)
     static bool _everBuilt;                                    // the tab has been built once in this session: a later build is a repair
 
 
@@ -67,6 +68,16 @@ public static class RibbonInstaller
             _maybeMissing.Set(RestoreReason.CollectionChanged);
     }
 
+    // Only remembers an id (no work in AutoCAD event handlers): the tab that is active, unless it is the Retrace tab.
+    static void OnRibbonProperty(object? s, System.ComponentModel.PropertyChangedEventArgs e) { if (e.PropertyName == "ActiveTab") NoteActive(s as RibbonControl); }
+
+    static void NoteActive(RibbonControl? rc)
+    {
+        // not while the ribbon capture switches tabs itself or a replay clicks through them: those are not the person's tabs
+        if (RibbonCapture.Running || Replayer.Current != null) return;
+        try { _lastTab.Note((rc ?? _watched)?.ActiveTab?.Id, RetraceTab.TabId); } catch (System.Exception) { }
+    }
+
     static void OnItemInitialized(object? s, EventArgs e) { if (!_busy) _maybeMissing.Set(RestoreReason.ItemInitialized); }   // fires for every ribbon item: only asks for a check
 
     static void Unwatch()
@@ -75,6 +86,7 @@ public static class RibbonInstaller
         _watched = null;
         if (old == null) return;
         try { (old.Tabs as System.Collections.Specialized.INotifyCollectionChanged)!.CollectionChanged -= OnTabsChanged; } catch (System.Exception) { }
+        try { old.PropertyChanged -= OnRibbonProperty; } catch (System.Exception) { }
     }
 
     /// <summary>Listens to the tab collection of <paramref name="rc"/>, and stops listening to the one before. True when this is a different ribbon than the one watched before.</summary>
@@ -83,7 +95,7 @@ public static class RibbonInstaller
         if (ReferenceEquals(_watched, rc)) return false;
         var hadOne = _watched != null;
         Unwatch();
-        try { if (rc.Tabs is System.Collections.Specialized.INotifyCollectionChanged n) n.CollectionChanged += OnTabsChanged; _watched = rc; }
+        try { if (rc.Tabs is System.Collections.Specialized.INotifyCollectionChanged n) n.CollectionChanged += OnTabsChanged; _watched = rc; rc.PropertyChanged += OnRibbonProperty; NoteActive(rc); }
         catch (System.Exception ex) { Log.Error("ribbon watch", ex); }
         return hadOne;
     }
@@ -93,6 +105,9 @@ public static class RibbonInstaller
         try
         {
             var now = Environment.TickCount64;
+            if (_startPending is { } st && Recorder.Instance.IsRecording) { _startPending = null; DoRecordStart(st); }   // setting recordStartTab, asked for by RETRACERECORD
+            else _startPending = null;
+            if (_watched != null) NoteActive(_watched);                     // the active tab, read on every Idle (a property read): a quick tab visit is not missed
             if (_fileDiaDirty) { _fileDiaDirty = false; RefreshFileDia(); }   // a FILEDIA change: show it at once
             if (_activateUntil != 0 && now > _activateUntil) _activateUntil = 0;   // RETRACERIBBON's "make it active" request expires
             var taken = _maybeMissing.Take();                                // an event said the tab may be gone: look now, not at the next second
@@ -365,6 +380,86 @@ public static class RibbonInstaller
                 }
         }
         catch (System.Exception ex) { Log.Error("ribbon prompt style", ex); }
+    }
+
+    /// <summary>What a recording start needs to know about the ribbon, read when the command begins (before the name prompt): was the Retrace tab the active one, and which tab was active before it.</summary>
+    internal readonly record struct RecordStartState(bool OnOwnTab, string? LastTabId);
+
+    internal static RecordStartState CaptureForRecordStart()
+    {
+        try
+        {
+            var rc = ComponentManager.Ribbon;
+            if (rc == null) return new RecordStartState(false, null);
+            NoteActive(rc);
+            return new RecordStartState(string.Equals(rc.ActiveTab?.Id, RetraceTab.TabId, StringComparison.OrdinalIgnoreCase), _lastTab.Id);
+        }
+        catch (System.Exception ex) { Log.Error("record start tab capture", ex); return new RecordStartState(false, null); }
+    }
+
+    /// <summary>Setting recordStartTab: once a recording has really started, show the Home tab, the tab that was active before the Retrace tab, or stay. It switches only when the Retrace tab was the active tab when the
+    /// command began (a typed RETRACERECORD with the Retrace tab active cannot be told from a click on Record, and does switch; a typed command or the Quick Access Toolbar with another tab active does not) and is still the active tab
+    /// at the next Idle, and not from a script or LISP, not during a replay, not with the ribbon closed or minimized. The switch is told to the recorder first, so it is no step and takes no picture. Never throws.</summary>
+    internal static void ApplyRecordStart(RecordStartState state)
+    {
+        try
+        {
+            var mode = RecordStartTab.Normalize(RetraceSettings.Load().RecordStartTab);
+            if (mode == RecordStartTab.Stay) return;
+            if (!state.OnOwnTab) { Log.Info("record start tab: the Retrace tab was not the active tab, nothing switched"); return; }
+            if (Replayer.Current != null || Ask.ScriptKnown()) { Log.Info("record start tab: a replay or script runs, nothing switched"); return; }
+            _startPending = state;   // the switch itself waits for the next Idle, when RETRACERECORD has ended and the ribbon is at rest
+        }
+        catch (System.Exception ex) { Log.Error("record start tab", ex); }
+    }
+
+    static RecordStartState? _startPending;
+
+    static void DoRecordStart(RecordStartState state)
+    {
+        RibbonControl? rc = null;
+        try
+        {
+            var mode = RecordStartTab.Normalize(RetraceSettings.Load().RecordStartTab);
+            rc = ComponentManager.Ribbon;
+            if (rc == null || !RibbonOpen(rc)) { Log.Info("record start tab: no ribbon or it is closed, nothing switched"); return; }
+            if (RibbonMinimized(rc, out var minimizedMode)) { Log.Info($"record start tab: the ribbon is minimized ({minimizedMode}), nothing switched"); return; }
+            var active = rc.ActiveTab?.Id;
+            if (!RecordStartTab.StillOnOwnTab(active, RetraceTab.TabId)) { Log.Info($"record start tab: the active tab is {active ?? "none"}, no longer the Retrace tab: the person chose, nothing switched"); return; }
+            var facts = rc.Tabs.Select(t => new TabFact(t.Id ?? "", t.Title ?? "", t.IsVisible, t.IsContextualTab)).ToList();
+            var choice = RecordStartTab.Choose(mode, facts, RetraceTab.TabId, state.LastTabId, state.OnOwnTab);
+            Log.Info($"record start tab ({mode}): {choice.Rule}" + (choice.TabId == null ? "" : " -> " + choice.TabId));
+            if (choice.TabId == null) return;
+            var target = rc.Tabs.FirstOrDefault(t => string.Equals(t.Id, choice.TabId, StringComparison.OrdinalIgnoreCase));
+            if (target == null || ReferenceEquals(rc.ActiveTab, target)) return;
+            Recorder.Instance.NoteTabSwitch(target.Id);   // before the switch: the recorder then reads the new active tab as already known, not as a step of the test
+            _busy = true;
+            try { rc.ActiveTab = target; }
+            finally { _busy = false; }
+            if (!ReferenceEquals(rc.ActiveTab, target)) { try { target.IsActive = true; } catch (System.Exception ex) { Log.Error("record start tab set", ex); } }
+            Log.Info("record start tab: active tab is now " + (rc.ActiveTab?.Id ?? "none"));
+        }
+        catch (System.Exception ex) { Log.Error("record start tab", ex); }
+        finally
+        {
+            // whatever happened, the recorder holds the tab that is really active: a switch that failed must not make it swallow the person's next click on the tab it was told about
+            try { if (rc != null) Recorder.Instance.NoteTabSwitch(RecordStartTab.RecorderSyncId(rc.ActiveTab?.Id)); } catch (System.Exception) { }
+        }
+    }
+
+    /// <summary>True when the ribbon is minimized: RibbonControl.CurrentAutoHideMode (Autodesk.Internal.Windows.RibbonAutoHideMode: None, HidePanelBar, HidePanel, CollapsePanels) is anything but None, i.e.
+    /// minimized to tabs, to panel titles or to panel buttons. The property is read by name (it is not in the documented surface); a ribbon whose mode cannot be read counts as not minimized.</summary>
+    static bool RibbonMinimized(RibbonControl rc, out string mode)
+    {
+        mode = "";
+        try
+        {
+            var p = rc.GetType().GetProperty("CurrentAutoHideMode", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+            if (p == null || p.GetIndexParameters().Length != 0) { Log.Info("record start tab: RibbonControl.CurrentAutoHideMode not found"); return false; }
+            mode = p.GetValue(rc)?.ToString() ?? "";
+            return mode.Length > 0 && !mode.Equals("None", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (System.Exception) { return false; }
     }
 
     /// <summary>The ribbon tabs the user can anchor to (visible, not contextual, not Retrace): (id, title). Empty if there is no ribbon.</summary>

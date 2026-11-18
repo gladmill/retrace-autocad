@@ -89,7 +89,7 @@ sealed class MapWindow : Window
         _core = core;
         Title = "Retrace: map the ribbon to source";
         Width = 1100; Height = 720; MinWidth = 860; MinHeight = 560;
-        WindowStartupLocation = WindowStartupLocation.CenterScreen;
+        Retrace.AutoCad.WindowPlacement.MainInterface(this);
         ShowInTaskbar = false;
         AllowDrop = true;
 

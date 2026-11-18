@@ -14,7 +14,7 @@ sealed class ConfirmWindow : Window
     {
         Title = "Retrace settings";
         Width = 380; SizeToContent = SizeToContent.Height; ResizeMode = ResizeMode.NoResize;
-        WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        Retrace.AutoCad.WindowPlacement.MainInterface(this);
         ShowInTaskbar = false;
 
         var root = new StackPanel { Margin = new Thickness(14) };

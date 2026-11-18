@@ -38,7 +38,7 @@ public sealed partial class Commands
             var w = new MapWindow(this);
             w.Closed += (_, _) => { if (ReferenceEquals(_mapWin, w)) _mapWin = null; };
             _mapWin = w;
-            AcApp.ShowModelessWindow(w);
+            AcApp.ShowModelessWindow(AcApp.MainWindow.Handle, w, false);   // not persisted: WindowPlacement centres it on AutoCAD every time
         }
         catch (Exception ex) { Log.Error("RETRACEMAP", ex); _mapWin = null; ed?.WriteMessage($"\nRETRACEMAP failed: {ex.Message}\n"); }
     }

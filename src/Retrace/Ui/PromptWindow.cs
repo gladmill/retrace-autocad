@@ -39,7 +39,7 @@ sealed class PromptWindow : Window
         SizeToContent = SizeToContent.WidthAndHeight;
         MaxWidth = 900;
         ResizeMode = ResizeMode.NoResize;
-        WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        Retrace.AutoCad.WindowPlacement.MainInterface(this);
         ShowInTaskbar = false;
         Topmost = true;
 

@@ -1,14 +1,14 @@
 # First run in AutoCAD 2024: checklist
 
-The AutoCAD 2024 build (R24.3, .NET Framework 4.8) is built and tested without AutoCAD, but has never been loaded in AutoCAD 2024.
+The AutoCAD 2024 build (R24.3, .NET Framework 4.8) is built and tested without AutoCAD by us. A user has run the 0.6.16 build in AutoCAD 2024 and reported that it loads and that the normal recording workflow works (no detailed results), and nothing new in 0.6.17 has been run there.
 Whoever has AutoCAD 2024 can settle that in about half an hour with the steps below. Write down what differs; "it worked" is a result too.
 Close AutoCAD before each install step; use a test drawing and generic names only.
 
 ## 1. Install
 
 1. Unzip `Retrace-<version>.zip`. Copy `Retrace.bundle` (and, if you want it, `AcadStatus.bundle`, which does not load in 2024) to `%APPDATA%\Autodesk\ApplicationPlugins\`.
-2. Check the folder holds `Retrace.bundle\PackageContents.xml`, `Contents\Retrace.dll` (the AutoCAD 2026 build, unused in 2024) and `Contents\2024\` with `Retrace.dll`,
-   `System.Text.Json.dll` and nine more dlls.
+2. Check the folder holds `Retrace.bundle\PackageContents.xml`, `Contents\2026\Retrace.dll` (the AutoCAD 2026 build, unused in 2024) and `Contents\2024\` with `Retrace.dll`,
+   `System.Text.Json.dll` and nine more dlls. No dll sits loose in `Contents\`. If you update an older install, delete the old `Retrace.bundle` folder first (0.6.16 kept the 2026 dll in `Contents\`).
 3. Either start AutoCAD 2024 once and answer its security prompt with **Load Once** or **Always Load**, or, with AutoCAD closed, run
    `powershell -NoProfile -ExecutionPolicy Bypass -File "%APPDATA%\Autodesk\ApplicationPlugins\Retrace.bundle\Contents\trust-retrace.ps1" -Folder "%APPDATA%\Autodesk\ApplicationPlugins\Retrace.bundle"`
    (it trusts the folder in every AutoCAD 2024 and 2026 profile of your Windows user).

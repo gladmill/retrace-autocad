@@ -87,6 +87,7 @@ public sealed class Recorder
     // the same for a button clicked in a palette set: a command that starts after it, with no other click or key press in between, is the
     // button's (SendStringToExecute), also after an awaited call; _lastPaletteTick is the input count at the click
     long _lastPaletteT = -100000, _lastPaletteTick;
+    ShotService.Picture? _upShot; uint _upShotAt; bool _upShotApp;   // the window as it was at the last button-up in a menu pop-up of the application menu, held for the ribbon event that follows (1.5 s)
     string? _lastPaletteButton;
     uint _downMsgTime;        // the system time (ms) the last left button-down was posted: when the person pressed, not when the UI thread got round to it
     int _downX, _downY;       // the screen point of the last left button-down, when and in which window (setting showClickArrows)
@@ -200,7 +201,7 @@ public sealed class Recorder
     {
         var w = _w;
         if (w == null) return null;
-        Log.Safe("Stop palette", () => { EmitPalette(_pal.Flush(w.ElapsedMs, drop: true)); NativeTick(true); });
+        Log.Safe("Stop palette", () => { EmitPalette(_pal.Flush(w.ElapsedMs, drop: true)); NativeTick(true); PaletteWatch.EndSession(); _upShot = null; _upShotApp = false; });
         Log.Safe("Stop views", () => CheckPendingViews(ViewControl.ViewKey()));
         // the pictures still queued (the last command's result) are taken now, and their `shot` events must land before session_end
         Log.Safe("Stop shots", () => { _shots.Pump(w.ElapsedMs, force: true); _shots.Drain(); });
@@ -314,7 +315,7 @@ public sealed class Recorder
         var enabled = settings.Screenshots;
         _dlg.Clear(); _modals.Clear(); _episodes.Clear();
         _dlg.Enabled = settings.DialogValues;
-        _pal.Clear(); NativePalette.Clear(); PaletteClickDetect.NewSession();
+        _pal.Clear(); NativePalette.Clear(); PaletteClickDetect.NewSession(); PaletteWatch.NewSession(); _upShot = null; _upShotApp = false;
         _pal.Enabled = settings.DialogValues;
         _pal.Pictures = settings.Screenshots;
         _pal.Smart = _shots.Smart = settings.Screenshots && settings.SmartShots;   // screenshotMode smart: palette crops with surroundings, a ribbon click shows its tab row and panel
@@ -551,6 +552,9 @@ public sealed class Recorder
 
     void OnTabActivated(object? s, EventArgs e) => Log.Safe("TabActivated", () => EmitTab(s as RibbonTab));
 
+    /// <summary>Retrace itself is about to activate this tab (setting recordStartTab): it is the known active tab from now on, so the switch is no `tab` event, no step and no picture.</summary>
+    internal void NoteTabSwitch(string? tabId) => _lastTabId = tabId;
+
     void EmitTab(RibbonTab? t)
     {
         if (t == null || t.Id == _lastTabId) return;
@@ -584,12 +588,20 @@ public sealed class Recorder
             var down = Core.RibbonMark.FreshDown(_downX, _downY, _downMsgTime, unchecked((uint)Environment.TickCount), _downInWpf);
             // a button of the Quick Access Toolbar reports like a ribbon button: the visual that was under the mouse tells them apart (`bar`: "qat"; the ribbon has no field)
             var bar = TdocTargets.BarOf(item, down, out var barWhy, out var barButton);
+            // a click in the application menu (the button-up in its pop-up was seen just before, and the menu was captured then): the step says "Application menu"
+            bool upFresh = _upShotApp && unchecked((uint)Environment.TickCount - _upShotAt) <= 1500;
+            if (!upFresh) _upShot = null;
+            if (bar == null && upFresh) bar = "appmenu";
+            var heldPic = bar == "appmenu" ? _upShot : null;
+            _upShot = null; _upShotApp = false;   // used (or stale): never kept
             if (bar != null || (barWhy.Length > 0 && !barWhy.StartsWith("on the ribbon", StringComparison.Ordinal))) Log.Info($"ribbon click ({item.Id}): bar {bar ?? "ribbon"}: {barWhy}");
             if (_shots.Enabled)
             {
                 var main = MainWindowHandle();
                 // a Quick Access Toolbar click is always the whole window (the toolbar is outside any ribbon crop); smart zoom: the button, its panel and the tab row, as a 1:1 crop (SmartCrop); when its rectangles cannot be read the whole ribbon, and without a ribbon the window as before
-                if (_shots.Smart && bar == null) { clickPic = SmartShots.RibbonPicture(item.Id, e.Parent?.Id, panel, main); smartPic = clickPic != null; }
+                // the application menu: its picture is the one taken at the button-up while the menu was still open (PreTranslate), never a capture after it closed
+                if (heldPic != null) { clickPic = heldPic; Log.Info($"ribbon click ({item.Id}): application menu; picture taken at the button-up, while the menu was open"); }
+                else if (_shots.Smart && bar == null) { clickPic = SmartShots.RibbonPicture(item.Id, e.Parent?.Id, panel, main); smartPic = clickPic != null; }
                 clickPic ??= ShotService.CaptureWindow(main)?.Pic;
             }
             var n0 = Emit("ribbon", CurDoc(),
@@ -785,7 +797,7 @@ public sealed class Recorder
             _lastRibbonConsumed = true;
             return ("ribbon", _lastRibbonId);
         }
-        if (!_lastPaletteConsumed && now - _lastPaletteT <= 30000 && _inputTick <= _lastPaletteTick + 1)
+        if (Core.PaletteClaim.Claims(_lastPaletteConsumed, now, _lastPaletteT, _inputTick, _lastPaletteTick))
         {
             _lastPaletteConsumed = true;
             return ("palette", _lastPaletteButton);
@@ -1046,9 +1058,12 @@ public sealed class Recorder
     void OnPreTranslate(object? s, PreTranslateMessageEventArgs e)
     {
         var m = e.Message.message;
+        if (EvidenceKey.IsChord(m, e.Message.wParam)) return;   // the evidence camera's shortcut (the Evidence window handles it) is not the person's input
         if (m == 0x0200) { _activity++; return; }   // WM_MOUSEMOVE: somebody is at the mouse (a script that answers by itself moves nothing)
         if (CheckpointKey.TryHandle(m, e.Message.wParam, e.Message.lParam)) { e.Handled = true; return; }   // the shortcut is not user input
         if (m == 0x0201) { _downX = e.Message.pt_x; _downY = e.Message.pt_y; _downMsgTime = (uint)e.Message.time; _downInWpf = System.Windows.Interop.HwndSource.FromHwnd(e.Message.hwnd) != null; }   // where the person clicked, for the arrow of the step's picture
+        if (m == 0x0202 && _w != null) HoldAppMenuShot(e.Message.hwnd, e.Message.lParam);
+        else if (m == 0x0201 && _upShotApp && unchecked((uint)Environment.TickCount - _upShotAt) > 1500) { _upShot = null; _upShotApp = false; }   // nothing claimed the menu click: the held picture is let go
         if (m is 0x0100 or 0x0201 or 0x0202 or 0x0203 && _pal.Enabled) PaletteInput(e.Message.hwnd, (uint)m, e.Message.wParam, e.Message.lParam);
         if (m == 0x0100 && _w != null && !_inOwnCmd) { if (Native.TypedChar((uint)(long)e.Message.wParam) is { } typedChar) _sel.Key(typedChar); }   // WM_KEYDOWN (no WM_CHAR reaches this handler)
         if (m is 0x0201 or 0x0202 && _w != null && !_inOwnCmd && Native.IsInside(DrawingWindow(), e.Message.hwnd))
@@ -1069,6 +1084,21 @@ public sealed class Recorder
         }
     }
 
+    /// <summary>A button-up in an application menu pop-up (before the menu handles it, so the menu is still open): the window is captured once and held for the ribbon event this click raises. Other mouse-ups cost one type-name check.</summary>
+    void HoldAppMenuShot(IntPtr hwnd, IntPtr lParam)
+    {
+        try
+        {
+            if (System.Windows.Interop.HwndSource.FromHwnd(hwnd) == null) return;   // not a WPF window: nothing to look at
+            var (menu, app) = PaneWindows.MenuPopupAt(hwnd, lParam);
+            if (!menu || !app) return;
+            Log.Info("application menu: button-up");
+            _upShotAt = unchecked((uint)Environment.TickCount); _upShotApp = true;   // the step says "Application menu" whether or not pictures are on
+            _upShot = _shots.Enabled ? ShotService.CaptureWindow(MainWindowHandle())?.Pic : null;
+        }
+        catch (Exception ex) { Log.Error("app menu shot", ex); }
+    }
+
     /// <summary>A click or key press: records the values changed in a palette the user just left, and a button clicked in a palette.</summary>
     void PaletteInput(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam)
     {
@@ -1081,20 +1111,21 @@ public sealed class Recorder
             if (message == 0x0201 && _shots.HasQueuedPaletteShots) _shots.Repaint(_pal.CurrentPage);   // what the click before changed is painted first (its close-up shows the new label, not the old one)
             if (message is 0x0201 or 0x0202 or 0x0203) _shots.FlushDeferred();   // the click before this one has settled by now: its picture is taken before this click is handled
             if (message == 0x0201) _shots.FlushPaletteWindows(w.ElapsedMs, _pal.CurrentPage);       // and its window picture too: it must show that click's result, not this one's (a stalled UI thread took it late)
+            PaletteWatch.ModalNow = ModalOpen;
             var (changed, at, button, index, picture) = _pal.OnInput(hwnd, message, wParam, lParam, w.ElapsedMs);
             _pal.NoteInput(hwnd);
             EmitPalette(changed, withPicture: button == null);   // values and the click are one step: the click carries the picture
             if (at == null || button == null) return;
             if (_pal.Double is { } dbl)
             {
-                Emit("palette_click", CurDoc(), ("palette", at.Palette), ("set", at.Set), ("button", button), ("kind", "dblclick"), ("tree", dbl.Tree), ("treeLabel", dbl.TreeLabel), ("path", dbl.Path));
+                Emit("palette_click", CurDoc(), ("palette", at.Palette), ("set", at.Set), ("paneType", at.PaneType), ("button", button), ("kind", "dblclick"), ("tree", dbl.Tree), ("treeLabel", dbl.TreeLabel), ("path", dbl.Path));
                 _lastPaletteT = w.ElapsedMs; _lastPaletteTick = _inputTick; _lastPaletteButton = button; _lastPaletteConsumed = false;
                 return;
             }
             if (_pal.Intermediate is { } ic)
             {
                 // a click on a tree item, a +/- button, an image, a list view item or a control with no name: one step of its own, after the values changed so far
-                var fields = new List<(string, object?)> { ("palette", at.Palette), ("set", at.Set), ("button", button) };
+                var fields = new List<(string, object?)> { ("palette", at.Palette), ("set", at.Set), ("button", button), ("paneType", at.PaneType) };
                 fields.AddRange(ic.ToFields());
                 if (ic.Kind == PaletteClickKinds.Tree) NoteTreeClick(ic.Path, w.ElapsedMs, _downMsgTime);
                 int k = Emit("palette_click", CurDoc(), fields.ToArray());
@@ -1106,8 +1137,8 @@ public sealed class Recorder
             var from = _pal.ButtonFrom;
             int? legacy = _pal.ButtonLegacyIndex > 0 ? _pal.ButtonLegacyIndex : null;
             int? noText = _pal.ButtonNoTextCount > 0 ? _pal.ButtonNoTextCount : null;
-            int n = index > 1 ? Emit("palette_click", CurDoc(), ("palette", at.Palette), ("set", at.Set), ("button", button), ("buttonFrom", from), ("index", index), ("legacyIndex", legacy), ("noTextCount", noText))
-                              : Emit("palette_click", CurDoc(), ("palette", at.Palette), ("set", at.Set), ("button", button), ("buttonFrom", from), ("legacyIndex", legacy), ("noTextCount", noText));
+            int n = index > 1 ? Emit("palette_click", CurDoc(), ("palette", at.Palette), ("set", at.Set), ("paneType", at.PaneType), ("button", button), ("buttonFrom", from), ("index", index), ("legacyIndex", legacy), ("noTextCount", noText))
+                              : Emit("palette_click", CurDoc(), ("palette", at.Palette), ("set", at.Set), ("paneType", at.PaneType), ("button", button), ("buttonFrom", from), ("legacyIndex", legacy), ("noTextCount", noText));
             if (message == 0x0201) _shots.NoteClick(n, _downX, _downY);
             PaletteClickPicture(n, hwnd, lParam, at, picture);
             _lastPaletteT = w.ElapsedMs; _lastPaletteTick = _inputTick; _lastPaletteButton = button; _lastPaletteConsumed = false;
@@ -1165,7 +1196,7 @@ public sealed class Recorder
         if (w == null) return;
         if (armed.Spot == null) { _dlg.CommitMenu(choice, w.ElapsedMs); return; }
         EmitPalette(_pal.Flush(w.ElapsedMs, drop: false), withPicture: false);
-        var n = Emit("context_menu", CurDoc(), new (string, object?)[] { ("palette", armed.Spot.Palette), ("set", armed.Spot.Set) }.Concat(choice.ToFields()).ToArray());
+        var n = Emit("context_menu", CurDoc(), new (string, object?)[] { ("palette", armed.Spot.Palette), ("set", armed.Spot.Set), ("paneType", armed.Spot.PaneType) }.Concat(choice.ToFields()).ToArray());
         _shots.Request(ShotRules.Palette(n, w.ElapsedMs));   // the window, as for a palette click, and the palette's close-up taken at the right-click
         if (armed.Picture != null)
         {

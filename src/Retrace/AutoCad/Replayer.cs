@@ -113,6 +113,8 @@ sealed class Replayer
     string? _deferred;   // answers recorded after the dialog opened: typed once the person confirmed it (see Plan.InputAroundDialog)
     // Tdoc run (RETRACETDOC): pictures for the training document; null for every other replay, and then none of the hooks does anything
     TdocCapture? _tdoc;
+    int _acting = -1;   // the step (0-based) the replay began to run last: what an error that ends the run belongs to (evidence runs)
+    EvidenceCapture? _evidence;   // evidence run (RETRACEEVIDENCE, -RETRACEEVIDENCE): a picture after every step and a filled-in workbook at the end; null for every other replay
     SuiteHook? _suite;   // suite run (RETRACESUITE): step timeout, no waiting for a person; null for every other replay
     StepClock? _clock;   // the suite's step timeout: which step runs and since when
     /// <summary>Nobody is there to help: RETRACEREPLAY, and a suite run (which fills dialogs itself but never waits for a person).</summary>
@@ -192,12 +194,12 @@ sealed class Replayer
     /// <param name="tdoc">a Tdoc run's pictures for this test (RETRACETDOC); null for a plain replay</param>
     /// <param name="finished">called once at the end of the run with its result (a Tdoc run starts the next test from it)</param>
     public static bool Start(List<Step> steps, ReplayMode mode, string sessionPath, DrawingDigest? initial, out string message, bool alert = false, bool interactive = false,
-        TdocCapture? tdoc = null, Action<ReplayResult>? finished = null, SuiteHook? suite = null, bool? single = null, bool ownStart = false, IReadOnlyList<System.Text.Json.JsonElement>? events = null)
+        TdocCapture? tdoc = null, Action<ReplayResult>? finished = null, SuiteHook? suite = null, bool? single = null, bool ownStart = false, IReadOnlyList<System.Text.Json.JsonElement>? events = null, EvidenceCapture? evidence = null)
     {
         if (Current != null) { message = "A replay is already running (close its window or press Stop)."; return false; }
         var doc = AcApp.DocumentManager.MdiActiveDocument;
         if (doc == null) { message = "No active drawing."; return false; }
-        var r = new Replayer(steps, mode, doc, sessionPath, interactive, single ?? SdiDocs.IsSingleNow()) { _alert = alert, _tdoc = tdoc, _finished = finished, _suite = suite, _ownStart = ownStart };
+        var r = new Replayer(steps, mode, doc, sessionPath, interactive, single ?? SdiDocs.IsSingleNow()) { _alert = alert, _tdoc = tdoc, _evidence = evidence, _finished = finished, _suite = suite, _ownStart = ownStart };
         Current = r;
         r.Begin(initial, events);
         message = $"Replaying {steps.Count} steps ({mode}).";
@@ -255,6 +257,7 @@ sealed class Replayer
             _tdoc.Begin(_win.SetVisible, AcApp.MainWindow.Handle);
             TdocRun.Started(_tdoc);
         }
+        _evidence?.Begin(_win.SetVisible, AcApp.MainWindow.Handle);
         _suite?.Started();
         if (_suite != null) _clock = new StepClock(_suite.StepTimeout);
         _win.Show();
@@ -549,6 +552,13 @@ sealed class Replayer
         if (!_running) return;
         _running = false;
         _stoppedForPerson = needsPerson;
+        if (_evidence != null && !completed && _steps.Count > 0)
+        {
+            // the test ended early: what AutoCAD shows now is the failure picture, of the step that was being run (a step that waited for a person or hit a security prompt names itself in its result line)
+            var named = needsPerson ? _result.Steps.LastOrDefault(x => x.Status is "needs-person" or "blocked" or "timed-out" && x.Index > 0) : null;
+            int at = named != null ? named.Index - 1 : _acting >= 0 ? _acting : Math.Min(_i, _steps.Count - 1);
+            _evidence.Failure(Math.Clamp(at, 0, _steps.Count - 1), _userStopped ? EvidenceEnd.Stopped : needsPerson ? EvidenceEnd.Person : EvidenceEnd.Error);
+        }
         CursorBack();
         _timer.Stop();
         _rz.Clear();
@@ -818,6 +828,7 @@ sealed class Replayer
         RestoreView();   // the step is done: the person's view comes back
         RecordZoomNow();   // setting recordZoom: after the command that made objects, before this step's picture and the next step
         if (_i >= _steps.Count) { if (_i > 0) NoteZoomSeed(); PostTestZoom(); }   // setting postTestZoom: before the end-of-test pictures (Tdoc's last picture is taken next)
+        if (_evidence != null && !_evidence.AfterPrevious(_i, DateTime.Now)) return;   // evidence run: the step before has run and settled: its picture
         if (_tdoc != null && !_tdoc.AfterCommand(_i, DateTime.Now)) return;   // Tdoc: a command's last answers (after its dialog) have run: their picture
         if (_i >= _steps.Count) { Finish(true, false, "finished"); return; }
 
@@ -829,6 +840,7 @@ sealed class Replayer
             return;
         }
         var s = _steps[_i];
+        _acting = _i;
         if (_chainStep != null && s.Kind != "dialog" && !ReferenceEquals(s, _chainStep)) { _chainStep = null; _chainPausedFor = _chainWaitFor = -1; _chainPausing = false; _delivery = null; _deliveryFor = -1; }   // a step that is no part of the chain (a palette step too): the chain is over
         _clock?.Begin(_i + 1, DateTime.Now);   // suite: this step runs from now (it is sent next) until the next one starts
         if (!_shown)
