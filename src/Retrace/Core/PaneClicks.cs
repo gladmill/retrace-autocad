@@ -37,6 +37,16 @@ public static class PaneClicks
         return framed ? PaneChain.InPaletteSet : PaneChain.InOddFrame;
     }
 
+    /// <summary>Is the chain AutoCAD's own application frame content (the Quick Access Toolbar, the title bar, the InfoCenter, the status bar): a WPF host window (HwndWrapper) whose parents are the application frame (AdImpApplicationFrame) and the
+    /// main frame (AfxMDIFrame...) or the status bar (msctls_statusbar32), nothing else between. A click there is no pane click and needs no "pane click not recorded" line.</summary>
+    public static bool IsApplicationFrame(IReadOnlyList<string> classes)
+    {
+        if (classes.Count < 2 || !classes[0].StartsWith("HwndWrapper", StringComparison.Ordinal)) return false;
+        for (int i = 1; i < classes.Count; i++)
+            if (!classes[i].StartsWith("AdImpApplicationFrame", StringComparison.Ordinal) && !classes[i].StartsWith("msctls_statusbar", StringComparison.Ordinal) && !classes[i].StartsWith("AfxMDIFrame", StringComparison.Ordinal)) return false;
+        return true;
+    }
+
     /// <summary>The chain as one line of a log: "A &lt; B &lt; C" (at most <paramref name="max"/> classes, then "...").</summary>
     public static string ChainText(IReadOnlyList<string> classes, int max = 10) =>
         string.Join(" < ", classes.Take(max)) + (classes.Count > max ? " < ..." : "");

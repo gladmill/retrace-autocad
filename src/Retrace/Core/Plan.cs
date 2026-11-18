@@ -11,12 +11,18 @@ public sealed record Answer(string Kind, string Status, JsonElement? Value, stri
 
 public sealed class Step
 {
-    public string Kind = "";            // ribbon | command | lisp | dialog | palette | mark | tab | open
+    public string Kind = "";            // ribbon | command | lisp | dialog | palette | statusbar | mark | tab | open
     public string Title = "";           // human readable one-liner
     public string? ItemId, Macro, Tab, Panel, Path;
     public string? Command;             // command started by this step (global name)
     public string? Lisp;
     public string? Drawing;             // open: the full path of the drawing to open; palette (native): the drawing its double-click opened
+    /// <summary>statusbar: the item that was clicked (the `statusbar_click` event). The command it starts is <see cref="Command"/> (origin "statusbar"); a dialog it opens is the dialog step after it (<see cref="HadDialog"/>).</summary>
+    public StatusBarClick? StatusBar;
+    /// <summary>dialog: the command its OK started (`cmd_start` origin `dialog`); the replay does not type it, the dialog's own OK starts it.</summary>
+    public string? StartsCommand;
+    /// <summary>A click on an add-in's status bar item made while this command or LISP ran (inline, like a palette click: it keeps the step it is in). Retrace cannot replay it in place: <see cref="Plan.Problem"/> makes the step a person's. Wording per click.</summary>
+    public List<string> InlineStatusClicks = new();
     public NativeAction? Native;        // palette: what was done in a native palette (tree item, toolbar button, drop-down); null = .NET palette
     public string? DialogTitle;         // dialog: its title; palette: the palette (its tab in the palette set; Panel = the set)
     public string? Button;              // palette: the button clicked, null when only values changed
@@ -471,10 +477,23 @@ public static class Plan
                     ribbonAt[idx] = cur;
                     break;
                 }
+                case "statusbar_click":
+                {
+                    if (StatusBarClick.From(e) is not { } sbClick) break;
+                    // a click while a command or LISP runs belongs to that step (it does not take over its answers and end): kept as an inline note
+                    if ((depth > 0 || inLisp) && cur != null) { cur.InlineStatusClicks.Add(StatusBarWording.Phrase(sbClick)); break; }
+                    cur = new Step { Kind = "statusbar", T = t, StatusBar = sbClick, Title = StatusBarWording.Title(sbClick) };
+                    steps.Add(cur);
+                    break;
+                }
                 case "cmd_start":
                 {
                     var cmd = Str(e, "command") ?? "?";
                     if (depth++ > 0) break; // nested / transparent: part of the running step
+                    // a command the OK of a dialog a status bar click opened started (origin "dialog"): the dialog step replays it, so it is no step of its own (its answers go nowhere: the OK sent them)
+                    if (Str(e, "origin") == "dialog" && steps.Count > 0 && steps[^1].Kind == "dialog") { steps[^1].StartsCommand = cmd; cur = new Step { Kind = "command", T = t, Command = cmd }; break; }
+                    // a command a click on the status bar started (origin "statusbar"): it and its answers belong to that step, as a palette button's do
+                    if (Str(e, "origin") == "statusbar" && cur is { Kind: "statusbar", Command: null } && steps.Count > 0 && ReferenceEquals(steps[^1], cur)) { cur.Command = cmd; break; }
                     // a palette button that runs a command (SendStringToExecute): the command and its answers belong to the palette step
                     if (Str(e, "origin") == "palette" && palette is { Command: null, Button: not null } && steps.Count > 0 && ReferenceEquals(steps[^1], palette))
                     {
@@ -489,7 +508,7 @@ public static class Plan
                     break;
                 }
                 case "cmd_end" or "cmd_cancel" or "cmd_fail":
-                    if (depth > 0 && --depth == 0 && cur is { Kind: "command" or "ribbon" }) cur.EndT = t;
+                    if (depth > 0 && --depth == 0 && cur is { Kind: "command" or "ribbon" or "statusbar" }) cur.EndT = t;
                     break;
                 case "lisp_end" or "lisp_cancel":
                     inLisp = false;
@@ -804,6 +823,8 @@ public static class Plan
     /// 2. A string answer with a space in a step that cannot be sent as a `(command ...)` call (see <see cref="CommandCallStart"/>).</summary>
     public static string? Problem(Step s)
     {
+        if (s.InlineStatusClicks.Count > 0)
+            return $"During this step a status bar item was clicked ({string.Join("; ", s.InlineStatusClicks)}), and Retrace cannot replay a click on the status bar in the middle of a running command. Do this step by hand.";
         var eff = SelectionReplay.Effective(s.Answers);
         if (IsSetvar(s) && eff.Count > 0 && SetvarName(s, eff) == null && !SetvarNamePrompt.IsMatch(eff[0].Message ?? "") && eff.Count < 2
             && !(s.Kind == "ribbon" && StartText(s) is { } st && StartWords(st).Count > 1))   // a macro `_setvar;ctab;` types the name

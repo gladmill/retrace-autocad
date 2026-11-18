@@ -349,9 +349,11 @@ static class RealMouse
     /// <summary>One click of the queue. <c>Late</c>: the target is not known until the click before it was made (a menu item of a drop-down that the click before opens); it is asked when the click is due and again every 150 ms until it answers or 40 tries have passed.</summary>
     sealed class Item
     {
-        public Item(string what, IntPtr control, int x, int y, LateTarget? late = null, Func<string?>? check = null, Action? onFail = null, bool person = false) { What = what; Control = control; X = x; Y = y; Late = late; Check = check; OnFail = onFail; Person = person; }
+        public Item(string what, IntPtr control, int x, int y, LateTarget? late = null, Func<string?>? check = null, Action? onFail = null, bool person = false, bool right = false) { Right = right; What = what; Control = control; X = x; Y = y; Late = late; Check = check; OnFail = onFail; Person = person; }
         /// <summary>A failure of this click ends the test as needs-a-person (a toolbar button the replay may not click), as a button that is not found does.</summary>
         public readonly bool Person;
+        /// <summary>The logical right button (a status bar item right-clicked); every other click is the left one.</summary>
+        public readonly bool Right;
         public string What; public IntPtr Control; public int X, Y; public readonly LateTarget? Late; public int Tries;
         /// <summary>Asked just before the click: null = go on, else why this click must not be made (the point is not on the recorded item).</summary>
         public readonly Func<string?>? Check;
@@ -399,9 +401,9 @@ static class RealMouse
     }
 
     /// <summary>Queues a click on <paramref name="control"/> at screen point (x, y); it is sent after the ones queued before it, from the dispatcher (a tree waits for the mouse inside a button-down, and a handler may open a sub form).</summary>
-    public static void Enqueue(string what, IntPtr control, int x, int y, Func<string?>? check = null, Action? onFail = null, bool person = false)
+    public static void Enqueue(string what, IntPtr control, int x, int y, Func<string?>? check = null, Action? onFail = null, bool person = false, bool right = false)
     {
-        Queued.Enqueue(new Item(what, control, x, y, null, check, onFail, person));
+        Queued.Enqueue(new Item(what, control, x, y, null, check, onFail, person, right));
         Pump();
     }
 
@@ -449,7 +451,7 @@ static class RealMouse
         try
         {
             if ((i.Check ?? lateCheck)?.Invoke() is { } bad) { Fail($"did not click {i.What}: {bad}", i); return; }
-            if (Send(i.Control, i.X, i.Y, activate: i.Late == null && i.Check != null) is { } why) { Fail($"could not click {i.What}: {why}", i); return; }
+            if (Send(i.Control, i.X, i.Y, activate: i.Late == null && i.Check != null, right: i.Right) is { } why) { Fail($"could not click {i.What}: {why}", i); return; }
             _lastAt = Environment.TickCount64; _lastX = i.X; _lastY = i.Y; _lastControl = i.Control;
         }
         catch (Exception ex)
@@ -471,7 +473,7 @@ static class RealMouse
     }
 
     /// <summary>The click: the point is looked at again (a window may have come over it), the cursor moves there (through the replay, which puts it back; and the click arrow, when the setting is on), the button goes down and up. Null when sent, else why not.</summary>
-    static string? Send(IntPtr control, int x, int y, bool activate = false)
+    static string? Send(IntPtr control, int x, int y, bool activate = false, bool right = false)
     {
         if (Prepare(control, x, y) is { } why) return why;
         // a WinForms ToolStrip in a window that is not the active one takes the first click only to activate it (it does nothing else): the window comes to the front first (a Tdoc picture brings AutoCAD's main window up
@@ -481,8 +483,9 @@ static class RealMouse
         if (CursorHook != null) CursorHook(x, y); else SetCursorPos(x, y);
         // SendInput says which physical button: with the buttons swapped (SM_SWAPBUTTON) the physical right one is the primary button
         bool swapped = GetSystemMetrics(23 /* SM_SWAPBUTTON */) != 0;
-        var down = new INPUT { type = 0, mi = new MOUSEINPUT { dwFlags = swapped ? 0x0008u : 0x0002u } };
-        var up = new INPUT { type = 0, mi = new MOUSEINPUT { dwFlags = swapped ? 0x0010u : 0x0004u } };
+        bool physicalRight = swapped != right;   // the logical right button is the physical left one when the buttons are swapped
+        var down = new INPUT { type = 0, mi = new MOUSEINPUT { dwFlags = physicalRight ? 0x0008u : 0x0002u } };
+        var up = new INPUT { type = 0, mi = new MOUSEINPUT { dwFlags = physicalRight ? 0x0010u : 0x0004u } };
         return SendInput(2, new[] { down, up }, Marshal.SizeOf<INPUT>()) == 2 ? null : "the mouse click could not be sent";
     }
 }

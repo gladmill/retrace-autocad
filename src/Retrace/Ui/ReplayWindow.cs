@@ -66,6 +66,7 @@ sealed class ReplayWindow : Window
             // the side of the screen the driven UI is not on
             int x = (left + right) / 2 - mi.rcWork.Left < work / 2 ? mi.rcWork.Right - w - 24 : mi.rcWork.Left + 24;
             SetWindowPos(h, IntPtr.Zero, x, me.Top, 0, 0, 0x0001 | 0x0004 | 0x0010);   // SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+            Log.Info($"replay window at {me.Left},{me.Top},{me.Right},{me.Bottom} covered {left},{top},{right},{bottom}: moved to x {x}");
         }
         catch (Exception ex) { Log.Error("replay window avoid", ex); }
     }

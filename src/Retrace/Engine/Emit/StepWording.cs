@@ -53,6 +53,10 @@ public static class StepWording
             case "dialog":
                 line = DialogLine(st, script: script);
                 break;
+            case "statusbar" when st.StatusBar != null:
+                line = Retrace.Core.StatusBarWording.Phrase(st.StatusBar, x => $"**{Md.Cell(x)}**");
+                if (script) where = "Status bar";
+                break;
             case "palette":
                 if (script) (line, where, tail) = PaletteScript(st);
                 else line = PaletteLine(st);
@@ -70,20 +74,23 @@ public static class StepWording
         if (where != null) sb.Append($"\n   *{Md.Inline(where)}*\n\n");
         if (st.Kind == "mark" && !string.IsNullOrWhiteSpace(st.Description)) sb.Append("   - ").Append(Md.Cell(st.Description)).Append('\n');
         var alt = Alt(line);
-        if (st.Kind == "dialog") DialogBody(sb, st, ctx, "   ");
+        if (st.Kind == "dialog") { DialogBody(sb, st, ctx, "   "); if (st.StartsCommand != null) sb.Append("   - The command ").Append(Md.Code(st.StartsCommand.ToUpperInvariant())).Append(" starts by itself when the dialog closes (do not type it)\n"); }
         else if (st.Kind == "palette")
         {
             foreach (var l in ChangeLines(st, script)) sb.Append("   - ").Append(l).Append('\n');
             if (tail != null) sb.Append("   - ").Append(tail).Append('\n');
             Shots(sb, st.Shots, alt, ctx, "   ", "click");
         }
-        else Shots(sb, st.Shots, alt, ctx, "   ", st.Kind switch { "ribbon" => "click", "mark" => "check", _ => "command" });
-        if (st.Kind is "ribbon" or "command" or "lisp" || (st.Kind == "palette" && st.Command != null))
+        else Shots(sb, st.Shots, alt, ctx, "   ", st.Kind switch { "ribbon" or "statusbar" => "click", "mark" => "check", _ => "command" });
+        if (st.Kind is "ribbon" or "command" or "lisp" || (st.Kind is "palette" or "statusbar" && st.Command != null))
         {
             int d = 0;
             bool afterSelectionInput = false;
+            int ic = 0;
+            void InlineUpTo(long t) { while (ic < st.InlineStatusClicks.Count && st.InlineStatusClicks[ic].T <= t) sb.Append("   - ").Append(StatusInline(st.InlineStatusClicks[ic++].Text)).Append('\n'); }
             foreach (var a in st.Answers)
             {
+                InlineUpTo(a.T);
                 while (d < st.InnerDialogs.Count && st.InnerDialogs[d].T <= a.T) InnerDialog(sb, st.InnerDialogs[d++], ctx);
                 // the selection result after the corners / points that made it only echoes them (the same rule as Core/SelectionReplay.Effective)
                 if (a.Kind == "selection" && a.Status == "OK" && afterSelectionInput) { afterSelectionInput = false; continue; }
@@ -94,12 +101,16 @@ public static class StepWording
                 Shots(sb, a.Shots, Alt(text), ctx, "     ", a.By switch { "mouse" => "answer:pick", "keys" => "answer:enter", _ => "answer:answer" });
             }
             while (d < st.InnerDialogs.Count) InnerDialog(sb, st.InnerDialogs[d++], ctx);
+            InlineUpTo(long.MaxValue);
             if (st.Outcome == "cancelled") sb.Append("   - The command is cancelled.\n");
             else if (st.Outcome == "failed") sb.Append("   - The command fails.\n");
             Shots(sb, st.EndShots, alt, ctx, "   ", "end");
         }
         return sb.ToString().TrimEnd('\n') + "\n";
     }
+
+    /// <summary>A status bar click made inside a running command ("Click Sample TB: edit on the status bar" as it is in the plan), as a sub-item: lower-case first letter, with bold markup for the label.</summary>
+    static string StatusInline(string phrase) => phrase + " (while the command is running; a replay does not click it: do it by hand)";
 
     /// <summary>"In the **Box** palette (Samples), make these changes, then click **Draw box**:"; the changes follow as sub-items.</summary>
     static string PaletteLine(RecordingStep st)
@@ -450,15 +461,21 @@ public static class StepWording
             if (ctx.ShotHref(shot) is { } href)
             {
                 sb.Append($"\n{indent}![{alt}]({href})\n\n");
-                if (shot.Opened is { } palette) sb.Append(indent).Append(OpensCaption(palette)).Append("\n\n");   // an end picture with a palette that opened in it
+                if (shot.Opened is { } palette) sb.Append(indent).Append(OpensCaption(palette, shot.OpenedState)).Append("\n\n");   // an end picture with a palette that opened in it
             }
     }
 
     /// <summary>The caption under the end picture of a command that opened a palette: "The **Pick** palette opens."</summary>
-    public static string OpensCaption(string palette) => $"The **{Md.Cell(palette)}** palette opens.";
+    public static string OpensCaption(string palette, string? state = null) => state switch
+    {
+        "rolled" => $"The **{Md.Cell(palette)}** palette opens (rolled up: hover it to expand).",
+        "anchored" => $"The **{Md.Cell(palette)}** palette opens (anchored at the edge of the window: hover its tab to expand).",
+        _ => $"The **{Md.Cell(palette)}** palette opens.",
+    };
 
     /// <summary>True for a line <see cref="OpensCaption"/> wrote (plain text, markup removed); the Excel sheet puts it in the row's Expected.</summary>
-    public static bool IsOpensCaption(string text) => text.StartsWith("The ", StringComparison.Ordinal) && text.EndsWith(" palette opens.", StringComparison.Ordinal);
+    public static bool IsOpensCaption(string text) => text.StartsWith("The ", StringComparison.Ordinal)
+        && (text.EndsWith(" palette opens.", StringComparison.Ordinal) || text.EndsWith(" palette opens (rolled up: hover it to expand).", StringComparison.Ordinal) || text.EndsWith(" palette opens (anchored at the edge of the window: hover its tab to expand).", StringComparison.Ordinal));
 
     /// <summary>Step text as image alt text: no emphasis, code ticks or brackets; a link keeps only its text.</summary>
     public static string Alt(string text) =>

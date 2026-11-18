@@ -24,13 +24,19 @@ namespace Retrace.Samples
 
         [CommandMethod("DRAWPANES")] public void Panes() { Show(false); }
         [CommandMethod("DRAWPANEROLL")] public void PanesRoll() { Show(true); }
+        // the same set docked at the right edge with Auto-hide on (an anchored strip when rolled up); the set is made docked once (a set made earlier by DRAWPANES / DRAWPANEROLL keeps its place)
+        [CommandMethod("DRAWPANEROLLDOCK")] public void PanesRollDock() { Show(true, dockRight: true); }
+        // closes the set without disposing it (a later DRAWPANES... shows it again): for opening it again from a ribbon or Quick Access Toolbar button
+        // moves a floating set away from the ribbon buttons (to 700,300), so a button of the Panes panel is not under it
+        [CommandMethod("DRAWPANEAWAY")] public void PanesAway() { if (set != null) set.Location = new System.Drawing.Point(700, 300); }
+        [CommandMethod("DRAWPANECLOSE")] public void PanesClose() { if (set != null) set.Visible = false; }
 
         // the tab strip of a small floating set may not show: these bring a page to the front (the way a person clicks its tab)
         [CommandMethod("DRAWPANEHOST")] public void TabHost() { Show(false); set?.Activate(1); }
         [CommandMethod("DRAWPANEWPF")] public void TabWpf() { Show(false); set?.Activate(2); }
         [CommandMethod("DRAWPANEGRID")] public void TabGrid() { Show(false); set?.Activate(3); }
 
-        private static void Show(bool roll)
+        private static void Show(bool roll, bool dockRight = false)
         {
             if (set == null)
             {
@@ -57,6 +63,7 @@ namespace Retrace.Samples
             }
             set.Visible = true;
             if (roll) set.AutoRollUp = true;   // only valid once the set shows
+            if (dockRight && set.Dock == DockSides.None) set.Dock = DockSides.Right;   // after the roll-up: docking a fresh set first made AutoRollUp throw ("operation not valid")
         }
 
         [CommandMethod("DRAWPANEFORM")]

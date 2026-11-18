@@ -7,7 +7,7 @@ namespace Retrace.Engine.Recordings;
 
 /// <summary>A screenshot the recorder took for an event (a `shot` event): File as recorded (relative to the session file, '/'),
 /// Abs the path on this machine. Opened: the name of the palette the picture shows opening (the `opened.palette` of the `shot` event; an end picture only), null for every other picture and every old recording.</summary>
-public sealed record RecordingShot(string File, string What, string Abs, string? Opened = null);
+public sealed record RecordingShot(string File, string What, string Abs, string? Opened = null, string? OpenedState = null);
 
 public sealed class RecordingEvent
 {
@@ -21,6 +21,10 @@ public sealed class RecordingEvent
     /// <summary>The `opened.palette` of a `shot` event: the palette its picture shows opening; null when the field is missing or has no name (old recordings, other events).</summary>
     public string? OpenedPalette =>
         Raw.ValueKind == JsonValueKind.Object && Raw.TryGetProperty("opened", out var o) && o.ValueKind == JsonValueKind.Object && o.TryGetProperty("palette", out var p) && p.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(p.GetString()) ? p.GetString()!.Trim() : null;
+
+    /// <summary>The `opened.state` of a `shot` event: "rolled" or "anchored" when the palette it shows opening is in Auto-hide state, else null.</summary>
+    public string? OpenedState =>
+        Raw.ValueKind == JsonValueKind.Object && Raw.TryGetProperty("opened", out var o) && o.ValueKind == JsonValueKind.Object && o.TryGetProperty("state", out var p) && p.ValueKind == JsonValueKind.String && p.GetString() is "rolled" or "anchored" ? p.GetString() : null;
 
     public string? Str(string key) => Raw.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 }
@@ -197,13 +201,19 @@ public sealed class RecordingDialogPick
 /// <summary>One thing the tester did: a ribbon click, a typed command, a dialog, a checkpoint note...</summary>
 public sealed class RecordingStep
 {
-    /// <summary>ribbon | command | lisp | dialog | palette | mark | doc. A palette step: <see cref="DialogTitle"/> is the palette (its tab in the
+    /// <summary>ribbon | command | lisp | dialog | palette | statusbar | mark | doc. A palette step: <see cref="DialogTitle"/> is the palette (its tab in the
     /// palette set), <see cref="Panel"/> the palette set, <see cref="Text"/> the button clicked (null: values only), <see cref="Values"/> what changed.</summary>
     public string Kind { get; init; } = "";
     public long T { get; init; }
     // ribbon
     public string? ItemId { get; set; }
     public string? Text { get; set; }
+    /// <summary>statusbar: the item that was clicked (event `statusbar_click`); <see cref="Text"/> is its label. The command it started is <see cref="Command"/>; a dialog it opened is the dialog step after it.</summary>
+    public Retrace.Core.StatusBarClick? StatusBar { get; set; }
+    /// <summary>dialog: the command its OK started (origin `dialog`), shown under the dialog's step.</summary>
+    public string? StartsCommand { get; set; }
+    /// <summary>A click on an add-in's status bar item made while this command or LISP ran (time, wording): shown inline among its answers.</summary>
+    public List<(long T, string Text)> InlineStatusClicks { get; } = new();
     /// <summary>palette: "click" or "dblclick" (a double-click on a tree item: <see cref="ClickPath"/> in <see cref="ClickTreeLabel"/>; <see cref="Text"/> is the item's text).</summary>
     public string ClickKind { get; set; } = Retrace.Core.DialogClickKinds.Click;
     public string ClickPath { get; set; } = "";
@@ -440,6 +450,14 @@ public static class RecordingReader
                     ribbonAt[idx] = cur;
                     s.Steps.Add(cur);
                     break;
+                case "statusbar_click":
+                {
+                    if (Retrace.Core.StatusBarClick.From(e.Raw) is not { } sbc) break;
+                    if ((depth > 0 || inLisp) && cur != null) { cur.InlineStatusClicks.Add((e.T, Retrace.Core.StatusBarWording.Phrase(sbc, x => $"**{Retrace.Engine.Util.Md.Cell(x)}**"))); break; }   // inside a running command: part of that step
+                    cur = new RecordingStep { Kind = "statusbar", T = e.T, N = e.N, StatusBar = sbc, Text = sbc.Label };
+                    s.Steps.Add(cur);
+                    break;
+                }
                 case "cmd_start":
                 {
                     var cmd = e.Str("command") ?? "?";
@@ -458,6 +476,17 @@ public static class RecordingReader
                         palette.Command = cmd;
                         palette.Commands.Add(cmd);
                         cur = palette;
+                    }
+                    else if (origin == "dialog" && s.Steps.Count > 0 && s.Steps[^1] is { Kind: "dialog" } dlgStep)
+                    {
+                        dlgStep.StartsCommand = cmd;   // started by the OK of a dialog a status bar click opened: no step of its own
+                        cur = new RecordingStep { Kind = "command", T = e.T, Command = cmd };
+                    }
+                    else if (origin == "statusbar" && s.Steps.Count > 0 && s.Steps[^1] is { Kind: "statusbar", Command: null } sbStep)
+                    {
+                        sbStep.Command = cmd;
+                        sbStep.Commands.Add(cmd);
+                        cur = sbStep;
                     }
                     else if (origin == "ribbon" && lastRibbon != null)
                     {
@@ -672,6 +701,7 @@ public static class RecordingReader
             {
                 "dialog_click" or "dialog_pick" => clickShots,
                 "ribbon" when IsOwnRibbon(e.Str("id"), e.Str("tabId")) => null,   // its picture is not a step's: it ends up in unused
+                "statusbar_click" => cur?.Shots,
                 "ribbon" or "cmd_start" or "cmd_unknown" or "lisp_start" => cur?.Shots,
                 "cmd_end" or "cmd_cancel" or "cmd_fail" or "lisp_end" or "lisp_cancel" => cur?.EndShots,
                 "prompt" => added?.Shots,
@@ -690,7 +720,7 @@ public static class RecordingReader
             if (!e.Raw.TryGetProperty("for", out var fv) || fv.ValueKind != JsonValueKind.Number || !fv.TryGetInt64(out var target)) continue;
             if (!targets.TryGetValue(target, out var list)) continue;
             var norm = file.Replace('\\', '/');
-            list.Add(new RecordingShot(norm, e.Str("what") ?? "window", Path.Combine(dir, norm.Replace('/', Path.DirectorySeparatorChar)), e.OpenedPalette));
+            list.Add(new RecordingShot(norm, e.Str("what") ?? "window", Path.Combine(dir, norm.Replace('/', Path.DirectorySeparatorChar)), e.OpenedPalette, e.OpenedState));
         }
         // a palette click's pictures are listed click first, then the palette close-up, whichever was written first (a message box the click opens delays the window picture until it is closed)
         foreach (var st in s.Steps.Where(x => x.Kind == "palette" && x.Shots.Count > 1))

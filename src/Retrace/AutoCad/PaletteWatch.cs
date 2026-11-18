@@ -201,7 +201,8 @@ sealed class PaletteWatch
             var classes = new List<string>(12);
             for (var h = hwnd; h != IntPtr.Zero && classes.Count < 12; h = GetParent(h)) classes.Add(DialogReader.ClassOf(h));
             var kind = PaneClicks.Classify(classes);
-            if (kind == PaneChain.Native || kind == PaneChain.InPaletteSet) return;   // a framed page that Locate refused is the ribbon or the guide: no pane
+            if (kind == PaneChain.Native || kind == PaneChain.InPaletteSet) return;
+            if (PaneClicks.IsApplicationFrame(classes)) return;   // AutoCAD's own WPF in the application frame (Quick Access Toolbar, title bar, InfoCenter, status bar): no pane, no line (the status bar has its own: `statusbar_click`)
             string why;
             if (IsModal()) why = "a modal dialog is open (its own watch follows it)";
             else if (kind == PaneChain.ManagedTopLevel)

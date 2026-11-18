@@ -48,6 +48,10 @@ public static class Checkpoints
                     parts.Add(Token(last.Container));
                     parts.Add("button_" + Token(last.Control));
                     break;
+                case "statusbar":
+                    parts.Add("statusbar");
+                    parts.Add("button_" + Token(last.Control));
+                    break;
                 case "palette":
                     parts.Add(Token(last.Container));
                     parts.Add(string.IsNullOrEmpty(last.Control) ? "palette" : "button_" + Token(last.Control));
@@ -108,6 +112,7 @@ public static class Checkpoints
         {
             "dialog" => (Control is { Length: > 0 } c ? (c == "ok" ? "OK" : c == "cancel" ? "Cancel" : c) + " in " : "the dialog ") + (Container ?? "(untitled dialog)"),
             "ribbon" => string.Join(" › ", new[] { Container, Control }.Where(x => !string.IsNullOrWhiteSpace(x))) + " on the ribbon",
+            "statusbar" => (Control is { Length: > 0 } sb ? sb : "an item") + " on the status bar",
             "palette" => (Control is { Length: > 0 } b ? b + " in the " : "the ") + (Container ?? "(untitled)") + " palette",
             "control" => Description ?? (Control is { Length: > 0 } k ? $"{k} in {Container}" : Container ?? "?"),
             "open" => $"{Control ?? "a drawing"} opened",
@@ -125,6 +130,7 @@ public static class Checkpoints
             "ribbon" => new CheckpointContext("ribbon", FirstText(st.Panel, st.Tab), FirstText(st.Text, st.ItemId)),
             "command" or "lisp" => new CheckpointContext("command", null, st.Kind == "lisp" ? "lisp" : st.Command),
             // a native palette: where and what (checkpoint3_projects_demo01_dwg); after a double-click that opened a drawing, that drawing
+            "statusbar" => new CheckpointContext("statusbar", null, st.Text),
             "palette" when st.OpensDrawing != null => new CheckpointContext("open", null, Path.GetFileName(st.OpensDrawing.Replace('\\', '/'))),
             "palette" when st.Native != null => new CheckpointContext("control", st.DialogTitle, st.Native.Target, st.Native.Describe() + $" in the {st.DialogTitle} palette"),
             "palette" => new CheckpointContext("palette", st.DialogTitle, st.Text),

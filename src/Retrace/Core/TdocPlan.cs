@@ -6,7 +6,7 @@ namespace Retrace.Core;
 // the sentences for the reader and the legend lines for the numbered boxes on its pictures.
 
 /// <summary>Where a legend line's box is looked for on the screen.</summary>
-public enum CalloutRole { RibbonItem, CommandLine, Control, Close }
+public enum CalloutRole { RibbonItem, CommandLine, Control, Close, StatusBarItem }
 
 /// <summary>One box a step would like on its picture.</summary>
 public sealed record CalloutPlan(CalloutRole Role, string Text);
@@ -20,7 +20,7 @@ public sealed record NumberedCallout(int Number, string Text, int Index);
 public static class TdocPlan
 {
     /// <summary>The kind written to tdoc.json: ribbon | command | lisp | dialog | palette | mark | open | tab | other.</summary>
-    public static string KindOf(Step s) => s.Kind is "ribbon" or "command" or "lisp" or "dialog" or "palette" or "mark" or "open" or "tab" ? s.Kind : "other";
+    public static string KindOf(Step s) => s.Kind is "ribbon" or "command" or "lisp" or "dialog" or "palette" or "statusbar" or "mark" or "open" or "tab" ? s.Kind : "other";
 
     /// <summary>The heading of a step: the recorded title, except for a dialog ("Dialog opens: ... fill it in by hand" is a note for the tester)
     /// and a checkpoint.</summary>
@@ -54,6 +54,10 @@ public static class TdocPlan
                 list.AddRange(AnswerLines(s.Answers, s, all));
                 break;
             }
+            case "statusbar" when s.StatusBar != null:
+                list.Add(StatusBarWording.Phrase(s.StatusBar) + ".");
+                list.AddRange(AnswerLines(s.Answers, s, all));
+                break;
             case "command":
                 list.Add($"Type {s.Command ?? "the command"} and press Enter.");
                 list.AddRange(AnswerLines(s.Answers, s, all));
@@ -91,6 +95,8 @@ public static class TdocPlan
         {
             case "ribbon":
                 return string.Join(" › ", new[] { "Ribbon", Named(s.Tab, "tab"), Named(s.Panel, "panel") }.Where(x => x != null));
+            case "statusbar":
+                return "Status bar";
             case "command" or "lisp":
                 return "Command line";
             case "palette":
@@ -296,7 +302,8 @@ public static class TdocPlan
     {
         var plans = new List<CalloutPlan>();
         if (s.Kind == "ribbon" && !continuation && RibbonLabel(s) is { } label) plans.Add(new CalloutPlan(CalloutRole.RibbonItem, "Click " + label));
-        if (s.Kind is "ribbon" or "command" or "lisp" && CommandLineText(s, continuation) is { } cl) plans.Add(new CalloutPlan(CalloutRole.CommandLine, cl));
+        if (s.Kind == "statusbar" && !continuation && s.StatusBar != null) plans.Add(new CalloutPlan(CalloutRole.StatusBarItem, StatusBarWording.Phrase(s.StatusBar)));
+        if (s.Kind is "ribbon" or "command" or "lisp" or "statusbar" && CommandLineText(s, continuation) is { } cl) plans.Add(new CalloutPlan(CalloutRole.CommandLine, cl));
         return plans;
     }
 

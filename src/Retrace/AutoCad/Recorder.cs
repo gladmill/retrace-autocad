@@ -94,6 +94,11 @@ public sealed class Recorder
     bool _downInWpf;          // the last left button-down was in a WPF window (the ribbon, a drop-down menu), not in the drawing or a dialog: a ribbon click counts it as its press only then
 
     bool _lastPaletteConsumed = true;
+    // the same for a click on a status bar item (event `statusbar_click`): the command it starts is claimed like a palette button's (origin "statusbar")
+    long _lastStatusT = -100000, _lastStatusTick;
+    string? _lastStatusLabel;
+    bool _lastStatusConsumed = true;
+    readonly Core.PaneClicks.LogGate _statusGate = new();   // the `status bar click not recorded` lines: one per reason, rate limited
 
     /// <summary>The checkpoint shortcut was pressed during a command: the checkpoint is taken when that command ends (see Commands.MarkFromKey).</summary>
     internal bool MarkPending { get; set; }
@@ -262,7 +267,7 @@ public sealed class Recorder
             case "lisp_end" or "lisp_cancel": if (_ctxLispDepth > 0) _ctxLispDepth--; break;
         }
         // the person did something else: a window that closes by itself from now on is not the native action's
-        if (type is "ribbon" or "lisp_start" or "palette_values" or "palette_click" or "context_menu" or "doc_created" || (type == "cmd_start" && F("origin") != "palette")) _nativeCtx = null;
+        if (type is "ribbon" or "lisp_start" or "palette_values" or "palette_click" or "context_menu" or "doc_created" || (type == "cmd_start" && F("origin") != "palette") || type == "statusbar_click") _nativeCtx = null;
         switch (type)
         {
             // opened while no command or LISP ran: an "Open drawing" step (the readers' rule); inside OPEN it is that command's
@@ -270,7 +275,8 @@ public sealed class Recorder
                 _lastCtx = new Checkpoints.CheckpointContext("open", null, Path.GetFileName(opened));
                 break;
             case "ribbon": _lastCtx = new Checkpoints.CheckpointContext("ribbon", F("panel") ?? F("tab"), F("text") ?? F("id")); break;
-            case "cmd_start" when F("origin") is not ("ribbon" or "palette"): _lastCtx = new Checkpoints.CheckpointContext("command", null, F("command")); break;
+            case "statusbar_click": _lastCtx = new Checkpoints.CheckpointContext("statusbar", null, Core.StatusBarWording.Label(F("text"), F("tooltip"), F("name"))); break;
+            case "cmd_start" when F("origin") is not ("ribbon" or "palette" or "statusbar" or "dialog"): _lastCtx = new Checkpoints.CheckpointContext("command", null, F("command")); break;
             case "lisp_start": _lastCtx = new Checkpoints.CheckpointContext("command", null, "lisp"); break;
             case "modal_title": _lastCtx = new Checkpoints.CheckpointContext("dialog", F("title"), null); break;
             // a window a native palette action opened that closed by itself is no step for the readers (NativeAction.ClosedByItself):
@@ -347,11 +353,12 @@ public sealed class Recorder
         ButtonNaming.NewSession();
         _shots.Hold = YoungModal;
         _shots.OpenedProbe = OpenedPaletteFor;
-        _open.Clear(); _endBefore.Clear(); _nestedEnds.Clear();
+        _shots.OpenedRecheck = (name, state) => { try { return !PaletteSnapshot.Read().Any(p => !p.IsBar && p.Shown && (p.Set.Length > 0 ? p.Set : p.Name) == name); } catch (Exception) { return true; } };
+        _open.Clear(); _endBefore.Clear(); _nestedEnds.Clear(); _statusGate.Reset(); _lastStatusConsumed = true; _statusProbed = false; _lastStatusModel = null;
         _shots.Begin(w.Path, enabled, MainWindowHandle(), () => _modalOpen > 0, (n, file, what) =>
         {
             var ww = _w;   // pool thread: only the writer is touched
-            if (ww != null) { try { ww.Event("shot", null, ("for", n), ("file", file), ("what", what), ("opened", _shots.OpenedName(n) is { } pal ? new Dictionary<string, object?> { ["palette"] = pal } : null)); } catch (Exception ex) { Log.Error("Emit shot", ex); } }
+            if (ww != null) { try { ww.Event("shot", null, ("for", n), ("file", file), ("what", what), ("opened", _shots.OpenedName(n) is { } pal ? _shots.OpenedState(n) is { Length: > 0 } openState ? new Dictionary<string, object?> { ["palette"] = pal, ["state"] = openState } : new Dictionary<string, object?> { ["palette"] = pal } : null)); } catch (Exception ex) { Log.Error("Emit shot", ex); } }
         });
     }
 
@@ -727,7 +734,7 @@ public sealed class Recorder
         _view = ViewControl.Read(_cmdDocument); _viewKey = _view == null ? null : ViewControl.ViewKey();
         var (origin, via) = Attribute(name);
         // the top-level command a ribbon (or Quick Access Toolbar) click started keeps the palettes that click saw; a nested command changes nothing
-        _open.CommandStart(name, origin == "ribbon", _ctxCmdDepth, _ctxLispDepth, _w?.ElapsedMs ?? 0);
+        _open.CommandStart(name, origin is "ribbon" or "statusbar" or "dialog", _ctxCmdDepth, _ctxLispDepth, _w?.ElapsedMs ?? 0);
         Emit("cmd_start", DocName(s as Document), ("command", name), ("origin", origin), ("via", via), ("script", ScriptActive()));
     });
 
@@ -744,7 +751,9 @@ public sealed class Recorder
         if (!_endBefore.Remove(n, out var group) || group.Claimed) return null;
         var before = group.Before;
         var main = ShotService.WindowRect(MainWindowHandle());
-        var d = Core.PaletteOpening.Decide(before, PaletteSnapshot.Read(), main);
+        var after = PaletteSnapshot.Read();
+        var d = Core.PaletteOpening.Decide(before, after, main);
+        if (d.Opened == null) foreach (var p in after.Where(x => !x.IsBar && !x.Shown)) Log.Info($"end picture {n}: not shown: {p.Name} ({p.Set}): {p.Diag}");
         Log.Info($"end picture {n}: {(d.Opened == null ? "no palette box or caption, " : _shots.Arrows ? "palette opened, box requested (a mark left out is logged as shot N), " : "caption only (marks are off: no box), ")}{d.Reason}");
         if (d.Opened != null) group.Claimed = true;
         return d.Opened;
@@ -754,7 +763,9 @@ public sealed class Recorder
     /// taken, like a command's); otherwise one retrace.log line says why. A palette that shows only after the LISP has ended is not seen.</summary>
     void LispOpened(int n, List<Core.PaletteState> before)
     {
-        var d = Core.PaletteOpening.Decide(before, PaletteSnapshot.Read(), ShotService.WindowRect(MainWindowHandle()));
+        var afterL = PaletteSnapshot.Read();
+        var d = Core.PaletteOpening.Decide(before, afterL, ShotService.WindowRect(MainWindowHandle()));
+        if (d.Opened == null) foreach (var p in afterL.Where(x => !x.IsBar && !x.Shown)) Log.Info($"lisp end {n}: not shown: {p.Name} ({p.Set}): {p.Diag}");
         if (d.Opened == null) { Log.Info($"lisp end {n}: no palette box or caption, no end picture taken for the LISP; {d.Reason}"); return; }
         _endBefore[n] = new OpenGroup { Before = before };
         _shots.Request(ShotRules.LispEnd(n, _w?.ElapsedMs ?? 0));
@@ -797,6 +808,11 @@ public sealed class Recorder
             _lastRibbonConsumed = true;
             return ("ribbon", _lastRibbonId);
         }
+        if (Core.StatusBarMatch.Claim(_lastStatusConsumed, now, _lastStatusT, _inputTick, _lastStatusTick, _modalSinceStatus) is { } statusOrigin)
+        {
+            _lastStatusConsumed = true;
+            return (statusOrigin, _lastStatusLabel);
+        }
         if (Core.PaletteClaim.Claims(_lastPaletteConsumed, now, _lastPaletteT, _inputTick, _lastPaletteTick))
         {
             _lastPaletteConsumed = true;
@@ -824,6 +840,7 @@ public sealed class Recorder
 
     void OnEnterModal(object? s, EventArgs e) => Log.Safe("EnterModal", () =>
     {
+        _modalSinceStatus = true;   // a status bar click that opened this dialog does not claim a command the dialog starts
         _shots.FlushDeferred();   // a click that opened this dialog: its picture is taken now, before the window shows (it would show the dialog later)
         _modalOpen++;
         if (_inOwnCmd || _ownModal > 0) { _ownModal++; return; }
@@ -1064,6 +1081,7 @@ public sealed class Recorder
         if (m == 0x0201) { _downX = e.Message.pt_x; _downY = e.Message.pt_y; _downMsgTime = (uint)e.Message.time; _downInWpf = System.Windows.Interop.HwndSource.FromHwnd(e.Message.hwnd) != null; }   // where the person clicked, for the arrow of the step's picture
         if (m == 0x0202 && _w != null) HoldAppMenuShot(e.Message.hwnd, e.Message.lParam);
         else if (m == 0x0201 && _upShotApp && unchecked((uint)Environment.TickCount - _upShotAt) > 1500) { _upShot = null; _upShotApp = false; }   // nothing claimed the menu click: the held picture is let go
+        if (m is 0x0201 or 0x0204 && _w != null && !_inOwnCmd && _modalOpen == 0) StatusBarInput(e.Message.hwnd, e.Message.pt_x, e.Message.pt_y, m == 0x0201 ? Core.StatusBarClick.Left : Core.StatusBarClick.Right);
         if (m is 0x0100 or 0x0201 or 0x0202 or 0x0203 && _pal.Enabled) PaletteInput(e.Message.hwnd, (uint)m, e.Message.wParam, e.Message.lParam);
         if (m == 0x0100 && _w != null && !_inOwnCmd) { if (Native.TypedChar((uint)(long)e.Message.wParam) is { } typedChar) _sel.Key(typedChar); }   // WM_KEYDOWN (no WM_CHAR reaches this handler)
         if (m is 0x0201 or 0x0202 && _w != null && !_inOwnCmd && Native.IsInside(DrawingWindow(), e.Message.hwnd))
@@ -1097,6 +1115,64 @@ public sealed class Recorder
             _upShot = _shots.Enabled ? ShotService.CaptureWindow(MainWindowHandle())?.Pic : null;
         }
         catch (Exception ex) { Log.Error("app menu shot", ex); }
+    }
+
+    /// <summary>A left or right button-down on the status bar (before the item handles it, so the picture still shows the bar as the person saw it and the step comes before the dialog or command the click opens): the item under the
+    /// mouse is read from the bar's WPF tree (<see cref="StatusBarWatch"/>) and written as a `statusbar_click` event with its picture; a click that is not recorded is one rate-limited line in retrace.log. Items of AcadStatus and Retrace are left out.</summary>
+    void StatusBarInput(IntPtr hwnd, int x, int y, string button)
+    {
+        var w = _w;
+        if (w == null) return;
+        try
+        {
+            bool onBar = StatusBarWatch.IsOnBar(x, y);
+            // the bar window could not be resolved (another AutoCAD release builds it differently): a click in the bottom strip of the main window is still looked at, and the first click there writes one diagnostic line
+            bool lowStrip = !onBar && StatusBarWatch.InLowStrip(x, y, MainWindowHandle());
+            if (!onBar && !lowStrip && !(_statusProbed == false && StatusBarWatch.InApplicationFrame(hwnd))) return;
+            if (!_statusProbed) { _statusProbed = true; Log.Info("status bar probe: " + StatusBarWatch.Probe(hwnd, x, y)); }
+            if (!onBar && !lowStrip) return;
+            var hit = StatusBarWatch.At(x, y, hwnd, onBar);
+            if (hit.Item is not { } it) { if (onBar || hit.Problem != null && !hit.Problem.StartsWith("the point", StringComparison.Ordinal)) StatusNotRecorded(hit.Problem ?? "no item", w.ElapsedMs); return; }
+            var (record, silent, reason) = Core.StatusBarMatch.Decide(it.Text, it.Tooltip, it.Own, it.Name, button);
+            if (record && it.Text.Length == 0 && it.Tooltip.Length == 0 && it.Index < 0) { record = false; reason = "an add-in's item with no text, tool tip or place in the bar's list (a replay could not find it again)"; }
+            if (!record) { if (!silent) StatusNotRecorded(reason ?? "not recorded", w.ElapsedMs); return; }
+            // a double-click on an item is one click: the second press of the same item within the double-click time is not another step
+            var now = Environment.TickCount64;
+            if (ReferenceEquals(_lastStatusModel, it.Model) && now - _lastStatusPressAt <= 500) { _lastStatusPressAt = now; return; }
+            _lastStatusModel = it.Model; _lastStatusPressAt = now;
+            var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var click = new Core.StatusBarClick(Core.StatusBarMatch.Scrub(it.Text, profile), Core.StatusBarMatch.Scrub(it.Tooltip, profile), it.Index, it.Kind, false, "", "", button);
+            if (_shots.Enabled) _open.Click(PaletteSnapshot.Read(), w.ElapsedMs);   // which palettes the click saw (the command it starts keeps them)
+            var n = Emit("statusbar_click", CurDoc(), click.ToFields().ToArray());
+            if (n <= 0) return;
+            _lastStatusT = w.ElapsedMs; _lastStatusTick = _inputTick; _lastStatusLabel = click.Label; _lastStatusConsumed = false; _modalSinceStatus = false;
+            string how = "no picture";
+            if (_shots.Enabled)
+            {
+                var main = MainWindowHandle();
+                ShotService.Picture? pic = null; bool smart = false;
+                if (_shots.Smart && ShotService.WindowRect(main) is { } win && Core.StatusBarPicture.Crop(win, hit.Bar, it.Rect) is { } crop)
+                { pic = ShotService.CaptureRect(crop.Left, crop.Top, crop.Right, crop.Bottom, main); smart = pic != null; }
+                pic ??= ShotService.CaptureWindow(main)?.Pic;
+                if (pic != null)
+                {
+                    _shots.Suppress(n);
+                    if (_shots.Arrows) _shots.NoteTarget(n, it.Rect.Left, it.Rect.Top, it.Rect.Right, it.Rect.Bottom);
+                    _shots.Write(n, "statusbar", pic, "window", keepSize: smart);
+                    how = (smart ? "smart crop" : "whole window") + (_shots.Arrows ? ", box on the item" : ", marks off");
+                }
+            }
+            Log.Info($"status bar click {n}: {click.Button} on an add-in's {it.Kind} \"{click.Label ?? "(no label)"}\" at index {it.Index}, item {it.Rect.Left},{it.Rect.Top} {it.Rect.Width}x{it.Rect.Height}; {how}");
+        }
+        catch (Exception ex) { Log.Error("status bar click", ex); }
+    }
+
+    bool _statusProbed, _modalSinceStatus;
+    object? _lastStatusModel; long _lastStatusPressAt;
+
+    void StatusNotRecorded(string why, long nowMs)
+    {
+        if (_statusGate.Allow(why, nowMs, out var skipped)) Log.Info($"status bar click not recorded: {why}" + (skipped > 0 ? $" (+{skipped} more not logged)" : ""));
     }
 
     /// <summary>A click or key press: records the values changed in a palette the user just left, and a button clicked in a palette.</summary>

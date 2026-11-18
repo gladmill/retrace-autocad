@@ -1,6 +1,6 @@
 # First run in AutoCAD 2024: checklist
 
-The AutoCAD 2024 build (R24.3, .NET Framework 4.8) is built and tested without AutoCAD by us. A user has run the 0.6.16 build in AutoCAD 2024 and reported that it loads and that the normal recording workflow works (no detailed results), and nothing new in 0.6.17 has been run there.
+The AutoCAD 2024 build (R24.3, .NET Framework 4.8) is built and tested without AutoCAD by us. A user has run the 0.6.17 build in an AutoCAD 2024 vertical product and reported that it loads from the new folder layout, that the record-start tab switch and the centred windows work there, and that the Excel links are gone (no detailed results); the status bar and auto-hide changes of 0.6.18 have not been run there.
 Whoever has AutoCAD 2024 can settle that in about half an hour with the steps below. Write down what differs; "it worked" is a result too.
 Close AutoCAD before each install step; use a test drawing and generic names only.
 
@@ -35,6 +35,15 @@ Close AutoCAD before each install step; use a test drawing and generic names onl
 
 14. Start from a new drawing. Run `RETRACERUN` and pick the test. Expected: it replays the line, the dialog value and the palette click, and ends with verdict PASS.
 15. Run `RETRACEREPLAY` in the current drawing as well and note the verdict.
+
+## 4b. Status bar and auto-hide palettes
+
+Only with an add-in of yours that puts an item into the status bar (or the samples, `STATUSBARADD`, which are built for 2026; any add-in with a `Pane` that opens a dialog or runs a command will do):
+a. Record, click that item (it opens a dialog), Cancel the dialog, stop. Expected: steps.md has "Click **<text>** on the status bar" with a picture of the bar (a green box on the item) before the dialog step. If the click is missing, send `retrace.log`: it holds one `status bar probe:` line (written at the first click near the bottom of the window: how the bar was found, its class and
+   rectangle, the window chain and the WPF elements under the mouse) and a `status bar click not recorded: ...` line saying why (the 2024 status bar may differ from 2026); `status bar click N: ...` appears when it is recorded.
+b. `RETRACERUN` that test. Expected: the item is clicked for real, the dialog opens and closes, verdict PASS.
+c. Open a palette set that has Auto-hide on from a Quick Access Toolbar or ribbon button while a recording runs. Expected: its end picture has a green box (the strip, or the palette) and the caption "The **X** palette opens ..." in steps.md; otherwise `retrace.log` says
+   `end picture N: ...` with the reason and the state it read.
 
 ## 5. Windows
 

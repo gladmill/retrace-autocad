@@ -206,6 +206,12 @@ public sealed class RecordingWriter(RecordingAnalysis a, string outRoot)
                     Pics(st.Shots, "Palette " + name);
                     break;
                 }
+                case "statusbar" when st.StatusBar != null:
+                    n++;
+                    sb.Append($"{n}. {Retrace.Core.StatusBarWording.Phrase(st.StatusBar, x => $"**{Md.Cell(x)}**")}\n");
+                    if (st.Command != null) sb.Append($"   - runs {Md.Code(st.Command)}\n");
+                    Pics(st.Shots, "Status bar " + st.Text); Answers(sb, st, Pics);
+                    break;
                 case "mark":
                     n++;
                     sb.Append($"{n}. **Expected:** {(string.IsNullOrWhiteSpace(st.Note) ? "(checkpoint, no note)" : Md.Cell(st.Note))}\n");

@@ -29,7 +29,7 @@ public sealed class ShotNamer
     static readonly System.Text.RegularExpressions.Regex RawName = Rx.Create(@"^\d+-(.+)\.png$", System.Text.RegularExpressions.RegexOptions.CultureInvariant | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
     static readonly Dictionary<string, string> RawKinds = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["ribbon"] = "click", ["cmd-start"] = "command", ["cmd-end"] = "end", ["lisp-end"] = "end", ["cmd-cancel"] = "cancelled", ["mark"] = "check", ["palette"] = "click",
+        ["ribbon"] = "click", ["cmd-start"] = "command", ["cmd-end"] = "end", ["lisp-end"] = "end", ["cmd-cancel"] = "cancelled", ["mark"] = "check", ["palette"] = "click", ["statusbar"] = "click",
     };
 
     /// <summary>The script is about to write step <paramref name="n"/>.</summary>

@@ -30,6 +30,7 @@ sealed class ShotService
     readonly Dictionary<int, Core.PxRect> _rects = new();
     readonly HashSet<int> _suppressed = new();
     readonly HashSet<int> _boxOnly = new();   // pictures whose rectangle is a "look here" box: no arrow (a palette that opened)
+    readonly System.Collections.Concurrent.ConcurrentDictionary<int, string> _openedState = new();
     readonly System.Collections.Concurrent.ConcurrentDictionary<int, string> _opened = new();   // event n -> name of the palette its end picture shows opening (written on the shot event)
     readonly PictureFallback _fallback = new();
     readonly Dictionary<int, Picture> _held = new();
@@ -42,8 +43,14 @@ sealed class ShotService
     /// reason for "none" is its to log.</summary>
     public Func<int, Core.PaletteOpened?>? OpenedProbe { get; set; }
 
+    /// <summary>Asked right before the end picture is grabbed for a rolled-up or anchored palette: false when the set shows expanded at that moment (the mouse reached it): the box and caption are dropped, never a strip boxed over an expanded palette.</summary>
+    public Func<string, string, bool>? OpenedRecheck { get; set; }
+
     /// <summary>The name of the palette picture <paramref name="n"/> shows opening (the `opened` field of its `shot` event), or null. Callable from the pool thread.</summary>
     public string? OpenedName(int n) => _opened.TryGetValue(n, out var name) ? name : null;
+
+    /// <summary>How that palette shows: "" = open, "rolled" = Auto-hide rolled up to its title strip, "anchored" = Auto-hide anchored to an edge of AutoCAD's window (the `opened.state` of the `shot` event).</summary>
+    public string OpenedState(int n) => _openedState.TryGetValue(n, out var st) ? st : "";
 
     /// <summary>A green box with no arrow around <paramref name="r"/> for event <paramref name="n"/>'s picture ("look here", not "click here"), only while marks are on.</summary>
     void NoteBoxOnly(int n, Core.PxRect r)
@@ -206,7 +213,7 @@ sealed class ShotService
         _sched.Clear(); _blankLogged.Clear();
         _tasks.Clear();
         _afterTaken.Clear();
-        _clicks.Clear(); _rects.Clear(); _suppressed.Clear(); _deferred.Clear(); _fallback.Clear(); _held.Clear(); _boxOnly.Clear(); _opened.Clear();
+        _clicks.Clear(); _rects.Clear(); _suppressed.Clear(); _deferred.Clear(); _fallback.Clear(); _held.Clear(); _boxOnly.Clear(); _opened.Clear(); _openedState.Clear();
         _sessionPath = sessionPath;
         _folder = Path.Combine(Path.GetDirectoryName(sessionPath) ?? "", ShotNaming.FolderFor(sessionPath));
         _enabled = enabled;
@@ -296,9 +303,14 @@ sealed class ShotService
             // the end picture is always the whole AutoCAD window (never a crop, classic or smart); when a palette opened during the command it gets a box and the document a caption
             try
             {
-                if (OpenedProbe(r.N) is { } opened) { _opened[r.N] = opened.Name; NoteBoxOnly(r.N, opened.Rect); }
+                if (OpenedProbe(r.N) is { } opened) { _opened[r.N] = opened.Name; if (opened.State.Length > 0) _openedState[r.N] = opened.State; NoteBoxOnly(r.N, opened.Rect); }
             }
             catch (Exception ex) { Log.Error($"shot {r.N} palette opened", ex); }
+        }
+        if (_openedState.TryGetValue(r.N, out var openedState) && _opened.TryGetValue(r.N, out var openedName) && OpenedRecheck != null && !OpenedRecheck(openedName, openedState))
+        {
+            Log.Info($"end picture {r.N}: the {openedName} palette shows expanded at the capture, not as a {openedState} strip: no box, no caption");
+            _opened.TryRemove(r.N, out _); _openedState.TryRemove(r.N, out _); _rects.Remove(r.N); _boxOnly.Remove(r.N);
         }
         if (r.Kind is "ribbon" or "palette" && _suppressed.Contains(r.N)) return true;   // the picture was taken when the button was clicked (ribbon), or is the palette's own crop (smart zoom)
         if (r.Target == ShotTarget.Dialog)
