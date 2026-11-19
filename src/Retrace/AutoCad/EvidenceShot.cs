@@ -19,6 +19,34 @@ static class EvidenceShot
         catch (Exception ex) { Log.Error("evidence capture", ex); return null; }
     }
 
+    /// <summary>The picture for a dialog moment. The dialog is brought onto the screen first when it lies partly off it (as the Tdoc does). <paramref name="aloneIfSmall"/>: when the dialog is smaller than about half of AutoCAD's window in both
+    /// directions, the DIALOG ALONE is the picture (its values can be read in the sheet's cell); else AutoCAD's window, widened to the union with the dialog when the dialog is not inside it. Returns what was chosen: "dialog", "window" or "union".</summary>
+    public static ((byte[] Pixels, int W, int H) Pic, string What)? TakeWithDialog(IntPtr main, IntPtr dialog, bool aloneIfSmall)
+    {
+        try
+        {
+            if (main != IntPtr.Zero) ScreenSpace.Reference = main;
+            if (dialog == IntPtr.Zero || !Native.Exists(dialog)) return Take(main) is { } w0 ? (w0, "window") : null;
+            Native.MoveOntoScreen(dialog);
+            var d = PaletteReveal.RectOf(dialog);
+            if (ShotService.CaptureWindow(main, workArea: true) is not { } win) return null;
+            int ml = win.Left, mt = win.Top, mr = ml + win.Pic.SrcWidth, mb = mt + win.Pic.SrcHeight;
+            if (aloneIfSmall && d.Width > 0 && d.Height > 0 && d.Width * 2 <= win.Pic.SrcWidth && d.Height * 2 <= win.Pic.SrcHeight && ShotService.CaptureWindow(dialog) is { } own)
+                return (Scaled(own.Pic), "dialog");
+            bool inside = d.Left >= ml && d.Top >= mt && d.Right <= mr && d.Bottom <= mb;
+            if (inside) return (Scaled(win.Pic), "window");
+            var u = ShotService.CaptureRect(Math.Min(ml, d.Left), Math.Min(mt, d.Top), Math.Max(mr, d.Right), Math.Max(mb, d.Bottom), main);
+            return u == null ? (Scaled(win.Pic), "window") : (Scaled(u), "union");
+        }
+        catch (Exception ex) { Log.Error("evidence dialog capture", ex); return null; }
+    }
+
+    static (byte[] Pixels, int W, int H) Scaled(ShotService.Picture p)
+    {
+        var (nw, nh) = ShotImage.FitSize(p.Width, p.Height, 1280);
+        return nw == p.Width && nh == p.Height ? (p.Pixels, nw, nh) : (ShotImage.Scale(p.Pixels, p.Width, p.Height, nw, nh), nw, nh);
+    }
+
     /// <summary>Writes the PNG through a temp file (so nobody reads half a picture). Call from a pool thread.</summary>
     public static void WritePng(string path, byte[] pixels, int w, int h)
     {

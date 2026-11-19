@@ -49,11 +49,37 @@ public static class EvidenceFiles
 
     const string StepsStampFile = ".steps-sha";
 
-    /// <summary>A fingerprint of steps.md text, kept beside the pictures: a picture belongs to a row by its number, so when the steps change (a test recorded again into the same folder, steps.md edited) the pictures may sit on other rows.</summary>
-    public static string StepsFingerprint(string stepsText)
+    /// <summary>The steps of a steps.md: from its "## Steps" heading to the "## Result" one. The intro above (title, recorded line, how-to lines) is not what pictures depend on, so a change there is no change of the steps. A text with no such heading counts as a whole.</summary>
+    public static string StepsPart(string? stepsText)
+    {
+        var text = stepsText ?? "";
+        int a = text.IndexOf("## Steps", StringComparison.Ordinal);
+        if (a < 0) return text;
+        int b = text.IndexOf("\n## Result", a, StringComparison.Ordinal);
+        return b < 0 ? text[a..] : text[a..b];
+    }
+
+    /// <summary>A fingerprint of the steps of a steps.md, kept beside the pictures: a picture belongs to a row by its number, so when the steps change (a test recorded again into the same folder, steps.md edited) the pictures may sit on other rows.</summary>
+    public static string StepsFingerprint(string stepsText) => Hash(StepsPart(stepsText));
+
+    static string Hash(string text)
     {
         using var sha = System.Security.Cryptography.SHA256.Create();
-        return Convert.ToHexString(sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(stepsText ?? ""))).Substring(0, 16);
+        return Convert.ToHexString(sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(text ?? ""))).Substring(0, 16);
+    }
+
+    /// <summary>The "Files in this folder" section an older version wrote between the intro and "## Steps" (the stamp of its time is the fingerprint of the whole text with it in).</summary>
+    const string OldFilesSection = "## Files in this folder\n\n| File | What it is for |\n|---|---|\n| `steps.md` | This page: the steps to follow by hand. It is written again each time the recording is processed, so do not edit it. |\n| `recording.jsonl` | The recording itself, one event per line. This is what **Run test** replays. |\n| `screenshots` | Pictures of the screen, named after the step that shows them. `unused` holds the ones this page does not show. |\n| `results` | One file per automatic run, named by date and verdict (`2026-10-10_03-15-02_PASS.json`). `latest.json` is a copy of the newest. |\n\nTo run this test automatically: in AutoCAD open the **" + "Retr" + "ace** tab, click **Run test** and pick `recording.jsonl` in this folder.\n\n";
+
+    /// <summary>The fingerprints an existing stamp may hold for this text: the steps part (what is written now), the whole text (the first version), and the whole text with the older versions' Files section put back before "## Steps"
+    /// (what a stamp made before the section was dropped holds; the text read now no longer has it). So a stamp made earlier stays valid while the steps are the same.</summary>
+    static IEnumerable<string> AcceptedFingerprints(string stepsText)
+    {
+        var text = stepsText ?? "";
+        yield return StepsFingerprint(text);
+        yield return Hash(text);
+        int a = text.IndexOf("## Steps", StringComparison.Ordinal);
+        if (a >= 0 && !text.Contains("## Files in this folder", StringComparison.Ordinal)) yield return Hash(text[..a] + OldFilesSection + text[a..]);
     }
 
     /// <summary>false when pictures exist whose steps.md differs from the one they were taken against. Only reads: no pictures, or no fingerprint, is true.</summary>
@@ -63,7 +89,7 @@ public static class EvidenceFiles
         try
         {
             if (!File.Exists(stamp) || List(testFolder).Count == 0) return true;
-            return File.ReadAllText(stamp).Trim() == StepsFingerprint(stepsText);
+            return AcceptedFingerprints(stepsText).Contains(File.ReadAllText(stamp).Trim());
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return true; }
     }

@@ -60,7 +60,7 @@ public static class ReplayRules
             var s = steps[k];
             if (prevEnd < 0 || s.Kind is not ("command" or "lisp") || !Plan.ContinuesChain(s.Origin, s.Script, s.T, prevEnd)) break;
             if (s.Answers.Any(a => a.Input != false))
-                return (skip, $"step {k + 1} ({s.Command}) looks like a command of the click's script, and holds answers a person gave: Retrace cannot tell whether to type it again. Do the rest of the test by hand from there, or record it again");
+                return (skip, $"step {k + 1} ({s.Command}) looks like a command of the click's script, and holds answers a person gave: the replay cannot tell whether to type it again. Do the rest of the test by hand from there, or record it again");
             skip.Add(k);
             prevEnd = s.EndT;
         }
@@ -144,8 +144,8 @@ public static class ReplayRules
         if (!s.ChainClick || answers.Count == 0) return null;
         var list = string.Join("; ", answers.Select(AnswerText));
         if (!dialogFollows)
-            return ChainDelivery.Unsafe(answers) is { } why ? $"\"{s.Title}\" runs a script that asks for input a person gave while recording ({list}), and RETRACEREPLAY cannot type it: {why}. Give it by hand, or record it again" : null;
-        return $"\"{s.Title}\" runs a script that opens dialogs, and the person gave {answers.Count} answer(s) after the first one ({list}); RETRACEREPLAY cannot type them after a dialog. Replay this test with RETRACERUN, or give the answers by hand";
+            return ChainDelivery.Unsafe(answers) is { } why ? $"\"{s.Title}\" runs a script that asks for input a person gave while recording ({list}), and the replay cannot type it: {why}. Give it by hand, or record it again" : null;
+        return $"\"{s.Title}\" runs a script that opens dialogs, and the person gave {answers.Count} answer(s) after the first one ({list}); the replay cannot type them after a dialog. Run this test with Run test (it fills the dialogs in), or give the answers by hand";
     }
 
 }

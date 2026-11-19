@@ -489,6 +489,7 @@ public static class Plan
                 case "cmd_start":
                 {
                     var cmd = Str(e, "command") ?? "?";
+                    if (Retrace.Engine.Recordings.OwnCommands.IsOwnCommand(cmd)) { if (depth++ == 0) cur = null; break; }   // the tool's own command is never a step; its prompts belong to none (RecordingSession does the same)
                     if (depth++ > 0) break; // nested / transparent: part of the running step
                     // a command the OK of a dialog a status bar click opened started (origin "dialog"): the dialog step replays it, so it is no step of its own (its answers go nowhere: the OK sent them)
                     if (Str(e, "origin") == "dialog" && steps.Count > 0 && steps[^1].Kind == "dialog") { steps[^1].StartsCommand = cmd; cur = new Step { Kind = "command", T = t, Command = cmd }; break; }
@@ -824,13 +825,13 @@ public static class Plan
     public static string? Problem(Step s)
     {
         if (s.InlineStatusClicks.Count > 0)
-            return $"During this step a status bar item was clicked ({string.Join("; ", s.InlineStatusClicks)}), and Retrace cannot replay a click on the status bar in the middle of a running command. Do this step by hand.";
+            return $"During this step a status bar item was clicked ({string.Join("; ", s.InlineStatusClicks)}), and the replay cannot click on the status bar in the middle of a running command. Do this step by hand.";
         var eff = SelectionReplay.Effective(s.Answers);
         if (IsSetvar(s) && eff.Count > 0 && SetvarName(s, eff) == null && !SetvarNamePrompt.IsMatch(eff[0].Message ?? "") && eff.Count < 2
             && !(s.Kind == "ribbon" && StartText(s) is { } st && StartWords(st).Count > 1))   // a macro `_setvar;ctab;` types the name
             return "SETVAR: the recording does not say which system variable was set, so its value is not typed (it would go where the variable name goes). Do this step by hand.";
         if (HasSpacedString(eff) && CommandCallStart(s) == null)
-            return "A string answer has a space (a layout name?), and AutoCAD takes a space typed by Retrace as Enter here (a LISP command, a macro or a command with a dialog cannot be sent another way). Do this step by hand.";
+            return "A string answer has a space (a layout name?), and AutoCAD takes a space typed by the replay as Enter here (a LISP command, a macro or a command with a dialog cannot be sent another way). Do this step by hand.";
         return null;
     }
 

@@ -16,7 +16,8 @@ public static class EvidenceMapping
     ///  - the step the replay ended on takes the end: an error is its failure, a stop for a person its block, a Stop pressed by a person leaves it Not run;
     ///  - a numbered step the replay has no step of (a drawing switch, a script chain's commands) takes the result of the step before it when the replay ran to the end, so a PASS replay has no Not run row;
     ///  - the overall result never reads Pass unless the verdict is PASS: a failed basic check makes the last step Fail (its differences in Notes), a completed run with nothing verified leaves the last step Not run.</summary>
-    public static Dictionary<int, StepOutcome> Outcomes(IReadOnlyList<Step> steps, ReplayResult r, IReadOnlyList<string?> pictures, IReadOnlyList<long> numberedT, int endStep, EvidenceEnd end)
+    public static Dictionary<int, StepOutcome> Outcomes(IReadOnlyList<Step> steps, ReplayResult r, IReadOnlyList<string?> pictures, IReadOnlyList<long> numberedT, int endStep, EvidenceEnd end,
+        IReadOnlyList<StepShots?>? shots = null, IReadOnlyList<IReadOnlyList<Engine.Emit.WordingBullet>>? bullets = null, IReadOnlyList<int>? rowCounts = null, IReadOnlyList<IReadOnlyList<bool>>? subRowsFilled = null)
     {
         var infos = new List<ReplayStepInfo>();
         int mark = 0;
@@ -42,9 +43,13 @@ public static class EvidenceMapping
                     _ => ("stopped", "Stopped by the person here."),
                 };
             }
-            infos.Add(new ReplayStepInfo(i, s.T, status, message, i < pictures.Count && pictures[i] is { } p && File.Exists(p) ? p : null, res?.WaitedForPerson == true));
+            static string? Ex(string? f) => f != null && File.Exists(f) ? f : null;
+            var sh = shots != null && i < shots.Count ? shots[i] : null;
+            var ended = Ex(sh?.Ended ?? (i < pictures.Count ? pictures[i] : null));
+            var failed = Ex(sh?.Failed);
+            infos.Add(new ReplayStepInfo(i, s.T, status, message, ended ?? failed, res?.WaitedForPerson == true, s.Kind, Ex(sh?.Opened), Ex(sh?.Filled), ended, failed, sh?.OpenedNoWindow == true));
         }
-        var map = EvidenceBook.Outcomes(numberedT, infos);
+        var map = EvidenceBook.Outcomes(numberedT, infos, bullets, rowCounts, subRowsFilled);
 
         if (end == EvidenceEnd.Completed)
         {
@@ -62,13 +67,13 @@ public static class EvidenceMapping
         {
             var lastOut = map[last];
             if (r.BasicCheck?.Pass == false)
-                map[last] = new StepOutcome("Fail", Join(lastOut.Notes, EvidenceBook.Scrub(r.BasicCheck.Line())), lastOut.Picture);
+                map[last] = new StepOutcome("Fail", Join(lastOut.Notes, EvidenceBook.Scrub(r.BasicCheck.Line())), lastOut.Picture, lastOut.Rows);
             else if (r.Verdict != ReplayResult.Pass && map.Values.All(o => o.Result == "Pass"))
             {
                 // the replay found nothing wrong step by step, but its verdict is not PASS: the sheet must not say so
                 map[last] = r.Verdict == ReplayResult.Incomplete
-                    ? new StepOutcome("Not run", Join(lastOut.Notes, NotVerified), lastOut.Picture)
-                    : new StepOutcome(r.Verdict == ReplayResult.Fail || r.Verdict == ReplayResult.Error ? "Fail" : "Not run", Join(lastOut.Notes, $"Replay verdict {r.Verdict}: {Scrub(r.Message)}"), lastOut.Picture);
+                    ? new StepOutcome("Not run", Join(lastOut.Notes, NotVerified), lastOut.Picture, lastOut.Rows)
+                    : new StepOutcome(r.Verdict == ReplayResult.Fail || r.Verdict == ReplayResult.Error ? "Fail" : "Not run", Join(lastOut.Notes, $"Replay verdict {r.Verdict}: {Scrub(r.Message)}"), lastOut.Picture, lastOut.Rows);
             }
         }
         return map;

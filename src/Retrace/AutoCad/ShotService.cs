@@ -46,6 +46,70 @@ sealed class ShotService
     /// <summary>Asked right before the end picture is grabbed for a rolled-up or anchored palette: false when the set shows expanded at that moment (the mouse reached it): the box and caption are dropped, never a strip boxed over an expanded palette.</summary>
     public Func<string, string, bool>? OpenedRecheck { get; set; }
 
+    /// <summary>Asked after an end picture's probe found no opened palette: true while the recorder watches for a palette that shows up a moment later. The picture is then written but its `shot` event is held
+    /// (<see cref="ReleaseShot"/>) until the watch ends, so a retake replaces the picture before anything is announced and the recording holds one `shot` event for it.</summary>
+    public Func<int, bool>? LateWatching { get; set; }
+
+    /// <summary>Asked when a picture is written for a palette click that carries an extra box (<see cref="NoteExtraBox"/>): is that palette still on screen at that rectangle? False: no extra box.</summary>
+    public Func<string, Core.PxRect, bool>? ExtraRecheck { get; set; }
+
+    readonly Core.EndShotGate _gate = new();                // which end pictures' `shot` events wait for the watch, and when each is written (Core, tested)
+    readonly Dictionary<int, string> _heldKind = new();     // their picture kinds (file name part); UI thread only
+    readonly Dictionary<int, Task> _endWrite = new();       // the latest write task of a held end picture: a retake writes after it, never beside it; UI thread only
+
+    /// <summary>The late-palette watch of end picture <paramref name="n"/> is over: its `shot` event is written once the pictures being written have finished (with `opened` only when the retaken picture was written).</summary>
+    public void ReleaseShot(int n)
+    {
+        _heldKind.Remove(n); _endWrite.Remove(n);
+        Settle(_gate.Release(n));
+    }
+
+    /// <summary>Every held `shot` event is written (the recording is stopping).</summary>
+    public void ReleaseAllShots()
+    {
+        foreach (var n in _gate.HeldNumbers()) ReleaseShot(n);
+    }
+
+    /// <summary>Writes the `shot` event the gate says is due (pool or UI thread). Without `opened` (the retake failed or never happened) the palette name is forgotten, so the event does not carry it.</summary>
+    void Settle(Core.ShotAnnounce? due)
+    {
+        if (due is not { } s) return;
+        if (!s.Opened) { _opened.TryRemove(s.N, out _); _openedState.TryRemove(s.N, out _); }
+        var onShot = _onShot;
+        onShot(s.N, s.Rel, s.What);
+    }
+
+    /// <summary>A palette appeared after the command ended: the end picture of event <paramref name="n"/> is taken again (the whole window, the same file) with the box around the palette; its `shot` event, released after this, carries `opened`
+    /// when this picture was written. False (nothing changed) when the picture cannot be taken or the palette is not on screen as it is going to be boxed.</summary>
+    public bool Retake(int n, Core.PaletteOpened opened, IntPtr palettePage)
+    {
+        if (!_gate.Holds(n) || !_heldKind.TryGetValue(n, out var kind)) return false;
+        if (!_enabled || _main == IntPtr.Zero || Win.IsIconic(_main) || !Win.IsWindowVisible(_main)) return false;
+        if (opened.State.Length > 0 && OpenedRecheck != null && !OpenedRecheck(opened.Name, opened.State)) return false;
+        Repaint(palettePage);
+        _opened[n] = opened.Name; if (opened.State.Length > 0) _openedState[n] = opened.State; else _openedState.TryRemove(n, out _);
+        NoteBoxOnly(n, opened.Rect);
+        _retakeStarted = false;
+        Grab(n, kind, _main, "window", announce: false, retake: true);
+        if (!_retakeStarted) { _opened.TryRemove(n, out _); _openedState.TryRemove(n, out _); _rects.Remove(n); _boxOnly.Remove(n); }
+        return _retakeStarted;
+    }
+    bool _retakeStarted;   // UI thread: the last Grab with retake began a write
+
+    /// <summary>A green box with no arrow around the palette <paramref name="name"/> (<paramref name="r"/>) on the picture of event <paramref name="n"/> too, in addition to that picture's own marks: the click that is the first input after
+    /// a palette appeared late. Drawn only when the palette is still there and the rectangle is inside the picture.</summary>
+    public void NoteExtraBox(int n, string name, Core.PxRect r) { if (_arrows && n > 0 && r.Width > 0 && r.Height > 0) _extra[n] = (name, r); }
+    readonly Dictionary<int, (string Name, Core.PxRect Rect)> _extra = new();
+
+    AnnotationBox? ExtraFor(int n, Core.PxRect src, int w, int h)
+    {
+        if (!_extra.Remove(n, out var e)) return null;
+        if (!Core.MarkGuard.RectInside(src, e.Rect)) { Log.Info($"shot {n}: palette box left out: the {e.Name} palette {e.Rect} is not inside the picture {src}"); return null; }
+        if ((long)e.Rect.Width * e.Rect.Height * 10 >= (long)src.Width * src.Height * 6) { Log.Info($"shot {n}: palette box left out: the picture is a close-up of the {e.Name} palette (the box would be about the whole picture)"); return null; }
+        if (ExtraRecheck != null && !ExtraRecheck(e.Name, e.Rect)) { Log.Info($"shot {n}: palette box left out: the {e.Name} palette is not on screen at {e.Rect} now"); return null; }
+        return Annotate.ToPicture(e.Rect.Left, e.Rect.Top, e.Rect.Right, e.Rect.Bottom, src.Left, src.Top, src.Width, src.Height, w, h, 0);
+    }
+
     /// <summary>The name of the palette picture <paramref name="n"/> shows opening (the `opened` field of its `shot` event), or null. Callable from the pool thread.</summary>
     public string? OpenedName(int n) => _opened.TryGetValue(n, out var name) ? name : null;
 
@@ -213,7 +277,8 @@ sealed class ShotService
         _sched.Clear(); _blankLogged.Clear();
         _tasks.Clear();
         _afterTaken.Clear();
-        _clicks.Clear(); _rects.Clear(); _suppressed.Clear(); _deferred.Clear(); _fallback.Clear(); _held.Clear(); _boxOnly.Clear(); _opened.Clear(); _openedState.Clear();
+        _clicks.Clear(); _rects.Clear(); _suppressed.Clear(); _deferred.Clear(); _fallback.Clear(); _held.Clear(); _boxOnly.Clear(); _opened.Clear(); _openedState.Clear(); _extra.Clear();
+        _gate.Clear(); _heldKind.Clear(); _endWrite.Clear();
         _sessionPath = sessionPath;
         _folder = Path.Combine(Path.GetDirectoryName(sessionPath) ?? "", ShotNaming.FolderFor(sessionPath));
         _enabled = enabled;
@@ -304,6 +369,7 @@ sealed class ShotService
             try
             {
                 if (OpenedProbe(r.N) is { } opened) { _opened[r.N] = opened.Name; if (opened.State.Length > 0) _openedState[r.N] = opened.State; NoteBoxOnly(r.N, opened.Rect); }
+                else if (LateWatching?.Invoke(r.N) == true) { _gate.Hold(r.N); _heldKind[r.N] = r.Kind; }
             }
             catch (Exception ex) { Log.Error($"shot {r.N} palette opened", ex); }
         }
@@ -397,14 +463,16 @@ sealed class ShotService
         var onShot = _onShot;
         var (nw, nh) = what == "window" && !keepSize ? ShotImage.FitSize(p.Width, p.Height) : (p.Width, p.Height);
         var (box, arrow) = p.HasOrigin ? MarksFor(n, new Core.PxRect(p.Left, p.Top, p.Left + p.SrcWidth, p.Top + p.SrcHeight), nw, nh) : (null, null);
+        var extra = p.HasOrigin ? ExtraFor(n, new Core.PxRect(p.Left, p.Top, p.Left + p.SrcWidth, p.Top + p.SrcHeight), nw, nh) : null;
         var t = Task.Run(() =>
         {
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
                 var data = nw == p.Width && nh == p.Height ? p.Pixels : ShotImage.Scale(p.Pixels, p.Width, p.Height, nw, nh);
-                if (box != null || arrow != null) { if (ReferenceEquals(data, p.Pixels)) data = (byte[])data.Clone(); }
+                if (box != null || arrow != null || extra != null) { if (ReferenceEquals(data, p.Pixels)) data = (byte[])data.Clone(); }
                 var a = arrow?.Invoke(data);   // decided on the picture as it is, before the frame is drawn on it
+                if (extra is { } ex) Annotate.Draw(data, nw, nh, new[] { ex });
                 if (box is { } bx) Annotate.Draw(data, nw, nh, new[] { bx });
                 if (a is { } al) Annotate.DrawArrow(data, nw, nh, al);
                 Png.Write(path, nw, nh, data); onShot(n, rel, what);
@@ -415,7 +483,7 @@ sealed class ShotService
     }
 
     /// <summary>Takes the picture; false only when <paramref name="skipBlank"/> and the window shows nothing yet (the dialog has not painted its controls): nothing is written.</summary>
-    bool Grab(int n, string kind, IntPtr hwnd, string what, bool announce = true, bool skipBlank = false)
+    bool Grab(int n, string kind, IntPtr hwnd, string what, bool announce = true, bool skipBlank = false, bool retake = false)
     {
         var (b, pbounds) = Win.BoundsBoth(hwnd);
         if (b.Width <= 0 || b.Height <= 0 || pbounds.Width <= 0 || pbounds.Height <= 0) return true;
@@ -428,22 +496,40 @@ sealed class ShotService
         var rel = ShotNaming.RelativePathFor(_sessionPath, n, kind);
         int w = cap.Width, h = cap.Height;
         var onShot = _onShot;
+        // an end picture the late-palette watch holds: its first write and a retake's are counted by the gate, which says when the one `shot` event is written
+        bool early = !retake && announce && _gate.EarlyStarted(n);
+        if (retake && !_gate.RetakeStarted(n, rel, what)) { _opened.TryRemove(n, out _); _openedState.TryRemove(n, out _); _rects.Remove(n); _boxOnly.Remove(n); return false; }
+        Task? prev = null;
+        if (retake) { _retakeStarted = true; _endWrite.TryGetValue(n, out prev); }
         var (nw, nh) = what == "window" ? ShotImage.FitSize(w, h) : (w, h);
         var (box, arrow) = MarksFor(n, new Core.PxRect(b.Left, b.Top, b.Right, b.Bottom), nw, nh);   // logical rectangle: the pixels are physical (ScreenSpace)
-        var t = Task.Run(() =>
+        var extra = ExtraFor(n, new Core.PxRect(b.Left, b.Top, b.Right, b.Bottom), nw, nh);
+        Action work = () =>
         {
+            bool ok = false;
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
                 var data = nw == w && nh == h ? px : ShotImage.Scale(px, w, h, nw, nh);
                 var a = arrow?.Invoke(data);   // decided on the picture as it is, before the frame is drawn on it
+                if (extra is { } ex) Annotate.Draw(data, nw, nh, new[] { ex });
                 if (box is { } bx) Annotate.Draw(data, nw, nh, new[] { bx });
                 if (a is { } al) Annotate.DrawArrow(data, nw, nh, al);
                 Png.Write(path, nw, nh, data);
-                if (announce) onShot(n, rel, what);
+                ok = true;
             }
             catch (Exception ex) { Log.Error($"shot {n} write", ex); }
-        });
+            try
+            {
+                if (early) Settle(_gate.EarlyFinished(n, ok, rel, what));
+                else if (retake) { if (!ok) Log.Info($"end picture {n}: the retaken picture could not be written: the first picture stays, no box"); Settle(_gate.RetakeFinished(n, ok)); }
+                else if (ok && announce) onShot(n, rel, what);
+            }
+            catch (Exception ex) { Log.Error($"shot {n} event", ex); }
+        };
+        // a retake writes after the first picture's write has finished (one file name, never two writers at once)
+        var t = prev == null ? Task.Run(work) : prev.ContinueWith(_ => work(), TaskScheduler.Default);
+        if (early || retake) _endWrite[n] = t;
         lock (_tasks) { _tasks.RemoveAll(x => x.IsCompleted); _tasks.Add(t); }
         return true;
     }

@@ -33,7 +33,13 @@ public sealed class StepsDoc
     public List<SheetRow> Rows { get; } = [];
 
     /// <summary>Checkbox text becomes a ballot box before parsing, so every inline splitter sees one character.</summary>
-    public static string Prepare(string md) => md.Replace("[ ]", "☐").Replace("[x]", "☒").Replace("[X]", "☒");
+    public static string Prepare(string md) => DropAuthorSection(md).Replace("[ ]", "☐").Replace("[x]", "☒").Replace("[X]", "☒");
+
+    static readonly System.Text.RegularExpressions.Regex FilesSectionRx = Retrace.Engine.Util.Rx.Create(@"^## Files in this folder[ \t]*\r?\n.*?(?=^## )", System.Text.RegularExpressions.RegexOptions.Multiline | System.Text.RegularExpressions.RegexOptions.Singleline | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    static readonly System.Text.RegularExpressions.Regex RunLineRx = Retrace.Engine.Util.Rx.Create(@"^To run this test automatically:[^\r\n]*\r?\n(\r?\n)*", System.Text.RegularExpressions.RegexOptions.Multiline | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>A steps.md written by an older version has a "Files in this folder" table and a "To run this test automatically ..." line for the test's author; neither is in a document a tester opens. A steps.md without them comes back as it is.</summary>
+    public static string DropAuthorSection(string md) => RunLineRx.Replace(FilesSectionRx.Replace(md, ""), "");
 
     public static MarkdownPipeline Pipeline { get; } = new MarkdownPipelineBuilder().UsePipeTables().Build();
 

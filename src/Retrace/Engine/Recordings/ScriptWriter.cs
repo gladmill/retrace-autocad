@@ -22,7 +22,7 @@ public static class ScriptWriter
         var dir = Path.GetDirectoryName(path)!;
         var namer = new ShotNamer(s, CountSteps(s));
         var text = Build(s, map, dir, warnings, namer);
-        if (!namer.Apply(warnings)) text = Build(s, map, dir, new List<string>(), null, filesTable: true);   // pictures stay where they are
+        if (!namer.Apply(warnings)) text = Build(s, map, dir, new List<string>(), null);   // pictures stay where they are
         File.WriteAllText(path, text, new UTF8Encoding(false));
         return path;
     }
@@ -42,7 +42,7 @@ public static class ScriptWriter
     /// <summary>True for the steps the script numbers (the kinds <see cref="StepWording.Render"/> writes; a dialog a command opened is part of that command's step).</summary>
     public static bool IsNumbered(RecordingStep st) => st.Kind is "ribbon" or "command" or "lisp" or "palette" or "statusbar" or "mark" or "doc" || (st.Kind == "dialog" && st.OpenedIn == null);
 
-    public static string Build(RecordingSession s, SourceMapIndex? map, string scriptDir, List<string> warnings, ShotNamer? namer = null, bool filesTable = false)
+    public static string Build(RecordingSession s, SourceMapIndex? map, string scriptDir, List<string> warnings, ShotNamer? namer = null)
     {
         var sb = new StringBuilder($"# {Md.Cell(StepWording.SessionName(s))}\n\n");
         var meta = StepWording.MetaLine(s);
@@ -52,7 +52,6 @@ public static class ScriptWriter
 
         sb.Append($"**Start with:** {StartWording.Describe(s)}.\n\n");
         sb.Append("Do the steps in order. A picture under a step shows what the screen looked like when the test was recorded.\n\n");
-        if (filesTable || namer != null) sb.Append(FilesSection);
         sb.Append("## Steps\n\n");
 
         WordingContext? ctx = null;
@@ -103,21 +102,6 @@ public static class ScriptWriter
         var parts = new[] { N("modelspace", "object", "objects"), N("layers", "layer", "layers"), N("layouts", "layout", "layouts") }.Where(x => x != null).ToList();
         return parts.Count == 0 ? null : "Model space has " + string.Join(", ", parts);
     }
-
-    private const string FilesSection = """
-        ## Files in this folder
-
-        | File | What it is for |
-        |---|---|
-        | `steps.md` | This page: the steps to follow by hand. It is written again each time the recording is processed, so do not edit it. |
-        | `recording.jsonl` | The recording itself, one event per line. This is what **Run test** replays. |
-        | `screenshots` | Pictures of the screen, named after the step that shows them. `unused` holds the ones this page does not show. |
-        | `results` | One file per automatic run, named by date and verdict (`2026-10-10_03-15-02_PASS.json`). `latest.json` is a copy of the newest. |
-
-        To run this test automatically: in AutoCAD open the **Retrace** tab, click **Run test** and pick `recording.jsonl` in this folder.
-
-
-        """;
 
     /// <summary>Link from the script's folder to a page of the engine output the sourcemap points at (doc may carry an #anchor).</summary>
     private static string? MapLink(SourceMapIndex map, string scriptDir, string doc)

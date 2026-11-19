@@ -151,7 +151,7 @@ sealed class SuiteRun : ITestQueueOwner
     {
         var run = Current;
         if (run == null) return;
-        run.Finish("AutoCAD was closed or Retrace unloaded", shutdown: true);
+        run.Finish("AutoCAD was closed or the add-in was unloaded", shutdown: true);
     }
 
     // ---- the queue's owner ----------------------------------------------------------------------------------------------------------

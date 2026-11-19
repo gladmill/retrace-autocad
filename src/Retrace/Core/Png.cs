@@ -7,6 +7,8 @@ namespace Retrace.Core;
 internal static class Png
 {
     static readonly uint[] Crc = BuildTable();
+    const int MoveTries = 20;
+    const int MovePauseMs = 10;   // plus 2 ms per attempt and a few ms by thread, so writers do not retry in step
 
     static uint[] BuildTable()
     {
@@ -42,6 +44,31 @@ internal static class Png
 
     /// <param name="bgra">top-down 32-bpp BGRA pixels, stride = width * 4</param>
     public static void Write(string path, int width, int height, byte[] bgra)
+    {
+        // atomic: written beside the target and moved over it, so a reader never sees half a picture and two writers of one name (a retaken end picture) cannot corrupt each other
+        var tmp = path + "." + Guid.NewGuid().ToString("N")[..8] + ".tmp";
+        try
+        {
+            WriteTo(tmp, width, height, bgra);
+            // On Windows two replaces of one destination at the same moment can be refused (error 5 / a sharing violation from MoveFileEx, also on .NET 8):
+            // the other writer's file is in the way for a few ms. Try again a few times, then throw the last error as before.
+            for (int attempt = 1; ; attempt++)
+            {
+                try { File.Move(tmp, path, true); break; }
+                catch (Exception ex) when ((ex is UnauthorizedAccessException || ex is IOException) && !(ex is FileNotFoundException) && !(ex is DirectoryNotFoundException) && attempt < MoveTries)
+                {
+                    Thread.Sleep(MovePauseMs + 2 * attempt + 3 * (Environment.CurrentManagedThreadId % 7));
+                }
+            }
+        }
+        catch (Exception)
+        {
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch (Exception) { }
+            throw;
+        }
+    }
+
+    static void WriteTo(string path, int width, int height, byte[] bgra)
     {
         using var fs = File.Create(path);
         fs.Write(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A });

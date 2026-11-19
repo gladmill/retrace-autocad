@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Retrace.Engine.Recordings;
+using Retrace.Engine.Util;
 
 namespace Retrace.Core;
 
@@ -101,18 +102,18 @@ public sealed class SuiteResult
     public string ToMarkdown()
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"# Retrace suite {Stamp}: {Verdict}");
+        sb.AppendLine($"# Suite {Stamp}: {Verdict}");
         sb.AppendLine();
         sb.AppendLine(Summary() + ".");
         sb.AppendLine();
-        sb.AppendLine($"Started {StartedUtc}, finished {FinishedUtc}, Retrace {CoreVersion}, step timeout {StepTimeoutSeconds} s.");
+        sb.AppendLine($"Started {StartedUtc}, finished {FinishedUtc}, step timeout {StepTimeoutSeconds} s.");
         sb.AppendLine();
         sb.AppendLine("| # | Test | Verdict | Seconds | What differed | Result |");
         sb.AppendLine("|---|---|---|---|---|---|");
         for (var i = 0; i < Tests.Count; i++)
         {
             var t = Tests[i];
-            sb.Append($"| {i + 1} | {Cell(t.Name)} | {t.Verdict} | {t.DurationSeconds.ToString("0.#", CultureInfo.InvariantCulture)} | {Cell(What(t))} | {Cell(t.Result)} |").AppendLine();
+            sb.Append($"| {i + 1} | {Cell(t.Name)} | {t.Verdict} | {t.DurationSeconds.ToString("0.#", CultureInfo.InvariantCulture)} | {Cell(DocText.Guard(What(t), "suite report"))} | {Cell(ResultRef(t.Result))} |").AppendLine();
         }
         return sb.ToString();
     }
@@ -123,6 +124,14 @@ public sealed class SuiteResult
         if (t.FailingCheckpoints.Count > 0)
             return string.Join(" / ", t.FailingCheckpoints.Select(c => $"checkpoint {c.Index}{(c.Note.Length > 0 ? " \"" + c.Note + "\"" : "")}: {string.Join("; ", c.Differences)}"));
         return t.Verdict == ReplayResult.Pass ? "" : t.Message;
+    }
+
+    /// <summary>The result file as the report names it: "test folder name/results/file name" (the full path has the root folder in it, which is the product's by default).</summary>
+    public static string ResultRef(string? result)
+    {
+        if (string.IsNullOrEmpty(result)) return "";
+        var parts = result.Split('\\', '/');
+        return parts.Length >= 3 ? $"{parts[^3]}/{parts[^2]}/{parts[^1]}" : parts[^1];
     }
 
     static string Cell(string s) => s.Replace("|", "\\|").Replace("\r", " ").Replace("\n", " ");

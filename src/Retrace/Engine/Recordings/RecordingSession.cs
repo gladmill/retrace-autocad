@@ -2,6 +2,7 @@
 // Schema: docs/recording-format.md
 using System.Globalization;
 using System.Text.Json;
+using Retrace.Engine.Util;
 
 namespace Retrace.Engine.Recordings;
 
@@ -301,6 +302,13 @@ public sealed class RecordingSession
 
 public static class RecordingReader
 {
+    /// <summary>The folder that holds the recording's test folder (the tests folder), "" when the recording's path says nothing.</summary>
+    static string TestsFolderOf(string? recordingFile)
+    {
+        try { return string.IsNullOrEmpty(recordingFile) ? "" : Path.GetDirectoryName(Path.GetDirectoryName(Path.GetFullPath(recordingFile))) ?? ""; }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { return ""; }
+    }
+
     static bool IsOwnRibbon(string? id, string? tabId) =>
         OwnCommands.IsOwnTab(tabId) || OwnCommands.IsOwnCommand(id);
 
@@ -462,6 +470,7 @@ public static class RecordingReader
                 {
                     var cmd = e.Str("command") ?? "?";
                     if (ownedEvent) { depth++; break; }   // a command of the click's script chain: the ribbon step owns it
+                    if (OwnCommands.IsOwnCommand(cmd)) { if (depth++ == 0) cur = null; break; }   // the tool's own commands are never a step (documents do not name them), and their prompts belong to no step (Plan.Build does the same)
                     if (depth++ > 0) { cur?.Commands.Add(cmd); break; } // nested / transparent command: belongs to the running step
                     // AutoCAD reports some commands (UNITS) as unknown a moment before it runs them: drop that step (same command: CommandName.Same, the replay's rule)
                     if (s.Steps.Count > 0 && s.Steps[^1] is { Kind: "command", Outcome: "unknown" } unk && e.T - unk.T <= 1000
@@ -506,7 +515,7 @@ public static class RecordingReader
                 case "cmd_end": if (depth > 0) depth--; break;
                 case "cmd_cancel": if (depth > 0) depth--; if (cur != null) cur.Outcome = "cancelled"; break;
                 case "cmd_fail": if (depth > 0) depth--; if (cur != null) cur.Outcome = "failed"; break;
-                case "cmd_unknown" when ownedEvent: break;
+                case "cmd_unknown" when ownedEvent || OwnCommands.IsOwnCommand(e.Str("command")): break;
                 case "cmd_unknown":
                     cur = new RecordingStep { Kind = "command", T = e.T, Command = e.Str("command"), Outcome = "unknown" };
                     s.Steps.Add(cur);
@@ -687,7 +696,7 @@ public static class RecordingReader
                         lastDoc = e.Doc;
                         break;
                     }
-                    s.Steps.Add(new RecordingStep { Kind = "doc", T = e.T, Note = opened != null ? $"Open drawing {opened}" : $"New/opened drawing {e.Doc}", Text = opened != null ? e.Doc : null });
+                    s.Steps.Add(new RecordingStep { Kind = "doc", T = e.T, Note = opened != null ? $"Open drawing {DocText.UnderTests(opened, TestsFolderOf(s.File))}" : $"New/opened drawing {e.Doc}", Text = opened != null ? e.Doc : null });
                     lastDoc = e.Doc;
                     break;
                 case "doc_active":

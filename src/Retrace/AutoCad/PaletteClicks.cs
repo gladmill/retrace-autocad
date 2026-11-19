@@ -317,7 +317,7 @@ static class PaletteClickDetect
         // a control with no name of its own: its class and place among the controls of that class
         var same = Children(page, hidden: false).Where(c => DialogReader.Segment(DialogReader.ClassOf(c)) == seg).ToList();
         int ci = same.IndexOf(h) + 1;
-        if (ci <= 0) { Ignored(h, h == page ? "a click on the pane window itself (a self-painting form or window: Retrace cannot find it again by class and place)" : "the control is not among the visible controls of its class on the page"); return null; }
+        if (ci <= 0) { Ignored(h, h == page ? "a click on the pane window itself (a self-painting form or window: the replay cannot find it again by class and place)" : "the control is not among the visible controls of its class on the page"); return null; }
         return new PaletteClickInfo(PaletteClickKinds.Point, kind.Name.Length > 0 ? kind.Name : seg, null, 1, 0, 0, "", "", "", new PaletteHit(Class: seg, ClassIndex: ci, Name: kind.Name, Fx: fx, Fy: fy));
     }
 }

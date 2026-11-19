@@ -140,15 +140,15 @@ public class EvidenceSheetTests : IDisposable
     public void A_missing_picture_file_is_skipped_and_info_lines_are_added()
     {
         var doc = Doc();
-        var ev = new EvidenceData { Tester = "Automated run (Retrace)" };
-        ev.InfoLines.Add(("Run", "Automated run by Retrace 0.6.16 on AutoCAD 25.1"));
+        var ev = new EvidenceData { Tester = "Automated run" };
+        ev.InfoLines.Add(("Run", "Automated run on AutoCAD 25.1"));
         ev.Rows["1"] = new EvidenceRow([Path.Combine(_dir, "evidence", "gone.png")], "Pass");
         var path = Path.Combine(_dir, "m.xlsx");
         ExportXlsx.Write(doc, _dir, path, null, ev);
         using var xl = SpreadsheetDocument.Open(path, false);
         Assert.Single(Steps(xl).DrawingsPart!.WorksheetDrawing!.Descendants<Xdr.OneCellAnchor>());   // only Retrace's picture
         var info = (WorksheetPart)xl.WorkbookPart!.GetPartById(xl.WorkbookPart.Workbook!.Sheets!.Elements<S.Sheet>().Last().Id!);
-        Assert.Contains("Automated run by Retrace 0.6.16", info.Worksheet!.InnerText);
+        Assert.Contains("Automated run on AutoCAD 25.1", info.Worksheet!.InnerText);
         Assert.Equal("Pass", CellText(Steps(xl), "G7"));
     }
 
@@ -191,14 +191,14 @@ public class EvidenceSheetTests : IDisposable
         Assert.Equal("Not run", o[3].Result);
         // into the workbook: every row of a step gets its result, the picture and note sit on the step's own row
         var doc = new StepsDoc("# t\n\n## Steps\n\n1. Click **A**\n\n2. Click **B**\n\n   - Pick a point\n\n3. Click **C**\n", _dir);
-        var ev = EvidenceBook.FromOutcomes(doc, o, EvidenceBook.AutomatedInfo(new DateTime(2026, 11, 17, 9, 30, 0), "0.6.17", "25.1", "FAIL", 3, 4), "Automated run (Retrace)", "2026-11-17");
+        var ev = EvidenceBook.FromOutcomes(doc, o, EvidenceBook.AutomatedInfo(new DateTime(2026, 11, 17, 9, 30, 0), "25.1", "FAIL", 3, 4), "Automated run", "2026-11-17");
         Assert.Equal("Fail", ev.Rows["2.1"].Result);
         Assert.Empty(ev.Rows["2.1"].Pictures);
         Assert.Null(ev.Rows["2.1"].Notes);
         Assert.Equal(new[] { b }, ev.Rows["2"].Pictures);
         Assert.Contains("did not open", ev.Rows["2"].Notes);
         var line = string.Join(" ", ev.InfoLines.Select(l => l.Value));
-        Assert.Contains("Automated run by Retrace 0.6.17 on AutoCAD 25.1, 2026-11-17 09:30", line);
+        Assert.Contains("Automated run on AutoCAD 25.1, 2026-11-17 09:30", line);
         Assert.DoesNotContain(Environment.MachineName, line, StringComparison.OrdinalIgnoreCase);
         var path = EvidenceBook.Write(doc, _dir, ev, new DateTime(2026, 11, 17, 9, 31, 0));
         using var xl = SpreadsheetDocument.Open(path, false);
@@ -332,9 +332,9 @@ public class EvidenceSheetTests : IDisposable
         var o = Map(r);
         Assert.Equal("Pass", o[2].Result);
         Assert.Contains("A person finished a dialog", o[2].Notes);
-        var info = EvidenceBook.AutomatedInfo(new DateTime(2026, 11, 17), "0.6.16", "25.1", "PASS", 3, 3, anyWaited: true);
+        var info = EvidenceBook.AutomatedInfo(new DateTime(2026, 11, 17), "25.1", "PASS", 3, 3, anyWaited: true);
         Assert.DoesNotContain("Nobody clicked", info[0].Value);
-        Assert.Contains("Nobody clicked", EvidenceBook.AutomatedInfo(new DateTime(2026, 11, 17), "0.6.16", "25.1", "PASS", 3, 3)[0].Value);
+        Assert.Contains("Nobody clicked", EvidenceBook.AutomatedInfo(new DateTime(2026, 11, 17), "25.1", "PASS", 3, 3)[0].Value);
     }
 
     [Fact]
@@ -474,8 +474,8 @@ public class EvidenceSheetTests : IDisposable
         foreach (var a in sheet.DrawingsPart!.WorksheetDrawing!.Descendants<DocumentFormat.OpenXml.Drawing.Spreadsheet.OneCellAnchor>())
             proj.Append($"pic {a.FromMarker!.ColumnId!.Text},{a.FromMarker.ColumnOffset!.Text} {a.FromMarker.RowId!.Text},{a.FromMarker.RowOffset!.Text} {a.Extent!.Cx!.Value}x{a.Extent.Cy!.Value}\n");
         var info = (WorksheetPart)xl.WorkbookPart!.GetPartById(xl.WorkbookPart.Workbook!.Sheets!.Elements<S.Sheet>().Last().Id!);
-        proj.Append("info " + info.Worksheet!.InnerText.Replace(_dir, "<folder>"));
-        Assert.Equal("915A300A5A9563A8", Hash(proj.ToString()));
+        proj.Append("info " + info.Worksheet!.InnerText.Replace(Path.GetFileName(_dir), "<folder>"));
+        Assert.Equal("4537092E6C3A5938", Hash(proj.ToString()));
         Assert.Empty(sheet.HyperlinkRelationships);
         Assert.Empty(sheet.Worksheet.Descendants<S.Hyperlink>());
     }
@@ -503,9 +503,11 @@ public class EvidenceSheetTests : IDisposable
         var plainPath = Path.Combine(_dir, "plain.xlsx");
         ExportXlsx.Write(doc, folder, plainPath);
         string InfoText(string path) { using var xl = SpreadsheetDocument.Open(path, false); var info = (WorksheetPart)xl.WorkbookPart!.GetPartById(xl.WorkbookPart.Workbook!.Sheets!.Elements<S.Sheet>().Last().Id!); return info.Worksheet!.InnerText; }
-        Assert.Contains("%USERPROFILE%", InfoText(evPath));
+        // only the folder's name is printed, in both: no path, so no user name and no root folder
+        Assert.Contains("t1", InfoText(evPath));
         Assert.DoesNotContain("someone", InfoText(evPath));
-        Assert.Contains(@"C:\Users\someone\tests\t1", InfoText(plainPath));
+        Assert.DoesNotContain("someone", InfoText(plainPath));
+        Assert.DoesNotContain("Users", InfoText(plainPath));
     }
 
     [Fact]

@@ -117,7 +117,7 @@ sealed class TdocCapture : IDisposable
         if (wait?.Invoke() == true) return false;
         if (now - g.Begin < _delay) return false;
         if (g.Hidden == DateTime.MinValue) { g.Hidden = now; HideReplay(); }
-        if (_front && now - g.Hidden < HideWait) return false;
+        if (now - g.Hidden < HideWait) return false;   // the window needs a moment to go, with or without the bring-to-front setting
         if (_idleAt < g.Begin && now - g.Begin < _delay + IdleWait) return false;   // AutoCAD has not been idle since the picture was asked for
         shoot();
         ShowReplay();
@@ -150,7 +150,7 @@ sealed class TdocCapture : IDisposable
         for (int k = 0; k < Test.Steps.Count; k++) Test.Steps[k].Number = k + 1;
     }
 
-    void HideReplay() { if (_front) _setReplayVisible(false); }
+    void HideReplay() => _setReplayVisible(false);   // for every picture, whatever tdocBringToFront says: the replay window's title names the product, and no picture of a document may show it
     void ShowReplay() { try { _setReplayVisible(true); } catch (Exception ex) { Log.Error("tdoc show replay window", ex); } }
 
     /// <summary>The replay window is shown again: the dialog gate hid it for its picture, and the auto-filler gave up before asking the gate
@@ -328,7 +328,7 @@ sealed class TdocCapture : IDisposable
         }
         if (now - _dlgBegin < _delay) return false;
         if (_dlgHidden == DateTime.MinValue) { _dlgHidden = now; HideReplay(); }
-        if (_front && now - _dlgHidden < HideWait) return false;
+        if (now - _dlgHidden < HideWait) return false;
         var w = ShotService.CaptureWindow(shot.Dialog);
         if (w != null)
         {

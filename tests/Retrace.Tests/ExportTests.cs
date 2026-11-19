@@ -125,9 +125,8 @@ public class ExportTests : IDisposable
         Assert.Contains("☐ pass", text);          // [ ] -> ballot box
         Assert.DoesNotContain("[ ]", text);
         Assert.Contains("1.", text);                     // step numbers kept as text
-        Assert.Contains("Files in this folder", text);
-        Assert.Single(body.Descendants<W.Table>());
-        Assert.True(body.Descendants<W.TableRow>().Count() >= 5);
+        Assert.DoesNotContain("Files in this folder", text);
+        Assert.Empty(body.Descendants<W.Table>());   // the files table is gone
         Assert.Contains(body.Descendants<W.RunStyle>(), r => r.Val == "Code");   // `inline code`
         Assert.Contains(body.Descendants<W.Bold>(), _ => true);
     }
@@ -309,7 +308,8 @@ public class ExportTests : IDisposable
         var info = (WorksheetPart)wb.GetPartById(wb.Workbook!.Sheets!.Elements<S.Sheet>().Last().Id!);
         var all = info.Worksheet!.InnerText;
         Assert.Contains("draw test", all);
-        Assert.Contains(dir, all);
+        Assert.Contains(Path.GetFileName(dir), all);
+        Assert.DoesNotContain(dir, all);   // the folder's name, not its path
     }
 
     [Fact]

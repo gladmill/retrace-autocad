@@ -56,10 +56,12 @@ public static class Exporter
     }
 
     // ---- which Word / Excel files Retrace wrote --------------------------------------------------------------------------
-    // Next to steps.docx / steps.xlsx, a hidden ".steps.xlsx.retrace" holds the size and time of the file as Retrace wrote it, or "kept"
+    // Next to steps.docx / steps.xlsx, a hidden ".steps.xlsx.stamp" holds the size and time of the file as Retrace wrote it, or "kept"
     // once Retrace kept a file someone changed. Saving checkpoint names rewrites steps.md, so its time can't tell an edited file apart.
 
-    static string StampPath(string file) => Path.Combine(Path.GetDirectoryName(file) ?? "", "." + Path.GetFileName(file) + ".retrace");
+    static string StampPath(string file) => Path.Combine(Path.GetDirectoryName(file) ?? "", "." + Path.GetFileName(file) + ".stamp");
+    /// <summary>The name earlier versions used (it has the product's name in it and travels with a copied folder): still read when there is no new one, and renamed to the new name by the next write.</summary>
+    static string OldStampPath(string file) => Path.Combine(Path.GetDirectoryName(file) ?? "", "." + Path.GetFileName(file) + ".retrace");
     static string Fingerprint(string file) { var i = new FileInfo(file); return $"{i.Length} {i.LastWriteTimeUtc.Ticks}"; }
 
     static void WriteStamp(string file, string text)
@@ -67,6 +69,8 @@ public static class Exporter
         var stamp = StampPath(file);
         try
         {
+            var old = OldStampPath(file);
+            if (!File.Exists(stamp) && File.Exists(old)) { File.SetAttributes(old, FileAttributes.Normal); File.Move(old, stamp); }   // an old stamp is renamed, not left beside the new one
             if (File.Exists(stamp)) File.SetAttributes(stamp, FileAttributes.Normal);
             File.WriteAllText(stamp, text);
             if (OperatingSystem.IsWindows()) File.SetAttributes(stamp, FileAttributes.Hidden);
@@ -84,6 +88,7 @@ public static class Exporter
     public static bool? WrittenByRetrace(string file)
     {
         var stamp = StampPath(file);
+        if (!File.Exists(stamp) && File.Exists(OldStampPath(file))) stamp = OldStampPath(file);   // made by an earlier version
         try { return File.Exists(stamp) ? File.ReadAllText(stamp).Trim() == Fingerprint(file) : null; }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
     }

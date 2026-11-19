@@ -37,7 +37,7 @@ public class AtomicMoveTests : IDisposable
             }
         });
 
-        for (int i = 0; i < 1500; i++)
+        for (int i = 0; i < 1500 || (Volatile.Read(ref reads) <= 50 && i < 20000); i++)   // a reader that starts late (a loaded machine) still gets its reads in
         {
             var tmp = target + "." + i + ".tmp";
             File.WriteAllText(tmp, Body((char)('b' + i % 20)));

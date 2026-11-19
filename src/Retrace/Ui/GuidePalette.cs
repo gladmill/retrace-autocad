@@ -40,6 +40,18 @@ static class GuidePalette
         return true;
     }
 
+    /// <summary>The floating Guide palette is shown and its frame overlaps the screen rectangle (a dialog about to be pictured). False when it is hidden, docked or elsewhere; true when that cannot be told.</summary>
+    public static bool FloatingOverlaps(int left, int top, int right, int bottom)
+    {
+        try
+        {
+            if (_set is not { Visible: true } set || set.Dock != DockSides.None) return false;
+            var p = set.Location; var s = set.Size;
+            return p.X < right && p.X + s.Width > left && p.Y < bottom && p.Y + s.Height > top;
+        }
+        catch (Exception) { return true; }
+    }
+
     public static void ShowAgain() { if (_set != null) _set.Visible = true; }
 
     public static void Dispose()

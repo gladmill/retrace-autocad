@@ -193,6 +193,8 @@ public sealed class Recorder
         Unsubscribe();
         if (w == null) return null;
         _shots.FlushDeferred();
+        if (_late.Active) FinishLate(_late.Interrupted("the recording stopped", w.ElapsedMs), null);
+        _shots.ReleaseAllShots();
         _shots.Drain(2000);   // pictures taken so far get their `shot` events; pending requests are dropped
         _shots.End();
         _w = null;
@@ -209,7 +211,7 @@ public sealed class Recorder
         Log.Safe("Stop palette", () => { EmitPalette(_pal.Flush(w.ElapsedMs, drop: true)); NativeTick(true); PaletteWatch.EndSession(); _upShot = null; _upShotApp = false; });
         Log.Safe("Stop views", () => CheckPendingViews(ViewControl.ViewKey()));
         // the pictures still queued (the last command's result) are taken now, and their `shot` events must land before session_end
-        Log.Safe("Stop shots", () => { _shots.Pump(w.ElapsedMs, force: true); _shots.Drain(); });
+        Log.Safe("Stop shots", () => { _shots.Pump(w.ElapsedMs, force: true); if (_late.Active) FinishLate(_late.Interrupted("the recording stopped", w.ElapsedMs), null); _shots.ReleaseAllShots(); _shots.Drain(); });
         // the counts of the basic check (setting `basicCheck`), always written: a recording made now can be basic-checked later
         Log.Safe("Stop end counts", () =>
         {
@@ -242,6 +244,13 @@ public sealed class Recorder
             var n = w.Event(type, doc, f);
             if (type is not ("prompt" or "shot" or "view_stale" or "state")) _haveSample = false;   // something else happened: the next result starts a new prompt
             NoteContext(type, f);
+            if (n > 0 && _lateBox is { } lbox && type is "palette_click" or "palette_values"
+                && (f.FirstOrDefault(x => x.Item1 == "palette").Item2 as string == lbox.Opened.Name || f.FirstOrDefault(x => x.Item1 == "set").Item2 as string == lbox.Opened.Name))
+            {
+                _lateBox = null;
+                _shots.NoteExtraBox(n, lbox.Opened.Name, lbox.Opened.Rect);
+                Log.Info($"shot {n}: palette {lbox.Opened.Name} (appeared after the command ended) boxed on this click's picture");
+            }
             var input = type == "prompt" && f.Any(x => x.Item1 == "input" && x.Item2 is true);
             _shots.Request(ShotRules.For(type, n, input, w.ElapsedMs));
             return n;
@@ -353,6 +362,9 @@ public sealed class Recorder
         ButtonNaming.NewSession();
         _shots.Hold = YoungModal;
         _shots.OpenedProbe = OpenedPaletteFor;
+        _late.Clear(); _lateBox = null;
+        _shots.LateWatching = n => _late.Active && _late.N == n;
+        _shots.ExtraRecheck = (name, r) => { try { return PaletteSnapshot.Read().Any(p => !p.IsBar && p.Shown && (p.Name == name || p.Set == name) && p.Rect is { } pr && Math.Abs(pr.Left - r.Left) <= 3 && Math.Abs(pr.Top - r.Top) <= 3 && Math.Abs(pr.Right - r.Right) <= 3 && Math.Abs(pr.Bottom - r.Bottom) <= 3); } catch (Exception) { return false; } };
         _shots.OpenedRecheck = (name, state) => { try { return !PaletteSnapshot.Read().Any(p => !p.IsBar && p.Shown && (p.Set.Length > 0 ? p.Set : p.Name) == name); } catch (Exception) { return true; } };
         _open.Clear(); _endBefore.Clear(); _nestedEnds.Clear(); _statusGate.Reset(); _lastStatusConsumed = true; _statusProbed = false; _lastStatusModel = null;
         _shots.Begin(w.Path, enabled, MainWindowHandle(), () => _modalOpen > 0, (n, file, what) =>
@@ -400,6 +412,7 @@ public sealed class Recorder
 
     void PumpShots(long nowMs)
     {
+        PollLate(nowMs);
         if (_rz.Active)
         {
             Log.Safe("record zoom", () => _rz.Pump(() => CheckPendingViews(ViewControl.ViewKey())));   // picks still waiting for their view check are judged against the view they were made in
@@ -724,6 +737,8 @@ public sealed class Recorder
         var name = e.GlobalCommandName;
         if (!IsOurs(name) && _inOwnCmd) { _ownNested++; return; }
         if (IsOurs(name)) { _sel.OwnCommandStart(_ctxCmdDepth > 0 || _ctxLispDepth > 0); _inOwnCmd = true; return; }   // (typed inside a prompt, the keys of 'RETRACEMARK are in the selection buffer: unusable) leaves _openPrompts alone: an own command typed transparently ('RETRACESTATUS) runs inside the user's prompt
+        _cmdStarts++;
+        if (_late.Active) FinishLate(_late.Interrupted("another command started (" + name + ")", _w?.ElapsedMs ?? 0), null);
         _kinds.Clear();
         _rz.Start(s as Document);
         _sel.CommandStart(_ctxCmdDepth > 0 || _ctxLispDepth > 0);   // a transparent command inside a prompt spoils the outer selection's text
@@ -741,7 +756,7 @@ public sealed class Recorder
     readonly Core.OpenedTracker _open = new();   // the palettes a ribbon click saw, kept for the top-level command / LISP it started (Core, tested)
     /// <summary>The palettes at the start of one top-level command, shared by every end event it wrote (a nested command's end and its own: the scheduler drops a second end picture that comes within 250 ms of the first, so any of them
     /// may be the one taken). The first of its pictures to be taken claims the box and caption.</summary>
-    sealed class OpenGroup { public required List<Core.PaletteState> Before; public bool Claimed; }
+    sealed class OpenGroup { public required List<Core.PaletteState> Before; public bool Claimed; public long EndedMs; public int Starts; }
     readonly Dictionary<int, OpenGroup> _endBefore = new();   // end event n -> its group
     readonly List<int> _nestedEnds = new();   // cmd_end events of commands nested in the one that is kept
 
@@ -756,7 +771,63 @@ public sealed class Recorder
         if (d.Opened == null) foreach (var p in after.Where(x => !x.IsBar && !x.Shown)) Log.Info($"end picture {n}: not shown: {p.Name} ({p.Set}): {p.Diag}");
         Log.Info($"end picture {n}: {(d.Opened == null ? "no palette box or caption, " : _shots.Arrows ? "palette opened, box requested (a mark left out is logged as shot N), " : "caption only (marks are off: no box), ")}{d.Reason}");
         if (d.Opened != null) group.Claimed = true;
+        else ArmLate(n, before, group);
         return d.Opened;
+    }
+
+    // ---- a palette that shows up after the command ended (Core/LatePalette) ----------------------------------------------
+    readonly Core.LatePaletteWatch _late = new();
+    (Core.PaletteOpened Opened, long AtMs)? _lateBox;   // a palette that appeared before the person's click in it: its box goes on the click's own picture
+    int _latePolls; long _lateReadMs;
+
+    /// <summary>The end picture of event <paramref name="n"/> showed no opened palette: watch (on the shot timer and Idle, one palette read every 150 ms, at most 3 s) for one that appears right after. Only for a command a ribbon, Quick Access Toolbar or status bar click started (its group exists).</summary>
+    void ArmLate(int n, List<Core.PaletteState> before, OpenGroup group)
+    {
+        if (_late.Active) FinishLate(_late.Interrupted("another end picture was taken", _w?.ElapsedMs ?? 0), null);
+        // the end picture is taken about 200 ms after the command ended: a command that started meanwhile (a macro `^C^CCMD1;CMD2`) owns what appears now, not this one
+        if (_cmdStarts != group.Starts || _ctxCmdDepth > 0 || _ctxLispDepth > 0 || _modalOpen > 0) { Log.Info($"end picture {n}: no late palette watch: another command started or a dialog opened after this one ended"); return; }
+        _late.Begin(n, before, group.EndedMs); _latePolls = 0; _lateReadMs = 0;
+    }
+    int _cmdStarts;   // commands started so far (not nested ones of Retrace's own): the late-palette watch is not armed when one started after the command it would watch ended
+
+    void PollLate(long nowMs)
+    {
+        if (_lateBox is { } lb && nowMs - lb.AtMs > 1500) { _lateBox = null; Log.Info($"palette {lb.Opened.Name}: box not drawn on the click's picture: no palette step was recorded for the click"); }
+        if (!_late.Active || !_late.Due(nowMs)) return;
+        if (_modalOpen > 0) { FinishLate(_late.Interrupted("a dialog opened", nowMs), null); return; }
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var after = PaletteSnapshot.Read();
+        _latePolls++; _lateReadMs += sw.ElapsedMilliseconds;
+        (int, int)? cursor = PaletteReveal.GetCursorPos(out var cp) ? (cp.X, cp.Y) : null;
+        if (_late.Poll(after, ShotService.WindowRect(MainWindowHandle()), nowMs, cursor) is { } o) FinishLate(o, after);
+    }
+
+    /// <summary>The person's input (a mouse button-down or a key) arrived while a palette is awaited: before anything reacts to it.</summary>
+    void LateInput(uint m, IntPtr wParam, int x, int y)
+    {
+        if (!_late.Active) return;
+        if (!Core.LateInputFilter.Counts(m, (long)wParam)) return;   // a mouse move, a button-up or a modifier key alone is not the person's next action
+        bool click = Core.LateInputFilter.IsClient(m);
+        var after = PaletteSnapshot.Read();
+        FinishLate(_late.Input(after, ShotService.WindowRect(MainWindowHandle()), _w?.ElapsedMs ?? 0, click ? x : null, click ? y : null), after);
+    }
+
+    void FinishLate(Core.LateOutcome o, List<Core.PaletteState>? after)
+    {
+        int n = _late.N;
+        try
+        {
+            var line = o.Line;
+            if (o.Kind == Core.LateKind.Retake && o.Opened != null)
+            {
+                var page = after?.FirstOrDefault(p => !p.IsBar && (p.Name == o.Opened.Name || p.Set == o.Opened.Name));
+                if (!_shots.Retake(n, o.Opened, page == null ? IntPtr.Zero : new IntPtr(page.Id))) line = $"end picture {n}: palette {o.Opened.Name} appeared {o.ElapsedMs} ms after the command ended, but the picture could not be retaken (the palette is not on screen as it was read, or the window cannot be captured): no box";
+            }
+            else if (o.Kind == Core.LateKind.ClickBox && o.Opened != null) _lateBox = (o.Opened, _w?.ElapsedMs ?? 0);
+            Log.Info(line + (_latePolls > 0 ? $" ({_latePolls} palette reads, {_lateReadMs} ms in all)" : ""));
+        }
+        catch (Exception ex) { Log.Error("late palette", ex); }
+        finally { _shots.ReleaseShot(n); }
     }
 
     /// <summary>A LISP expression a ribbon click ran has ended. A LISP's end gets no picture of its own, so one is asked for only when a palette is open now that was not at the click (the whole window, `lisp-end`; its box and caption are decided when it is
@@ -771,7 +842,7 @@ public sealed class Recorder
         _shots.Request(ShotRules.LispEnd(n, _w?.ElapsedMs ?? 0));
     }
 
-    void OnCmdEnded(object? s, CommandEventArgs e) => Log.Safe("CommandEnded", () => { if (!IsOurs(e.GlobalCommandName) && _ownNested > 0) { _ownNested--; return; } if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; _ownNested = 0; TakePendingMark(); } else { _kinds.Clear(); _rz.End(s as Document); _rz.EndNow(s as Document, e.GlobalCommandName, null, () => CheckPendingViews(ViewControl.ViewKey())); var endN = Emit("cmd_end", DocName(s as Document), ("command", e.GlobalCommandName)); if (endN > 0 && _open.Keeping && _ctxCmdDepth > 0 && _ctxLispDepth == 0) _nestedEnds.Add(endN); if (_open.CommandEnd(e.GlobalCommandName, _ctxCmdDepth, _ctxLispDepth) is { } kept) { if (endN > 0) { var g = new OpenGroup { Before = kept.ToList() }; _endBefore[endN] = g; foreach (var k in _nestedEnds) _endBefore[k] = g; } _nestedEnds.Clear(); } TakePendingMark(); } });
+    void OnCmdEnded(object? s, CommandEventArgs e) => Log.Safe("CommandEnded", () => { if (!IsOurs(e.GlobalCommandName) && _ownNested > 0) { _ownNested--; return; } if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; _ownNested = 0; TakePendingMark(); } else { _kinds.Clear(); _rz.End(s as Document); _rz.EndNow(s as Document, e.GlobalCommandName, null, () => CheckPendingViews(ViewControl.ViewKey())); var endN = Emit("cmd_end", DocName(s as Document), ("command", e.GlobalCommandName)); if (endN > 0 && _open.Keeping && _ctxCmdDepth > 0 && _ctxLispDepth == 0) _nestedEnds.Add(endN); if (_open.CommandEnd(e.GlobalCommandName, _ctxCmdDepth, _ctxLispDepth) is { } kept) { if (endN > 0) { var g = new OpenGroup { Before = kept.ToList(), EndedMs = _w?.ElapsedMs ?? 0, Starts = _cmdStarts }; _endBefore[endN] = g; foreach (var k in _nestedEnds) _endBefore[k] = g; } _nestedEnds.Clear(); } TakePendingMark(); } });
     void OnCmdCancelled(object? s, CommandEventArgs e) => Log.Safe("CommandCancelled", () => { if (!IsOurs(e.GlobalCommandName) && _ownNested > 0) { _ownNested--; return; } if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; _ownNested = 0; TakePendingMark(); } else { _kinds.Clear(); _rz.End(s as Document); _rz.EndNow(s as Document, e.GlobalCommandName, null, () => CheckPendingViews(ViewControl.ViewKey())); Emit("cmd_cancel", DocName(s as Document), ("command", e.GlobalCommandName)); _open.CommandAborted(e.GlobalCommandName, _ctxCmdDepth, _ctxLispDepth); if (!_open.Keeping) _nestedEnds.Clear(); TakePendingMark(); } });
     void OnCmdFailed(object? s, CommandEventArgs e) => Log.Safe("CommandFailed", () => { if (!IsOurs(e.GlobalCommandName) && _ownNested > 0) { _ownNested--; return; } if (IsOurs(e.GlobalCommandName)) { _inOwnCmd = false; _ownNested = 0; TakePendingMark(); } else { _kinds.Clear(); _rz.End(s as Document); _rz.EndNow(s as Document, e.GlobalCommandName, null, () => CheckPendingViews(ViewControl.ViewKey())); Emit("cmd_fail", DocName(s as Document), ("command", e.GlobalCommandName)); _open.CommandAborted(e.GlobalCommandName, _ctxCmdDepth, _ctxLispDepth); if (!_open.Keeping) _nestedEnds.Clear(); TakePendingMark(); } });
 
@@ -1076,8 +1147,9 @@ public sealed class Recorder
     {
         var m = e.Message.message;
         if (EvidenceKey.IsChord(m, e.Message.wParam)) return;   // the evidence camera's shortcut (the Evidence window handles it) is not the person's input
-        if (m == 0x0200) { _activity++; return; }   // WM_MOUSEMOVE: somebody is at the mouse (a script that answers by itself moves nothing)
+        if (m == 0x0200) { _activity++; if (_late.Active) _late.NoteCursor(e.Message.pt_x, e.Message.pt_y); return; }   // WM_MOUSEMOVE: somebody is at the mouse (a script that answers by itself moves nothing)
         if (CheckpointKey.TryHandle(m, e.Message.wParam, e.Message.lParam)) { e.Handled = true; return; }   // the shortcut is not user input
+        if (_late.Active && _w != null) Log.Safe("late palette input", () => LateInput((uint)m, e.Message.wParam, e.Message.pt_x, e.Message.pt_y));   // before anything reacts to it
         if (m == 0x0201) { _downX = e.Message.pt_x; _downY = e.Message.pt_y; _downMsgTime = (uint)e.Message.time; _downInWpf = System.Windows.Interop.HwndSource.FromHwnd(e.Message.hwnd) != null; }   // where the person clicked, for the arrow of the step's picture
         if (m == 0x0202 && _w != null) HoldAppMenuShot(e.Message.hwnd, e.Message.lParam);
         else if (m == 0x0201 && _upShotApp && unchecked((uint)Environment.TickCount - _upShotAt) > 1500) { _upShot = null; _upShotApp = false; }   // nothing claimed the menu click: the held picture is let go

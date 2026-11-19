@@ -35,7 +35,9 @@ namespace Retrace.Samples
             var ribbon = ComponentManager.Ribbon;
             if (ribbon == null || ribbon.Tabs.Any(t => t.Id == "MARKS_TEST")) return;
             ribbon.Tabs.Add(Tab("MARKS_OTHER", "Marks Other", Panel("Other", Row(Button("RBNU_200_DUPLI", "Dup A", "DRAWCIRCLE"))),
-                Panel("Panes", Row(Button("MARK_PANEROLL", "Panes roll", "DRAWPANEROLL"), Button("MARK_PANEDOCK", "Panes dock roll", "DRAWPANEROLLDOCK"), Button("MARK_PANECLOSE", "Panes close", "DRAWPANECLOSE"), Button("MARK_PANEPLAIN", "Panes plain", "DRAWPANES")))));
+                Panel("Panes", Row(Button("MARK_PANEROLL", "Panes roll", "DRAWPANEROLL"), Button("MARK_PANEDOCK", "Panes dock roll", "DRAWPANEROLLDOCK"), Button("MARK_PANECLOSE", "Panes close", "DRAWPANECLOSE"), Button("MARK_PANEPLAIN", "Panes plain", "DRAWPANES"))),
+                Panel("Late", Row(Button("MARK_LATE300", "Late 300", "DRAWLATE300"), Button("MARK_LATE1000", "Late 1000", "DRAWLATE1000"), Button("MARK_LATE1300", "Late 1300", "DRAWLATE1300"), Button("MARK_LATE2000", "Late 2000", "DRAWLATE2000"), Button("MARK_LATEDOCK2000", "Late dock 2000", "DRAWLATEDOCK2000"), Button("MARK_LATE4000", "Late 4000", "DRAWLATE4000"), Button("MARK_LATECLOSE", "Late close", "DRAWLATECLOSE"))),
+                Panel("Late edge", Row(Button("MARK_LATEEXP1500", "Expand 1500", "DRAWLATEEXPAND1500"), Button("MARK_LATEEXP2500", "Expand 2500", "DRAWLATEEXPAND2500"), Button("MARK_LATEOFF2000", "Offscreen 2000", "DRAWLATEOFFSCREEN2000"), Button("MARK_LATENOP", "Open nothing", "DRAWLATENOTHING")))));
             ribbon.Tabs.Add(Tab("MARKS_TEST", "Marks Test",
                 Panel("Palettes", Row(Button("MARK_PICK", "Pick palette", "DRAWPICK"), Button("RBNU_200_ABCDE", "Tools palette", "DRAWTOOLS"), Button("RBNU_200_DUPLI", "Dup B", "DRAWLINE"), Button("MARK_NEST", "Pick + zoom", "DRAWPICKNEST"), LispButton("PICKLISP", "Pick by LISP"))),
                 Panel("Split", Row(Split())),
