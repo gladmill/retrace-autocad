@@ -216,7 +216,7 @@ static class SdiDocs
                     _items.Remove(seq);                               // a RETRACETYPE that still runs for it finds nothing and types nothing
                     if (item.Typed) return;                           // it threw after the text was typed: delivered
                     if (DateTime.UtcNow - since <= SendGiveUp) { RetryLater(); return; }   // AutoCAD rejected the call (busy, RPC_E_CALL_REJECTED): again, until the give-up time
-                    failure = $"SDI: the typed text could not be delivered (RETRACETYPE through COM failed: {ex.Message})";
+                    failure = $"SDI: the typed text could not be delivered (typing through COM failed: {ex.Message})";
                     return;
                 }
                 if (item.Typed) return;
@@ -228,7 +228,7 @@ static class SdiDocs
                 {
                     if (token.Cancelled) { poll.Stop(); }
                     else if (item.Typed) { poll.Stop(); Finish(null); }
-                    else if (DateTime.UtcNow - start > TimeSpan.FromSeconds(5)) { poll.Stop(); item.Cancelled = true; _items.Remove(seq); Finish("SDI: the typed text could not be delivered (RETRACETYPE did not run within 5 s)"); }
+                    else if (DateTime.UtcNow - start > TimeSpan.FromSeconds(5)) { poll.Stop(); item.Cancelled = true; _items.Remove(seq); Finish("SDI: the typed text could not be delivered (it did not run within 5 s)"); }
                 });
                 poll.Start();
             }

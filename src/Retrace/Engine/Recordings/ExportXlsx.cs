@@ -5,6 +5,7 @@ using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Spreadsheet;
 using A = DocumentFormat.OpenXml.Drawing;
 using Xdr = DocumentFormat.OpenXml.Drawing.Spreadsheet;
+using Retrace.Engine.Util;
 
 namespace Retrace.Engine.Recordings;
 
@@ -30,7 +31,7 @@ public static class ExportXlsx
     public const string ResultHint = "Result: select the cell, then press Alt+Down and pick (Pass, Fail, Blocked, Not run), or type the word.";
 
     /// <summary>The how-to note in I3 (above the Evidence column), same secondary style as <see cref="ResultHint"/>.</summary>
-    public const string EvidenceHint = "Evidence: Retrace's camera (RETRACEEVIDENCE; Ctrl+Shift+F12 only while its window is open) files a picture per step. Or paste: Win+Shift+S, click the cell, Ctrl+V.";
+    public const string EvidenceHint = "Evidence: paste a picture of what you saw: Win+Shift+S, click the cell, Ctrl+V.";
 
     /// <summary>The note in I3 of an evidence workbook: the pictures are in, more can be pasted by hand.</summary>
     public const string EvidenceFilledHint = "Evidence: pictures of AutoCAD, stacked per step. To add more: Win+Shift+S, click the cell, Ctrl+V.";
@@ -342,7 +343,7 @@ public static class ExportXlsx
             ("Recorded", doc.Meta.TrimEnd('.')),
             ("Start with", doc.StartWith.TrimEnd('.')),
             ("Steps", doc.Steps.Count.ToString()),
-            ("Test folder", ev == null ? folder : EvidenceBook.ScrubPaths(folder)),
+            ("Test folder", DocText.FolderName(folder)),
         }.Concat(ev?.InfoLines ?? []).ToArray();
         var data = new SheetData();
         for (int i = 0; i < rows.Length; i++)

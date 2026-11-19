@@ -77,7 +77,6 @@ public static class TrainingDocx
             if (DateTime.TryParse(m.CreatedUtc, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var d))
                 parts.Add("Created " + d.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) + " UTC");
             else if (m.CreatedUtc.Length > 0) parts.Add("Created " + m.CreatedUtc);
-            if (m.RetraceVersion.Length > 0) parts.Add("made with Retrace " + m.RetraceVersion);
             return string.Join(", ", parts);
         }
 
@@ -96,7 +95,7 @@ public static class TrainingDocx
             var line = $"{t.Steps.Count} {(t.Steps.Count == 1 ? "step" : "steps")}, {checkpoints} {(checkpoints == 1 ? "checkpoint" : "checkpoints")}";
             if (!string.IsNullOrWhiteSpace(t.Verdict)) line += ", last result: " + t.Verdict;
             body.Append(Para(null, line, italic: true));
-            if (!string.IsNullOrWhiteSpace(t.Message)) body.Append(Para(null, t.Message!, italic: true));
+            if (!string.IsNullOrWhiteSpace(t.Message)) body.Append(Para(null, Retrace.Engine.Util.DocText.Guard(t.Message, "training document"), italic: true));
         }
 
         void Step(TrainingStep s, Body body)

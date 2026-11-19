@@ -160,7 +160,7 @@ sealed class Replayer
         var step = n > 0 ? _steps[cur - 1] : null;
         var text = step == null ? "" : !string.IsNullOrWhiteSpace(step.Command) ? step.Command! : step.Title;
         string? note = null, person = null;
-        if (_paletteForPerson) person = $"a palette step Retrace cannot do: {(string.IsNullOrWhiteSpace(step?.DialogTitle) ? "(untitled)" : step!.DialogTitle)}";
+        if (_paletteForPerson) person = $"a palette step the replay cannot do: {(string.IsNullOrWhiteSpace(step?.DialogTitle) ? "(untitled)" : step!.DialogTitle)}";
         else if (_dialog.Active && step != null)
         {
             var title = string.IsNullOrWhiteSpace(step.DialogTitle) ? "(untitled)" : step.DialogTitle!.Trim();
@@ -170,7 +170,7 @@ sealed class Replayer
                 case DialogWaitPhase.WaitingForPerson:
                     if (!_fillTried) note = $"dialog {title} is open";
                     else if (_fill != null && _fill.State != DialogAutoFiller.Phase.GaveUp) note = $"filling dialog {title}";
-                    else if (_suite == null) person = $"a dialog Retrace cannot fill: {title}";   // a suite run ends the test at once instead
+                    else if (_suite == null) person = $"a dialog the replay cannot fill: {title}";   // a suite run ends the test at once instead
                     break;
             }
         }
@@ -257,7 +257,7 @@ sealed class Replayer
             _tdoc.Begin(_win.SetVisible, AcApp.MainWindow.Handle);
             TdocRun.Started(_tdoc);
         }
-        _evidence?.Begin(_win.SetVisible, AcApp.MainWindow.Handle);
+        _evidence?.Begin(_win.SetVisible, AcApp.MainWindow.Handle, () => _win.IsVisible);
         _suite?.Started();
         if (_suite != null) _clock = new StepClock(_suite.StepTimeout);
         _win.Show();
@@ -350,7 +350,7 @@ sealed class Replayer
         if (_suite != null && _suite.IsProtected(doc)) { Finish(false, true, $"the test switched to {Path.GetFileName(name)}, which was open before the suite (or is the suite's own start drawing): not touched; close it and re-run"); return false; }
         if (!(expected != null && SdiGuard.Own.SamePath(name, expected)) && !SdiGuard.IsOwnTestDrawing(name))
         {
-            var why = $"a step opened {Path.GetFileName(name)}; under SDI Retrace stops here so it does not change your file. Use SDI = 0 for this test.";
+            var why = $"a step opened {Path.GetFileName(name)}; under SDI the replay stops here so it does not change your file. Use SDI = 0 for this test.";
             // the drawing opened while the step that last sent text ran, which may be an earlier one than the step the replay is at now
             var idx = _lastActedIndex >= 0 && _lastActedIndex < _steps.Count ? _lastActedIndex : Math.Min(_i, Math.Max(0, _steps.Count - 1));
             StopForPerson("open", idx < _steps.Count ? _steps[idx].Title : "", why, step: idx);
@@ -402,7 +402,7 @@ sealed class Replayer
                 // SDI, every mode: opening the file would replace the drawing that is open and leave the person's file changed for the next open: a temp copy, one per file
                 if (!_copies.TryGetValue(path, out var sdiCopy))
                 {
-                    if (!File.Exists(path)) { Finish(false, true, $"drawing not found: {path}"); return false; }
+                    if (!File.Exists(path)) { Finish(false, true, $"drawing not found: {Retrace.Engine.Util.DocText.UnderTests(path, _cfg.Tests)}"); return false; }
                     sdiCopy = _suite != null ? _suite.CopyOf(path) : SdiDocs.TempCopyOf(path); _copies[path] = sdiCopy;
                     Say($"\n  SDI is on: the test opens a copy of {Path.GetFileName(path)}.\n");
                 }
@@ -426,7 +426,7 @@ sealed class Replayer
             }
             if (doc == null)
             {
-                if (!File.Exists(path)) { Finish(false, true, $"drawing not found: {path}"); return false; }
+                if (!File.Exists(path)) { Finish(false, true, $"drawing not found: {Retrace.Engine.Util.DocText.UnderTests(path, _cfg.Tests)}"); return false; }
                 // SDI: the drawing that is open is replaced: never one with a person's unsaved changes; the test's own earlier drawing is saved first (it is a temp file)
                 if (SdiDocs.PrepareForOpen(_sdi) is { } refusal)
                 {
@@ -498,7 +498,7 @@ sealed class Replayer
         }
         if (DateTime.Now - _awaitSince < TimeSpan.FromSeconds(20)) return;
         _awaitOpen = null;
-        _warnings.Add($"step {_i + 1}: the double-click in the {s.DialogTitle} palette did not open {Path.GetFileName(s.Drawing)}; Retrace opened it itself");
+        _warnings.Add($"step {_i + 1}: the double-click in the {s.DialogTitle} palette did not open {Path.GetFileName(s.Drawing)}; the replay opened it itself");
         if (!OpenDrawing(s)) return;
         NextPaletteStep();
     }
@@ -595,7 +595,7 @@ sealed class Replayer
             foreach (var f in _result.Steps.Where(x => x.Status == "failed")) notes.Add($"step {f.Index} failed: {f.Message}");
             if (!completed || errored) notes.Add(message);
             if (completed && !errored && _result.Checkpoints.Count == 0)
-                notes.Add(_result.BasicCheck?.Pass == true ? "the session has no checkpoints (RETRACEMARK); the verdict comes from the basic check" : "the session has no checkpoints (RETRACEMARK), nothing was verified");
+                notes.Add(_result.BasicCheck?.Pass == true ? "the session has no checkpoints (no checkpoint was marked); the verdict comes from the basic check" : "the session has no checkpoints (no checkpoint was marked), nothing was verified");
             foreach (var c in _result.Checkpoints.Where(c => c.Pass == null))
                 notes.Add(c.ModelSpaceChecked == false ? $"checkpoint {c.Index} verified nothing (the model-space check is off)" : $"checkpoint {c.Index} has no recorded state (older recording)");
             if (_result.BasicCheck is { } bc) { notes.Add(bc.Line()); if (bc.Pass == null && bc.Items.Count > 0) notes.Add("the basic check verified nothing"); }
@@ -947,6 +947,7 @@ sealed class Replayer
                 return;
             case DialogWaitPhase.WaitingForPerson:
             {
+                if (_evidence != null && !_evidence.DialogOpened(_i, _win.Handle, DateTime.Now)) return;   // evidence: the picture of the dialog as it opened, before anything is filled in
                 if (!_fillTried) { _fillTried = true; _fill = MakeFiller(step); }
                 if (_fill != null && _fill.State != DialogAutoFiller.Phase.GaveUp)
                 {
@@ -1135,10 +1136,13 @@ sealed class Replayer
         var main = IntPtr.Zero;
         try { main = Autodesk.AutoCAD.ApplicationServices.Application.MainWindow.Handle; } catch (Exception ex) { Log.Error("autofill main window", ex); }
         var tdoc = _tdoc;
+        var evidence = _evidence;
         var at = _i;
         return new DialogAutoFiller(mode, step, main, ignore: _win.Handle)
         {
-            BeforeClose = tdoc == null ? null : shot => tdoc.DialogReady(at, shot, DateTime.Now),   // Tdoc: the picture of the filled dialog comes before OK
+            BeforeClose = tdoc != null ? shot => tdoc.DialogReady(at, shot, DateTime.Now)   // Tdoc: the picture of the filled dialog comes before OK
+                : evidence != null ? shot => evidence.DialogReady(at, shot.Dialog, DateTime.Now)   // evidence: the same moment
+                : null,
         };
     }
 
@@ -1228,7 +1232,7 @@ sealed class Replayer
         }
         var where = s.Kind == "statusbar" ? "the status bar" : "the palette";
         Say(s.Kind == "statusbar" ? $"\n  {s.Title}: {problem}. Do it by hand, then click Next.\n" : $"\n  Palette \"{s.DialogTitle}\": {problem}. Do it by hand, then click Next.\n");
-        _win.Show($"Step {_i + 1}/{_steps.Count}: {s.Kind}", $"{s.Title}\nRetrace could not do it: {problem}.\nDo it in {where}, then click Next.", true);
+        _win.Show($"Step {_i + 1}/{_steps.Count}: {s.Kind}", $"{s.Title}\nThe replay could not do it: {problem}.\nDo it in {where}, then click Next.", true);
         _userNext = false;
         _paletteForPerson = true;
     }
@@ -1652,7 +1656,7 @@ sealed class Replayer
         {
             _clickDeliveryStep = s;
             if (ChainDelivery.Unsafe(afterClick) is { } clickWhy)   // the replay cannot type them: a person gives them (as after a dialog)
-                _clickUnsafe = $"the script \"{ReplayRules.ButtonName(s)}\" started asks for input a person gave while recording ({string.Join("; ", afterClick.Select(ReplayRules.AnswerText))}), which Retrace cannot type ({clickWhy}); give it, then press Next step";
+                _clickUnsafe = $"the script \"{ReplayRules.ButtonName(s)}\" started asks for input a person gave while recording ({string.Join("; ", afterClick.Select(ReplayRules.AnswerText))}), which the replay cannot type ({clickWhy}); give it, then press Next step";
             else _clickDelivery = new ChainDelivery(afterClick, DateTime.Now);
         }
         _chainPausedFor = _chainWaitFor = -1; _chainPausing = false; _delivery = null; _deliveryFor = -1;

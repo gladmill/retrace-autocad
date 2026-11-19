@@ -199,7 +199,7 @@ sealed partial class DialogAutoFiller
             if (nothingToPress && !expired) return;
             if (nothingToPress && scan.Fields.Count == 0)
             {
-                if (HasClicks) GiveUp("the dialog has no controls Retrace can press a button in"); else StartUia(now);
+                if (HasClicks) GiveUp("the dialog has no controls the replay can press a button in"); else StartUia(now);
                 return;
             }
             Finish(scan, now);
@@ -210,7 +210,7 @@ sealed partial class DialogAutoFiller
         if (scan.Fields.Count == 0 && !tabbed)
         {
             // no child windows to read: a WPF dialog (its buttons cannot be pressed from here)
-            if (expired) { if (HasClicks) GiveUp("the dialog has no controls Retrace can fill and press buttons in"); else StartUia(now); }
+            if (expired) { if (HasClicks) GiveUp("the dialog has no controls the replay can fill and press buttons in"); else StartUia(now); }
             return;
         }
         var map = FillMatcher.Match(values, scan.Fields.Select(LiveField.Of).ToList());

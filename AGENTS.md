@@ -197,6 +197,7 @@ Retrace writes `retrace-<acad pid>.json` to the AutoCAD status board (format: [a
 | `GuideTests`, `HowToTests` | Guide merge rules and how-to pages. |
 | `TestFolderTests`, `RecordingTests`, `RecordingShotTests` | Test folder layout, reading recordings, picture naming. |
 | `EvidenceSheetTests` | The evidence workbook (anchors, stacking and shrinking, overflow columns, results, the original untouched, a plain export unchanged), the replay-to-sheet mapping per verdict, the evidence file names. |
+| `DocNameTests` | The guard: no document (steps.md, docx, xlsx, evidence workbook, Tdoc, suite report) has the product's name in any part, the program's messages are worded without it, user content is not touched. `DocNameGuard` is the search to reuse. |
 | `ScriptTests`, `ExportTests`, `DocWordingTests` | `steps.md`, docx and xlsx; the words of the documents (start with, where a step happens, the dialog change list, the Excel handoff sheet). |
 | `SelectionReplayTests` | How a selection replays: typed window text, the Enter that ends it, the echo of older point answers, the handle fallback with missing handles left out; the typed-key characters. |
 | `ViewPickTests` | The recorded view (read, round trip, malformed), what a replay window of another shape shows, pick points typed instead of `(handent)` and every fallback to the handle, TRIM / EXTEND single clicks, clicks that ask for their view. |

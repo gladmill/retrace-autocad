@@ -11,12 +11,15 @@ sealed class PictureWindows
 
     PictureWindows(List<IntPtr> windows, bool guide) { _windows = windows; _guide = guide; }
 
-    /// <summary>Hides them (UI thread). Never throws.</summary>
-    public static PictureWindows Hide()
+    /// <summary>Something was hidden (a window of Retrace's own or the floating Guide palette): the screen needs a moment before the picture.</summary>
+    public bool AnyHidden => _windows.Count > 0 || _guide;
+
+    /// <summary>Hides them (UI thread). Never throws. <paramref name="guide"/> false: the Guide palette is not touched (a picture taken while a command's modal dialog is open: showing a palette again may take the activation from the dialog).</summary>
+    public static PictureWindows Hide(bool guide = true)
     {
-        bool guide = false;
-        try { guide = Retrace.Ui.GuidePalette.HideFloating(); } catch (Exception ex) { Log.Error("hide guide palette", ex); }
-        return new PictureWindows(Native.HideRetraceWindows(), guide);
+        bool hiddenGuide = false;
+        if (guide) { try { hiddenGuide = Retrace.Ui.GuidePalette.HideFloating(); } catch (Exception ex) { Log.Error("hide guide palette", ex); } }
+        return new PictureWindows(Native.HideRetraceWindows(), hiddenGuide);
     }
 
     /// <summary>Shows them again, without taking the keyboard focus from AutoCAD. Calling it twice does nothing the second time.</summary>

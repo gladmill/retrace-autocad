@@ -11,10 +11,11 @@ public sealed record ManualRow(string Result, string Notes);
 
 /// <summary>One replayed step as the evidence needs it. <paramref name="T"/>: the step's time in the recording (ms), which names the sheet step it belongs to. <paramref name="Status"/>: ok, failed, needs-person, unverified (a checkpoint with no verdict),
 /// stopped (a person pressed Stop here) or "" when the replay never got to it. <paramref name="Waited"/>: the replay waited for a person at this step. <paramref name="Picture"/>: the file of the picture taken after it, if any.</summary>
-public sealed record ReplayStepInfo(int Index, long T, string Status, string? Message, string? Picture, bool Waited = false);
+public sealed record ReplayStepInfo(int Index, long T, string Status, string? Message, string? Picture, bool Waited = false, string Kind = "", string? Opened = null, string? Filled = null, string? Ended = null, string? Failed = null, bool OpenedNoWindow = false);
 
 /// <summary>What the workbook shows for one numbered step of steps.md: Result (Pass, Fail, Blocked, Not run), the Notes text for a failure, the picture.</summary>
-public sealed record StepOutcome(string Result, string? Notes, string? Picture);
+/// <paramref name="Rows"/>: the evidence of each row of the step by row number (0 = the step's own row), see <see cref="EvidenceRows"/>; null = the picture goes on the step's own row only.
+public sealed record StepOutcome(string Result, string? Notes, string? Picture, IReadOnlyDictionary<int, RowEvidence>? Rows = null);
 
 public static class EvidenceBook
 {
@@ -30,7 +31,7 @@ public static class EvidenceBook
 
     /// <summary>The outcome of every numbered step the replay touched. Fail when one of its replay steps failed (Notes carry the message); Pass when all of them ran ok; Blocked when one needs a person; the others Not run.
     /// The picture is the one after the last replay step of the step that has one.</summary>
-    public static Dictionary<int, StepOutcome> Outcomes(IReadOnlyList<long> numberedT, IReadOnlyList<ReplayStepInfo> steps)
+    public static Dictionary<int, StepOutcome> Outcomes(IReadOnlyList<long> numberedT, IReadOnlyList<ReplayStepInfo> steps, IReadOnlyList<IReadOnlyList<Emit.WordingBullet>>? bullets = null, IReadOnlyList<int>? rowCounts = null, IReadOnlyList<IReadOnlyList<bool>>? subRowsFilled = null)
     {
         var by = new SortedDictionary<int, List<ReplayStepInfo>>();
         foreach (var s in steps)
@@ -53,7 +54,12 @@ public static class EvidenceBook
             foreach (var f in list.Where(s => s.Status is "unverified" or "stopped")) lines.Add(Scrub(f.Message));
             if (list.Any(s => s.Waited)) lines.Add("A person finished a dialog here (the replay waited for them).");
             string? notes = lines.Count == 0 ? null : string.Join("\n", lines.Where(x => x.Length > 0));
-            map[n] = new StepOutcome(result, notes, list.LastOrDefault(s => s.Picture != null)?.Picture);
+            IReadOnlyDictionary<int, RowEvidence>? rows = null;
+            if (bullets != null && rowCounts != null && n <= bullets.Count && n <= rowCounts.Count && rowCounts[n - 1] > 0)
+                rows = EvidenceRows.Place(n.ToString(CultureInfo.InvariantCulture), list, bullets[n - 1], rowCounts[n - 1],
+                    by.TryGetValue(n + 1, out var nextList) && nextList.OrderBy(x => x.Index).FirstOrDefault(x => x.Kind != "tab") is { Kind: "dialog" } nd ? nd.Opened : null,
+                    subRowsFilled != null && n <= subRowsFilled.Count ? subRowsFilled[n - 1] : null);
+            map[n] = new StepOutcome(result, notes, list.LastOrDefault(s => s.Picture != null)?.Picture, rows);
         }
         return map;
     }
@@ -68,7 +74,11 @@ public static class EvidenceBook
             var main = row.Label.Split('.')[0];
             if (!int.TryParse(main, NumberStyles.None, CultureInfo.InvariantCulture, out var n) || !outcomes.TryGetValue(n, out var o)) continue;
             bool own = row.Label == main;
-            ev.Rows[row.Label] = new EvidenceRow(own && o.Picture != null ? [o.Picture] : [], o.Result, own ? o.Notes : null);
+            if (o.Rows == null) { ev.Rows[row.Label] = new EvidenceRow(own && o.Picture != null ? [o.Picture] : [], o.Result, own ? o.Notes : null); continue; }
+            int idx = own ? 0 : int.TryParse(row.Label[(main.Length + 1)..], NumberStyles.None, CultureInfo.InvariantCulture, out var k) ? k : -1;
+            o.Rows.TryGetValue(idx, out var re);
+            var notes = string.Join("\n", new[] { own ? o.Notes : null, re?.Note }.Where(x => !string.IsNullOrEmpty(x)));
+            ev.Rows[row.Label] = new EvidenceRow(re?.Picture != null ? [re.Picture] : [], o.Result, notes.Length == 0 ? null : notes);
         }
         return ev;
     }
@@ -117,15 +127,15 @@ public static class EvidenceBook
     /// <summary>A message for the workbook: <see cref="ScrubPaths"/>, trimmed, at most 400 characters.</summary>
     public static string Scrub(string? text)
     {
-        var t = ScrubPaths(text).Trim();
+        var t = ScrubPaths(DocText.Guard(text, "evidence workbook")).Trim();
         return t.Length > 400 ? t[..400] + "..." : t;
     }
 
-    /// <summary>The "automated run" lines of the Info sheet. No user name and no computer name: the date, Retrace's version and AutoCAD's.</summary>
-    public static List<(string Label, string Value)> AutomatedInfo(DateTime now, string retraceVersion, string autocadVersion, string verdict, int run, int total, bool anyWaited = false) =>
+    /// <summary>The "automated run" lines of the Info sheet. No user name and no computer name: the date and AutoCAD's version (the product's name and version are not in a document).</summary>
+    public static List<(string Label, string Value)> AutomatedInfo(DateTime now, string autocadVersion, string verdict, int run, int total, bool anyWaited = false) =>
     [
-        ("Run", $"Automated run by Retrace {retraceVersion} on AutoCAD {autocadVersion}, {now.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)}. "
-            + (anyWaited ? "Retrace replayed the recording and took a picture after each step; a person finished some dialogs it could not fill in (see Notes)." : "Nobody clicked anything: Retrace replayed the recording and took a picture after each step.")),
+        ("Run", $"Automated run on AutoCAD {autocadVersion}, {now.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)}. "
+            + (anyWaited ? "The recording was replayed and a picture taken after each step; a person finished some dialogs it could not fill in (see Notes)." : "Nobody clicked anything: the recording was replayed and a picture taken after each step.")),
         ("Verdict", $"{verdict} ({run} of {total} replay steps run)"),
     ];
 }

@@ -9,7 +9,11 @@ namespace Retrace.AutoCad;
 public static class ImageScale
 {
     /// <summary>Called once at start-up; the exporter only uses it for a picture wider than <see cref="Retrace.Engine.Recordings.ExportXlsx.MaxStoredWidth"/>.</summary>
-    public static void Install() => Retrace.Engine.Recordings.ExportXlsx.Rescale = Shrink;
+    public static void Install()
+    {
+        Retrace.Engine.Recordings.ExportXlsx.Rescale = Shrink;
+        Retrace.Engine.Util.DocText.OnLeak = m => Log.Info(m);   // a program message with the product's name reached a document: one log line (the text is not changed)
+    }
 
     /// <summary>The PNG of <paramref name="file"/> scaled to <paramref name="maxWidth"/> px wide (aspect kept), or null when it is not wider than that.</summary>
     public static (byte[] Png, int Width, int Height)? Shrink(string file, int maxWidth)

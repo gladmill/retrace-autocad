@@ -170,20 +170,14 @@ public class TestFolderTests : IDisposable
     }
 
     [Fact]
-    public void Script_top_has_a_files_section_between_the_intro_and_the_steps()
+    public void Script_top_goes_from_the_intro_straight_to_the_steps()
     {
         var dir = TestFolder();
         Assert.True(EngineRunner.WriteSteps(Path.Combine(dir, "recording.jsonl")).Success);
         var md = File.ReadAllText(Path.Combine(dir, "steps.md"));
-        var intro = md.IndexOf("Do the steps in order.", StringComparison.Ordinal);
-        var files = md.IndexOf("## Files in this folder", StringComparison.Ordinal);
-        var steps = md.IndexOf("## Steps", StringComparison.Ordinal);
-        Assert.True(intro >= 0 && intro < files && files < steps);
-        var section = md[files..steps];
-        foreach (var row in new[] { "| `steps.md` |", "| `recording.jsonl` |", "| `screenshots` |", "| `results` |" }) Assert.Contains(row, section);
-        Assert.Contains("Retrace** tab", section);
-        Assert.Contains("**Run test**", section);
-        Assert.Equal(4, section.Split('\n').Count(l => l.StartsWith("| `")));
+        Assert.DoesNotContain("Files in this folder", md);
+        Assert.DoesNotContain("Run test", md);
+        Assert.Matches(@"Do the steps in order\.[^\n]*\n\n## Steps\n", md);
     }
 
     [Fact]

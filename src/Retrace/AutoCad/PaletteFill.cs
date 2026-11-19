@@ -125,7 +125,7 @@ static class PaletteFill
 
     /// <summary>Queues a press; <paramref name="press"/> returns false when it could not press.</summary>
     static void Later(string button, Func<bool> press) => System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background,
-        () => { if (!press()) _pressFailure = $"could not press {button} (disabled, or it failed: see retrace.log)"; });
+        () => { if (!press()) _pressFailure = $"could not press {button} (disabled, or it failed: see the log)"; });
 
     /// <summary>Does the step; null when done (the button press may still be queued), else what stopped it (tried again, then a person).</summary>
     public static string? Run(Retrace.Core.Step s, FillRun run)
@@ -159,7 +159,7 @@ static class PaletteFill
         {
             // a click on WPF content (a custom element) cannot be replayed: the test stops for a person at once, not after the palette's wait
             if (s.ClickKind == Retrace.Core.PaletteClickKinds.Point && s.Hit?.Class == Retrace.Core.PaneClicks.WpfClass)
-            { FailLater($"the click on {(string.IsNullOrEmpty(s.Hit.Name) ? "a WPF element" : s.Hit.Name)} in the {s.DialogTitle} pane is WPF content, which Retrace cannot click again", needsPerson: true); return null; }
+            { FailLater($"the click on {(string.IsNullOrEmpty(s.Hit.Name) ? "a WPF element" : s.Hit.Name)} in the {s.DialogTitle} pane is WPF content, which the replay cannot click again", needsPerson: true); return null; }
             if (wpf) return $"a {s.ClickKind} click needs a WinForms palette";
             return PaletteClickFill.Run(s, page, hidden, win32);
         }

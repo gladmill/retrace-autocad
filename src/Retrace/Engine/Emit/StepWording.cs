@@ -22,7 +22,14 @@ public sealed class WordingContext
     /// <summary>What the pictures being written are: click | command | dialog-before | dialog-after | end | check | answer:pick | answer:enter | answer:answer.
     /// <see cref="StepWording"/> sets it just before it asks <see cref="ShotHref"/>; the test script names its pictures by it.</summary>
     public string ShotRole { get; set; } = "";
+    /// <summary>When set, <see cref="StepWording.Render"/> adds one entry per sub-item (sheet row N.1, N.2 ...) it writes under the step, in order: what it is and when it happened. The evidence run reads it to
+    /// know which row is an answer and which a dialog; nothing else sets it.</summary>
+    public List<WordingBullet>? Bullets { get; init; }
 }
+
+/// <summary>What a sub-item under a step is: an answer at a prompt, a dialog the command opened, a status bar click made while it ran, the closing line ("The command is cancelled"). <paramref name="T"/>: its time in the recording.</summary>
+public enum WordingBulletKind { Answer, Dialog, Status, Outcome }
+public sealed record WordingBullet(WordingBulletKind Kind, long T);
 
 public static class StepWording
 {
@@ -87,21 +94,23 @@ public static class StepWording
             int d = 0;
             bool afterSelectionInput = false;
             int ic = 0;
-            void InlineUpTo(long t) { while (ic < st.InlineStatusClicks.Count && st.InlineStatusClicks[ic].T <= t) sb.Append("   - ").Append(StatusInline(st.InlineStatusClicks[ic++].Text)).Append('\n'); }
+            void InlineUpTo(long t) { while (ic < st.InlineStatusClicks.Count && st.InlineStatusClicks[ic].T <= t) { ctx.Bullets?.Add(new(WordingBulletKind.Status, st.InlineStatusClicks[ic].T)); sb.Append("   - ").Append(StatusInline(st.InlineStatusClicks[ic++].Text)).Append('\n'); } }
             foreach (var a in st.Answers)
             {
                 InlineUpTo(a.T);
-                while (d < st.InnerDialogs.Count && st.InnerDialogs[d].T <= a.T) InnerDialog(sb, st.InnerDialogs[d++], ctx);
+                while (d < st.InnerDialogs.Count && st.InnerDialogs[d].T <= a.T) { ctx.Bullets?.Add(new(WordingBulletKind.Dialog, st.InnerDialogs[d].T)); InnerDialog(sb, st.InnerDialogs[d++], ctx); }
                 // the selection result after the corners / points that made it only echoes them (the same rule as Core/SelectionReplay.Effective)
                 if (a.Kind == "selection" && a.Status == "OK" && afterSelectionInput) { afterSelectionInput = false; continue; }
                 if (a.Kind == "selection" && a.Status == "Error" && a.Input != true) continue;
                 afterSelectionInput = a.Kind == "corner" || (a.Kind == "point" && a.Message is { } pm && (pm.Contains("select", StringComparison.OrdinalIgnoreCase) || pm.Contains("corner", StringComparison.OrdinalIgnoreCase)));
                 var text = AnswerText(a);
+                ctx.Bullets?.Add(new(WordingBulletKind.Answer, a.T));
                 sb.Append("   - ").Append(text).Append('\n');
                 Shots(sb, a.Shots, Alt(text), ctx, "     ", a.By switch { "mouse" => "answer:pick", "keys" => "answer:enter", _ => "answer:answer" });
             }
-            while (d < st.InnerDialogs.Count) InnerDialog(sb, st.InnerDialogs[d++], ctx);
+            while (d < st.InnerDialogs.Count) { ctx.Bullets?.Add(new(WordingBulletKind.Dialog, st.InnerDialogs[d].T)); InnerDialog(sb, st.InnerDialogs[d++], ctx); }
             InlineUpTo(long.MaxValue);
+            if (st.Outcome is "cancelled" or "failed") ctx.Bullets?.Add(new(WordingBulletKind.Outcome, long.MaxValue));
             if (st.Outcome == "cancelled") sb.Append("   - The command is cancelled.\n");
             else if (st.Outcome == "failed") sb.Append("   - The command fails.\n");
             Shots(sb, st.EndShots, alt, ctx, "   ", "end");
