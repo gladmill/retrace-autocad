@@ -303,7 +303,7 @@ public class ListViewFieldTests
         var change = Assert.Single(t.Changes());
         Assert.Equal(ListSelection.NotRecorded, change.After);   // not "Nuts": a stale earlier selection is never recorded
         Assert.Null(change.Items);
-        Assert.Equal("Select the items in Products yourself (the selection could not be recorded)", DialogFieldsCore.Describe(change));
+        Assert.Equal("Select the items in Products yourself (the selection was not stored in the test)", DialogFieldsCore.Describe(change));
         // nothing readable from the start and nothing after: no change at all
         var t2 = new FieldTracker();
         t2.Observe(new[] { unreadable }); t2.Observe(new[] { unreadable });
@@ -314,7 +314,7 @@ public class ListViewFieldTests
     public void A_list_view_value_that_could_not_be_recorded_has_wording_and_is_not_applied()
     {
         string Words(string after) => StepWording.ChangeText(new RecordingDialogValue("Products", "listview", "", after, ""), s => s ?? "", s => $"`{s}`", bold: true)!;
-        Assert.Equal("Select the items in **Products** yourself (the selection could not be recorded)", Words(ListSelection.NotRecorded));
+        Assert.Equal("Select the items in **Products** yourself (the selection was not stored in the test)", Words(ListSelection.NotRecorded));
         Assert.True(ListSelection.IsNotRecorded(ListSelection.NotRecorded));
         Assert.False(ListSelection.IsNotRecorded("Nuts"));
     }

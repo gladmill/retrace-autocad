@@ -589,7 +589,7 @@ static class PaletteClickFill
         var tree = win32.Handles[at][0];
         if (!Native.OwnedByThisThread(tree)) return (null, "the tree belongs to another thread");
         var levels = PaletteClickKinds.ClickLevels(s.ClickPath);
-        if (levels.Count == 0) return (null, "the recorded click names no tree item (an empty path)");
+        if (levels.Count == 0) return (null, "the click in the test names no tree item (an empty path)");
         // a replay opens every parent on the way, so the item is there to click; Tdoc only looks (a blank item is "(blank)" on both sides)
         var found = FindTreeItem(tree, levels, mutate);
         if (found.Problem != null) return (null, found.Problem);
@@ -680,8 +680,8 @@ static class PaletteClickFill
         if (item.OnOverflow) return (null, $"the toolbar button \"{name}\" is on the toolbar's overflow menu (the palette is too narrow to show it): make the palette wider");
         if (!item.Enabled) return (null, $"the toolbar button \"{name}\" is disabled");
         bool menu = hit.Menu.Length > 0;
-        if (menu && !item.DropDown) return (null, $"the toolbar button \"{name}\" has no drop-down menu now (recorded: {hit.Menu})");
-        if (!menu && item.DropDown && !item.Split) return (null, $"the toolbar button \"{name}\" opens a menu now (recorded as a plain click): not clicked");
+        if (menu && !item.DropDown) return (null, $"the toolbar button \"{name}\" has no drop-down menu now (in the test: {hit.Menu})");
+        if (!menu && item.DropDown && !item.Split) return (null, $"the toolbar button \"{name}\" opens a menu now (it was a plain click in the test): not clicked");
         if (ToolStripControls.ScreenOf(strip, item, arrow: menu) is not { } sc) return (null, $"the toolbar button \"{name}\" is not in view");
         var obj = item.Obj;
         return (new ClickTarget(strip, sc.X, sc.Y, sc.Rect, "toolbar button " + name, found.Note, MenuRoot: menu ? item.Obj : null, MenuPath: menu ? TreePath.Split(hit.Menu) : null,
@@ -766,7 +766,7 @@ static class PaletteClickFill
         if (at < 0 && ButtonNames.IsFallback(s.ButtonFrom) && ButtonNames.PositionAllowed(s.ButtonLegacyIndex, s.ButtonNoTextCount, pics.H.Count))
         {
             at = s.ButtonLegacyIndex - 1;
-            note = $"image found by position (no. {s.ButtonLegacyIndex}); its name changed (recorded as \"{s.Button}\")";
+            note = $"image found by position (no. {s.ButtonLegacyIndex}); its name changed (it was \"{s.Button}\" in the test)";
         }
         if (at < 0) return (null, $"no image \"{s.Button}\" in the {s.DialogTitle} palette (yet)");
         var h = pics.H[at];

@@ -47,8 +47,8 @@ public static class PaletteToolbar
         string? Verify(int i)
         {
             var now = Display(live[i]).Name;
-            if (named) return string.Equals(now, recordedName, StringComparison.OrdinalIgnoreCase) ? null : $"the toolbar button recorded as \"{recordedName}\" is called \"{now}\" now (it may do something else): not clicked";
-            return now == ButtonNames.Unnamed ? null : $"the toolbar button recorded without a name is called \"{now}\" now (it may do something else): not clicked";
+            if (named) return string.Equals(now, recordedName, StringComparison.OrdinalIgnoreCase) ? null : $"the toolbar button called \"{recordedName}\" in the test is called \"{now}\" now (it may do something else): not clicked";
+            return now == ButtonNames.Unnamed ? null : $"the toolbar button that had no name in the test is called \"{now}\" now (it may do something else): not clicked";
         }
         var byCmd = new List<int>();
         if (cmd > 0) for (int i = 0; i < live.Count; i++) if (live[i].Cmd == cmd) byCmd.Add(i);

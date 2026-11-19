@@ -50,7 +50,7 @@ static class ViewControl
     {
         if (cur == null) return "the current view cannot be read";
         if (cur.Space != v.Space || !string.Equals(cur.Layout, v.Layout, StringComparison.Ordinal))
-            return $"recorded in {Describe(v)}, the replay is in {Describe(cur)}";
+            return $"the test was in {Describe(v)}, the replay is in {Describe(cur)}";
         return null;   // (a recorded view inside a floating viewport never gets here: PickReplay.Claim refuses it)
     }
 

@@ -597,7 +597,7 @@ sealed class Replayer
             if (completed && !errored && _result.Checkpoints.Count == 0)
                 notes.Add(_result.BasicCheck?.Pass == true ? "the session has no checkpoints (no checkpoint was marked); the verdict comes from the basic check" : "the session has no checkpoints (no checkpoint was marked), nothing was verified");
             foreach (var c in _result.Checkpoints.Where(c => c.Pass == null))
-                notes.Add(c.ModelSpaceChecked == false ? $"checkpoint {c.Index} verified nothing (the model-space check is off)" : $"checkpoint {c.Index} has no recorded state (older recording)");
+                notes.Add(c.ModelSpaceChecked == false ? $"checkpoint {c.Index} verified nothing (the model-space check is off)" : $"checkpoint {c.Index} has no stored state (older test)");
             if (_result.BasicCheck is { } bc) { notes.Add(bc.Line()); if (bc.Pass == null && bc.Items.Count > 0) notes.Add("the basic check verified nothing"); }
             notes.AddRange(_warnings);
             _result.Message = string.Join("; ", notes);
@@ -968,7 +968,7 @@ sealed class Replayer
                     var actual = ForegroundDialogTitle();
                     var recorded = string.IsNullOrWhiteSpace(step.DialogTitle) ? "" : step.DialogTitle.Trim();
                     var title = actual.Length == 0 ? (recorded.Length == 0 ? "(untitled)" : recorded)
-                        : recorded.Length > 0 && !string.Equals(actual, recorded, StringComparison.OrdinalIgnoreCase) ? $"{actual} (recorded: {recorded})" : actual;
+                        : recorded.Length > 0 && !string.Equals(actual, recorded, StringComparison.OrdinalIgnoreCase) ? $"{actual} (expected: {recorded})" : actual;
                     StopForPerson("dialog", step.Title, $"the dialog needs a person: {title}", $"needs a person: dialog {title}",
                         segments: _fill is { UsedUia: false } ? _fill.SegmentResults() : null);   // how far the replay got: the values set, the buttons pressed, the dialog that stopped it
                     return;
@@ -1484,7 +1484,7 @@ sealed class Replayer
         if (s.State == null && (s.Checks == null || emptyChecks))
         {
             if (s.Checks != null) cp.ApplyChecks(s.Checks, new BehaviorSnapshot());   // records the mode; verifies nothing
-            cp.Differences.Add("no state recorded for this checkpoint");
+            cp.Differences.Add("no state is stored for this checkpoint");
             Say($"\n  CHECK {cp.Index} SKIPPED{label}: no recorded state (older recording). EXPECTED: {s.Note}\n");
             _win.Show("Check " + cp.Index, "No recorded state. Expected: " + s.Note, false);
             return;
@@ -1820,14 +1820,14 @@ sealed class Replayer
         var row = _result.Steps.LastOrDefault(x => x.Index == _clickedIndex);
         if (string.IsNullOrEmpty(text))
         {
-            var none = $"the click started no command within 2 s ({s.Command ?? "no command"} when recorded), and the step has nothing to type instead (no macro or LISP form)";
+            var none = $"the click started no command within 2 s ({s.Command ?? "no command"} in the original run), and the step has nothing to type instead (no macro or LISP form)";
             Say($"\n  WARNING: {none}\n");
             Log.Info($"replay click: {s.ItemId}: {none}");
             _warnings.Add($"step {_clickedIndex}: {none}");
             if (row != null) row.Message = none;
             return false;
         }
-        var typed = $"the click started no command within 2 s ({s.Command ?? "no command"} when recorded); its {formName ?? "macro"} was typed instead";
+        var typed = $"the click started no command within 2 s ({s.Command ?? "no command"} in the original run); its {formName ?? "macro"} was typed instead";
         Say($"\n  {typed}\n");
         Log.Info($"replay click: {s.ItemId}: {typed}: '{text.Replace("\u0003", "^C").Replace("\u001b", "^C").Replace("\n", ";")}'");
         _warnings.Add($"step {_clickedIndex}: {typed}");

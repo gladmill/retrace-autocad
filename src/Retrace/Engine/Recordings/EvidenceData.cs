@@ -80,6 +80,15 @@ public static class EvidenceFiles
         yield return Hash(text);
         int a = text.IndexOf("## Steps", StringComparison.Ordinal);
         if (a >= 0 && !text.Contains("## Files in this folder", StringComparison.Ordinal)) yield return Hash(text[..a] + OldFilesSection + text[a..]);
+        // a steps.md written again by this version has today's wording where the older one said "recorded": the older text, put back, is what an older stamp holds (both schemes, with and without the Files section)
+        var older = OlderStepsWording.ToOlder(text);
+        if (older != text)
+        {
+            yield return StepsFingerprint(older);
+            yield return Hash(older);
+            int b = older.IndexOf("## Steps", StringComparison.Ordinal);
+            if (b >= 0 && !older.Contains("## Files in this folder", StringComparison.Ordinal)) yield return Hash(older[..b] + OldFilesSection + older[b..]);
+        }
     }
 
     /// <summary>false when pictures exist whose steps.md differs from the one they were taken against. Only reads: no pictures, or no fingerprint, is true.</summary>

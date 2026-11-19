@@ -49,13 +49,13 @@ public sealed class RecordingWriter(RecordingAnalysis a, string outRoot)
     string Index()
     {
         const string doc = $"{Root}/index.md";
-        var sb = new StringBuilder("# Recorded tests\n\n");
-        sb.Append($"{a.Sessions.Count} recorded session(s), {a.Sessions.Sum(s => s.Steps.Count(x => x.Kind == "ribbon"))} ribbon clicks, ")
+        var sb = new StringBuilder("# Tests\n\n");
+        sb.Append($"{a.Sessions.Count} session(s), {a.Sessions.Sum(s => s.Steps.Count(x => x.Kind == "ribbon"))} ribbon clicks, ")
           .Append($"{a.Commands.Sum(c => c.Total)} commands. ");
         sb.Append(a.Map != null ? $"Joined to the source map in `{a.Map.MapDir}`.\n\n" : "No sourcemap given (no data/sourcemap.json): no source links, no ribbon coverage.\n\n");
 
         sb.Append("## Sessions\n\n");
-        sb.Append(Md.Table(new[] { "Session", "Recorded with", "Duration", "Steps", "Ribbon clicks", "Marks", "Unmatched clicks" },
+        sb.Append(Md.Table(new[] { "Session", "Made with", "Duration", "Steps", "Ribbon clicks", "Marks", "Unmatched clicks" },
             a.Sessions.Select(s => new[]
             {
                 $"[{Md.Cell(s.Name)}]({s.Slug}.md)",
@@ -133,7 +133,7 @@ public sealed class RecordingWriter(RecordingAnalysis a, string outRoot)
     {
         var doc = PageOf(s);
         var sb = new StringBuilder($"# Manual test: {s.Name}\n\n");
-        sb.Append("Reconstructed from a recorded session. Do the steps in order; **Expected** lines are checkpoints the tester wrote while recording.\n\n");
+        sb.Append("Reconstructed from a session. Do the steps in order; **Expected** lines are checkpoints the tester wrote while recording.\n\n");
         sb.Append(Md.Table(new[] { "Field", "Value" }, new List<string?[]>
         {
             new[] { "Recording", Md.Code(Path.GetFileName(s.File)) },
@@ -224,7 +224,7 @@ public sealed class RecordingWriter(RecordingAnalysis a, string outRoot)
                     break;
             }
         }
-        if (n == 0) sb.Append("_No steps recorded._\n");
+        if (n == 0) sb.Append("_No steps._\n");
         return sb.ToString();
     }
 

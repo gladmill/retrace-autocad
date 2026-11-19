@@ -306,7 +306,7 @@ public class NativeControlsTests
         Assert.StartsWith("unverified: the dialog has ", note);
         Assert.Contains("CMFCTabCtrl, window class \"Afx:TabWnd\"", note);
         Assert.Contains("CMFCPropertyGridCtrl", note);
-        Assert.Contains("not recorded or replayed", note);
+        Assert.Contains("the test does not cover", note);
         // the same json as a WPF part, and back
         var json = JsonSerializer.Serialize(WpfPresses.PartsToJson(parts));
         Assert.Equal("""[{"kind":"mfc-tabs","name":"Afx:TabWnd"},{"kind":"mfc-propertygrid","name":"Afx:PropList"}]""", json);

@@ -38,6 +38,12 @@ public static class ListSelection
 
     public static bool IsNotRecorded(string? value) => value == NotRecorded;
 
+    /// <summary>The plain words for a list whose selection the test never stored (a document, a replay failure): the marker above is a stored value, never shown.</summary>
+    public const string NotStoredText = "the selection was not stored in the test";
+
+    /// <summary>The plain words for a list the replay cannot read back now.</summary>
+    public const string UnreadableNow = "the selection cannot be read now";
+
     /// <summary>What two selections are compared by: text (trimmed, case folded) and occurrence per item, a blank item by its row, sorted. The value text is for display only (an item text may hold "; "
     /// or "(2nd)"); the row of a texted item is left out because a list may be sorted differently on replay.</summary>
     public static string Key(IEnumerable<ListItem> items) =>
@@ -127,7 +133,7 @@ public static class ListSelection
 
     /// <summary>"Select **Bolts** in **Products**" / "Select **Bolts**, **Nuts** in **Products**" (<paramref name="item"/> and <paramref name="list"/> format the parts).</summary>
     public static string Sentence(string after, string listLabel, Func<string, string> item, Func<string, string> list, IReadOnlyList<ListItem>? items = null) =>
-        IsNotRecorded(after) ? $"Select the items in {list(listLabel)} yourself (the selection could not be recorded)" :
+        IsNotRecorded(after) ? $"Select the items in {list(listLabel)} yourself ({NotStoredText})" :
         (items != null ? items.OrderBy(i => i.Row).Select(Label).ToList() : Names(after)) is { Count: > 0 } names
             ? $"Select {string.Join(", ", names.Select(item))} in {list(listLabel)}"
             : $"Clear the selection in {list(listLabel)}";

@@ -129,7 +129,7 @@ sealed class MenuReplay
                 return Pending("opening the menu");
             }
             // the list could not be read when this was recorded (a row past the cap, a failed read): right-clicking its middle would act on whatever row is there
-            return Fail("the list could not be read when this was recorded, so which item the menu was opened on is not known; open the menu yourself");
+            return Fail("the list could not be read in the original run, so which item the menu was opened on is not known; open the menu yourself");
         }
         else if (_menu.Target.Length > 0)
         {

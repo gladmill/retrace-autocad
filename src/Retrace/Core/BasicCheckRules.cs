@@ -40,7 +40,7 @@ public static class BasicCheckRules
     public static bool IsXrefLayer(string name) => name.Contains('|');
 
     /// <summary>The note on a basic check that could not use the last checkpoint of an older recording.</summary>
-    public const string StepsAfterLastCheckpoint = "recorded before end counts existed; steps after the last checkpoint";
+    public const string StepsAfterLastCheckpoint = "made before end counts existed; steps after the last checkpoint";
 
     /// <summary>Events that can change the drawing (what a person or a command did), after the last checkpoint: the plugin's own commands and ribbon tab do not count.</summary>
     static bool ChangesDrawing(JsonElement e) => Str(e, "type") switch

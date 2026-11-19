@@ -101,7 +101,7 @@ public static class StartLayers
         if (skipped.Count > 0) plan.Warnings.Add($"layer{(skipped.Count == 1 ? "" : "s")} {Join(skipped)} could not be created (not a usable layer name)");
         var withEntities = plan.Create.Where(l => l.StartEntities > 0).Select(l => l.Name).ToList();
         if (withEntities.Count > 0)
-            plan.Warnings.Add($"layer{(withEntities.Count == 1 ? "" : "s")} {Join(withEntities)} held entities in the recorded start drawing; created empty, so a PURGE in the test may remove {(withEntities.Count == 1 ? "it" : "them")}");
+            plan.Warnings.Add($"layer{(withEntities.Count == 1 ? "" : "s")} {Join(withEntities)} held entities in the start drawing of the test; created empty, so a PURGE in the test may remove {(withEntities.Count == 1 ? "it" : "them")}");
         return plan;
     }
 

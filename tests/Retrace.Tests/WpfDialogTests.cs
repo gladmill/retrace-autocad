@@ -194,11 +194,11 @@ public class WpfDialogTests
     public void A_dialog_with_a_tree_or_tab_control_says_so_in_its_replay_result()
     {
         Assert.Null(WpfPresses.UnsupportedNote(new List<WpfPresses.Unsupported>()));
-        Assert.Equal("unverified: the dialog has a tree \"PartsTree\", which is not recorded or replayed (what a person chose or switched there is not repeated)",
+        Assert.Equal("unverified: the dialog has a tree \"PartsTree\", which the test does not cover (what a person chose or switched there is not repeated)",
             WpfPresses.UnsupportedNote(new[] { new WpfPresses.Unsupported("tree", "PartsTree") }));
-        Assert.Equal("unverified: the dialog has a tab control \"MainTabs\" and a tree, which are not recorded or replayed (what a person chose or switched there is not repeated)",
+        Assert.Equal("unverified: the dialog has a tab control \"MainTabs\" and a tree, which the test does not cover (what a person chose or switched there is not repeated)",
             WpfPresses.UnsupportedNote(new[] { new WpfPresses.Unsupported("tabs", "MainTabs"), new WpfPresses.Unsupported("tree", "") }));
-        Assert.Equal("unverified: the dialog has a tab control \"A\", a tree and a tab control \"B\", which are not recorded or replayed (what a person chose or switched there is not repeated)",
+        Assert.Equal("unverified: the dialog has a tab control \"A\", a tree and a tab control \"B\", which the test does not cover (what a person chose or switched there is not repeated)",
             WpfPresses.UnsupportedNote(new[] { new WpfPresses.Unsupported("tabs", "A"), new WpfPresses.Unsupported("tree", ""), new WpfPresses.Unsupported("tabs", "B"), new WpfPresses.Unsupported("tree", "") }));
     }
 
@@ -224,7 +224,7 @@ public class WpfDialogTests
     {
         Assert.Contains("a grid \"G\"", WpfPresses.UnsupportedNote(new[] { new WpfPresses.Unsupported("grid", "G") }));
         Assert.Contains("a list", WpfPresses.UnsupportedNote(new[] { new WpfPresses.Unsupported("list", "") }));
-        Assert.Equal("the dialog has a tree, which is not recorded or replayed (what a person chose or switched there is not repeated)", WpfPresses.UnsupportedParts(new[] { new WpfPresses.Unsupported("tree", null!) }));
+        Assert.Equal("the dialog has a tree, which the test does not cover (what a person chose or switched there is not repeated)", WpfPresses.UnsupportedParts(new[] { new WpfPresses.Unsupported("tree", null!) }));
         Assert.StartsWith("unverified: ", WpfPresses.UnsupportedNote(new[] { new WpfPresses.Unsupported("tabs", null!) }));
         Assert.Null(WpfPresses.UnsupportedParts(new List<WpfPresses.Unsupported>()));
     }
@@ -259,7 +259,7 @@ public class WpfDialogTests
     {
         var two = new[] { new WpfPresses.Unsupported("list", "", ">General"), new WpfPresses.Unsupported("list", "", ">General") };
         Assert.Single(WpfPresses.Union(null, two));
-        Assert.Equal("unverified: the dialog has a list, which is not recorded or replayed (what a person chose or switched there is not repeated)", WpfPresses.UnsupportedNote(two));
+        Assert.Equal("unverified: the dialog has a list, which the test does not cover (what a person chose or switched there is not repeated)", WpfPresses.UnsupportedNote(two));
         var json = System.Text.Json.JsonSerializer.Serialize(WpfPresses.PartsToJson(new[] { new WpfPresses.Unsupported("tree", "T", "Size"), new WpfPresses.Unsupported("list", "", "Size"), new WpfPresses.Unsupported("grid", "") }));
         Assert.Equal("[{\"kind\":\"tree\",\"name\":\"T\"},{\"kind\":\"list\",\"page\":\"Size\"},{\"kind\":\"grid\"}]", json);
         Assert.DoesNotContain("null", json);

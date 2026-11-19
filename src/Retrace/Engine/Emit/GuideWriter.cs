@@ -129,7 +129,7 @@ public sealed partial class GuideWriter(ModelIndex ix, EngineOptions opt, IReadO
         foreach (var g in M.CodeTabs.GroupBy(t => t.Container)) Group($"{g.Key} (built in code)", g);
         if (_howTos.Count > 0)
         {
-            sb.Append("## How-to\n\nStep-by-step procedures, written from recorded sessions.\n\n");
+            sb.Append("## How-to\n\nStep-by-step procedures, written from sessions.\n\n");
             foreach (var h in _howTos) sb.Append($"- [{Md.Cell(h.Name)}]({Md.Rel(doc, h.Doc)})\n");
             sb.Append('\n');
         }

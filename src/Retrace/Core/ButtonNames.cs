@@ -104,5 +104,5 @@ public static class ButtonNames
 
     /// <summary>The note a replay adds when a button was found by position because the name it was recorded under is not there: "button found by position (no. 2 without text); its name is now \"Refresh\" (was \"Save\")".</summary>
     public static string PositionNote(string recorded, string? liveName, int legacyIndex) =>
-        $"button found by position (no. {legacyIndex} without text of its own); its name changed to \"{(string.IsNullOrEmpty(liveName) ? Unnamed : liveName)}\" (recorded as \"{recorded}\")";
+        $"button found by position (no. {legacyIndex} without text of its own); its name changed to \"{(string.IsNullOrEmpty(liveName) ? Unnamed : liveName)}\" (it was \"{recorded}\" in the test)";
 }

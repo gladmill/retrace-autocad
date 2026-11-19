@@ -1,6 +1,6 @@
 # First run in AutoCAD 2024: checklist
 
-The AutoCAD 2024 build (R24.3, .NET Framework 4.8) is built and tested without AutoCAD by us. A user has run the 0.6.17 build in an AutoCAD 2024 vertical product and reported that it loads from the new folder layout, that the record-start tab switch and the centred windows work there, and that the Excel links are gone (no detailed results); nothing new in 0.6.19 (the evidence pictures, the document wording, the late palette box) has been run there.
+The AutoCAD 2024 build (R24.3, .NET Framework 4.8) is built and tested without AutoCAD by us. A user has run the 0.6.17 build in an AutoCAD 2024 vertical product and reported that it loads from the new folder layout, that the record-start tab switch and the centred windows work there, and that the Excel links are gone (no detailed results); nothing new in 0.6.19 or 0.6.20 (the evidence pictures, the document wording, the late palette box, the removal of the word "recorded" from the documents) has been run there.
 Whoever has AutoCAD 2024 can settle that in about half an hour with the steps below. Write down what differs; "it worked" is a result too.
 Close AutoCAD before each install step; use a test drawing and generic names only.
 

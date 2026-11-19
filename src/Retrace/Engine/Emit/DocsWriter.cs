@@ -81,7 +81,7 @@ public sealed class DocsWriter(ModelIndex ix, OutputSink sink)
     /// <summary>The README bullet for the recordings pages, when this run wrote them (ends with a newline).</summary>
     private string RecordingsLine() =>
         File.Exists(Path.Combine(ix.Options.Output, DocsLayout.Recordings, "index.md"))
-            ? "- [recordings/index.md](recordings/index.md): the recorded tests: most used buttons, ribbon coverage, one page per test.\n"
+            ? "- [recordings/index.md](recordings/index.md): the tests: most used buttons, ribbon coverage, one page per test.\n"
             : "";
 
     private void WriteProjects()

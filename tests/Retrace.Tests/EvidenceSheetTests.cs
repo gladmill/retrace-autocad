@@ -455,7 +455,7 @@ public class EvidenceSheetTests : IDisposable
         Directory.CreateDirectory(Path.Combine(_dir, "screenshots"));
         File.WriteAllBytes(Path.Combine(_dir, "screenshots", "a.png"), Png(840, 300));
         File.WriteAllBytes(Path.Combine(_dir, "screenshots", "b.png"), Png(600, 300));
-        var md = "# Golden test\n\nRecorded 2026-10-10, with AutoCAD 2026 25.1.0.0.\n\n**Start with:** a new, empty drawing.\n\n## Steps\n\n1. Click **Go**\n\n   *Ribbon › Home tab*\n\n   ![a](screenshots/a.png)\n\n2. Fill in the **Opts** dialog\n\n   - Set **Rows** to `5`\n   - Click **OK**\n\n   ![b](screenshots/b.png)\n\n3. Type `LINE` and press Enter\n\n   - Pick the point\n";
+        var md = "# Golden test\n\nCreated 2026-10-10, with AutoCAD 2026 25.1.0.0.\n\n**Start with:** a new, empty drawing.\n\n## Steps\n\n1. Click **Go**\n\n   *Ribbon › Home tab*\n\n   ![a](screenshots/a.png)\n\n2. Fill in the **Opts** dialog\n\n   - Set **Rows** to `5`\n   - Click **OK**\n\n   ![b](screenshots/b.png)\n\n3. Type `LINE` and press Enter\n\n   - Pick the point\n";
         var path = Path.Combine(_dir, "golden.xlsx");
         ExportXlsx.Write(new StepsDoc(md, _dir), _dir, path);
         using var xl = SpreadsheetDocument.Open(path, false);
@@ -475,7 +475,7 @@ public class EvidenceSheetTests : IDisposable
             proj.Append($"pic {a.FromMarker!.ColumnId!.Text},{a.FromMarker.ColumnOffset!.Text} {a.FromMarker.RowId!.Text},{a.FromMarker.RowOffset!.Text} {a.Extent!.Cx!.Value}x{a.Extent.Cy!.Value}\n");
         var info = (WorksheetPart)xl.WorkbookPart!.GetPartById(xl.WorkbookPart.Workbook!.Sheets!.Elements<S.Sheet>().Last().Id!);
         proj.Append("info " + info.Worksheet!.InnerText.Replace(Path.GetFileName(_dir), "<folder>"));
-        Assert.Equal("4537092E6C3A5938", Hash(proj.ToString()));
+        Assert.Equal("62996FB060A6C403", Hash(proj.ToString()));
         Assert.Empty(sheet.HyperlinkRelationships);
         Assert.Empty(sheet.Worksheet.Descendants<S.Hyperlink>());
     }

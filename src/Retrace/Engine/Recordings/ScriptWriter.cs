@@ -51,7 +51,7 @@ public static class ScriptWriter
         if (SettingsHeader.Line(SettingsHeader.FromHeader(s.Header)) is { } settingsLine) sb.Append('*').Append(Md.Inline(settingsLine)).Append("*\n\n");
 
         sb.Append($"**Start with:** {StartWording.Describe(s)}.\n\n");
-        sb.Append("Do the steps in order. A picture under a step shows what the screen looked like when the test was recorded.\n\n");
+        sb.Append("Do the steps in order. A picture under a step shows what the screen looked like at that step.\n\n");
         sb.Append("## Steps\n\n");
 
         WordingContext? ctx = null;
@@ -76,7 +76,7 @@ public static class ScriptWriter
             sb.Append(text).Append('\n');
             if (step.Kind == "mark") checks.Add((n, string.IsNullOrWhiteSpace(step.Note) ? "the drawing looks as expected" : Md.Cell(step.Note)));
         }
-        if (n == 0) sb.Append("_No steps were recorded._\n\n");
+        if (n == 0) sb.Append("_This test has no steps._\n\n");
 
         sb.Append("## Result\n\n");
         if (EndCheck(s) is { } endCheck) sb.Append("**End check:** ").Append(endCheck).Append(".\n\n");
