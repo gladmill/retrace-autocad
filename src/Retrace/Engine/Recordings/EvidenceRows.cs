@@ -47,10 +47,10 @@ public static class EvidenceRows
         if (!lines)
         {
             var endPic = run.LastOrDefault(s => s.Ended != null)?.Ended ?? lastStep.Failed;
-            for (int r = 0; r < rowCount - 1; r++) map[r] = new RowEvidence(null, r == 0 ? "No picture of this row alone: the sheet's rows and the recorded steps do not line up here." : null);
+            for (int r = 0; r < rowCount - 1; r++) map[r] = new RowEvidence(null, r == 0 ? "No picture of this row alone: the sheet's rows and the steps do not line up here." : null);
             map[rowCount - 1] = new RowEvidence(endPic, rowCount <= 1 ? null : endPic != null
-                ? "The sheet's rows and the recorded steps do not line up here: this picture shows the screen after the whole step."
-                : "The sheet's rows and the recorded steps do not line up here, and no picture was taken for this step.");
+                ? "The sheet's rows and the steps do not line up here: this picture shows the screen after the whole step."
+                : "The sheet's rows and the steps do not line up here, and no picture was taken for this step.");
             return map;
         }
 

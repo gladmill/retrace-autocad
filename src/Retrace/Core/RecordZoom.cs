@@ -37,7 +37,7 @@ public static class RecordZoomRules
         if (recorded == null) return null;
         var c = Normalize(current);
         if (recorded == c) return null;
-        return $"recordZoom: the test was recorded with \"{recorded}\" and is replayed with \"{c}\"; the view moves at different moments, and an UNDO after a script or LISP chain can undo the zoom first";
+        return $"recordZoom: the test was made with \"{recorded}\" and is replayed with \"{c}\"; the view moves at different moments, and an UNDO after a script or LISP chain can undo the zoom first";
     }
 
     /// <summary>The highest handle at or above <paramref name="seed"/> (the object made last), or -1 when none.</summary>

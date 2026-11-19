@@ -180,7 +180,7 @@ public static class ExportXlsx
             return row;
         }
         var r1 = Top(1, 26); r1.Append(Str(1, 1, "Test", Label), Str(2, 1, doc.Name, Title), Str(3, 1, "", Plain), Str(4, 1, "Tester", Label), Str(5, 1, ev?.Tester ?? "", Input));
-        var r2 = Top(2); r2.Append(Str(1, 2, "Recorded", Label), Str(2, 2, doc.Meta.TrimEnd('.').StartsWith("Recorded ", StringComparison.Ordinal) ? doc.Meta.TrimEnd('.')["Recorded ".Length..] : doc.Meta.TrimEnd('.'), Wrap), Str(3, 2, "", Plain), Str(4, 2, "Date", Label), Str(5, 2, ev?.Date ?? "", Input));
+        var r2 = Top(2); r2.Append(Str(1, 2, "Created", Label), Str(2, 2, doc.MetaValue, Wrap), Str(3, 2, "", Plain), Str(4, 2, "Date", Label), Str(5, 2, ev?.Date ?? "", Input));
         var r3 = Top(3, 48); r3.Append(Str(1, 3, "Starts with", Label), Str(2, 3, doc.StartWith.TrimEnd('.'), Wrap), Str(3, 3, "", Plain), Str(4, 3, "Overall result", Label),
             rows.Count == 0 ? Str(5, 3, "In progress", CellBold)
             : Formula(5, 3, $"IF(COUNTIF({range},\"Fail\")>0,\"Fail\",IF(COUNTIF({range},\"Pass\")=ROWS({range}),\"Pass\",\"In progress\"))", nFail > 0 ? "Fail" : nPass == rows.Count ? "Pass" : "In progress", CellBold),
@@ -340,7 +340,7 @@ public static class ExportXlsx
         var rows = new (string Label, string Value)[]
         {
             ("Test name", doc.Name),
-            ("Recorded", doc.Meta.TrimEnd('.')),
+            ("Created", doc.MetaValue),
             ("Start with", doc.StartWith.TrimEnd('.')),
             ("Steps", doc.Steps.Count.ToString()),
             ("Test folder", DocText.FolderName(folder)),

@@ -209,7 +209,7 @@ public class BasicCheckTests
         var r = BasicCheckRules.Evaluate(BasicCheckRules.AllItems, c, new(9, 9, 9), source, note);
         Assert.Null(r.Pass);
         Assert.All(r.Items, i => Assert.Null(i.Pass));
-        Assert.Contains("recorded before end counts existed; steps after the last checkpoint", r.Line());
+        Assert.Contains("made before end counts existed; steps after the last checkpoint", r.Line());
     }
 
     [Fact]

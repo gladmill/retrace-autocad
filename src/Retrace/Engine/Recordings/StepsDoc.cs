@@ -25,6 +25,16 @@ public sealed class StepsDoc
     public string Dir { get; }
     public string Name { get; private set; } = "";
     public string Meta { get; private set; } = "";
+    static readonly System.Text.RegularExpressions.Regex MetaStart = Retrace.Engine.Util.Rx.Create(@"^Created \d{4}-\d{2}-\d{2}", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    /// <summary>The date line without its first word and final period: "2026-10-10, with AutoCAD 2026 25.1.0.0, workspace Drafting" (what the sheet shows under the label "Created").</summary>
+    public string MetaValue
+    {
+        get
+        {
+            var m = Meta.TrimEnd('.');
+            return m.StartsWith("Created ", StringComparison.Ordinal) ? m["Created ".Length..] : m;
+        }
+    }
     public string StartWith { get; private set; } = "";
     /// <summary>The "End check:" line of the Result section ("Model space has 2 objects, 1 layer, 1 layout"), "" when there is none.</summary>
     public string EndCheck { get; private set; } = "";
@@ -33,7 +43,7 @@ public sealed class StepsDoc
     public List<SheetRow> Rows { get; } = [];
 
     /// <summary>Checkbox text becomes a ballot box before parsing, so every inline splitter sees one character.</summary>
-    public static string Prepare(string md) => DropAuthorSection(md).Replace("[ ]", "☐").Replace("[x]", "☒").Replace("[X]", "☒");
+    public static string Prepare(string md) => DropAuthorSection(OlderStepsWording.ToCurrent(md)).Replace("[ ]", "☐").Replace("[x]", "☒").Replace("[X]", "☒");
 
     static readonly System.Text.RegularExpressions.Regex FilesSectionRx = Retrace.Engine.Util.Rx.Create(@"^## Files in this folder[ \t]*\r?\n.*?(?=^## )", System.Text.RegularExpressions.RegexOptions.Multiline | System.Text.RegularExpressions.RegexOptions.Singleline | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
     static readonly System.Text.RegularExpressions.Regex RunLineRx = Retrace.Engine.Util.Rx.Create(@"^To run this test automatically:[^\r\n]*\r?\n(\r?\n)*", System.Text.RegularExpressions.RegexOptions.Multiline | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
@@ -77,7 +87,7 @@ public sealed class StepsDoc
                     var t = PlainText(p.Inline);
                     if (t.StartsWith("Start with:", StringComparison.OrdinalIgnoreCase)) StartWith = t["Start with:".Length..].Trim();
                     else if (t.StartsWith("End check:", StringComparison.OrdinalIgnoreCase)) EndCheck = t["End check:".Length..].Trim().TrimEnd('.');
-                    else if (t.StartsWith("Recorded", StringComparison.Ordinal) && Meta.Length == 0) Meta = t;
+                    else if (Meta.Length == 0 && MetaStart.IsMatch(t)) Meta = t;   // "Created 2026-10-10, ..." (an older "Recorded <date>" line is read as this by OlderStepsWording); "Created by Ann" is a person's line
                 }
                 continue;
             }

@@ -70,7 +70,7 @@ public class HowToTests : IDisposable
         Run();
         var page = HowTo("change-settings");
         Assert.Contains("# Change settings", page);
-        Assert.Contains("Recorded 2026-10-08, with AutoCAD 2026 25.1.0.0, workspace Drafting.", page);
+        Assert.Contains("Created 2026-10-08, with AutoCAD 2026 25.1.0.0, workspace Drafting.", page);
         Assert.Contains("[a](../../recordings/a.md)", page);
         Assert.Contains("_What does this procedure achieve, and when should someone follow it? (your text; the engine never changes it)_", page);
 
@@ -81,7 +81,7 @@ public class HowToTests : IDisposable
         Assert.Contains("![Settings \\| Main](../../reference/images/dialogs/plugin/formsettings.svg)", page);
         // typed command with a point (rounded) and a number
         Assert.Contains("2. Type `CIRCLE` on the command line and press Enter", page);
-        Assert.Contains("   - Pick the center point for circle (recorded at 12.1235, 20)", page);
+        Assert.Contains("   - Pick the center point for circle (picked at 12.1235, 20)", page);
         Assert.Contains("   - Enter 10 for the radius of circle", page);
         Assert.DoesNotContain("12.123456789", page);
         // checkpoint with state
@@ -172,9 +172,9 @@ public class HowToTests : IDisposable
         Write("x2.jsonl", Session("Same name", "2026-10-08T10:00:00"));
         Run();
         // the earlier recording comes first, whatever the file names
-        Assert.Contains("Recorded 2026-10-08", HowTo("same-name"));
+        Assert.Contains("Created 2026-10-08", HowTo("same-name"));
         Assert.Contains("# Same name\n", HowTo("same-name"));
-        Assert.Contains("Recorded 2026-10-09", HowTo("same-name-2"));
+        Assert.Contains("Created 2026-10-09", HowTo("same-name-2"));
         Assert.Contains("# Same name (2)", HowTo("same-name-2"));
         Assert.Contains("[Same name](../../../howto/same-name.md), [Same name (2)](../../../howto/same-name-2.md)", TabPage);
         var first = Snap();
@@ -253,7 +253,7 @@ public class HowToTests : IDisposable
     [Fact]
     public void AnswerTexts()
     {
-        Assert.Equal("Pick the first point (recorded at 1.5, -2)", GuideWriter.AnswerText(Ans("point", "OK", "Specify first point:", "[1.5,-2.00001,0]")));
+        Assert.Equal("Pick the first point (picked at 1.5, -2)", GuideWriter.AnswerText(Ans("point", "OK", "Specify first point:", "[1.5,-2.00001,0]")));
         Assert.Equal("Pick a point", GuideWriter.AnswerText(Ans("point", "OK", null)));
         Assert.Equal("Pick the opposite corner", GuideWriter.AnswerText(Ans("corner", "OK", null)));
         Assert.Equal("Enter 3.1416 for the width", GuideWriter.AnswerText(Ans("double", "OK", "Specify width:", "3.14159265")));

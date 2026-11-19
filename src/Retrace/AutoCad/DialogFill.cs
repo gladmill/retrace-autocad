@@ -70,6 +70,7 @@ static class DialogFill
     /// <summary>A list view field of a scan as the key its selection is compared by and the text a message shows (the items).</summary>
     internal static (string Key, string Shown) LiveListSelection(DialogField f)
     {
+        if (f.Items == null && ListSelection.IsNotRecorded(f.Value)) return (f.Value, f.Value);   // the live read failed: Verify says so in plain words
         var items = f.Items ?? ListSelection.Parse(f.Value);
         return (ListSelection.Key(items), ListSelection.Format(items));
     }
@@ -188,7 +189,7 @@ static class DialogFill
                 case HotkeyText.Kind: return CommonControls.SetHotkey(h, c.After);
                 case "comboex": return CommonControls.SetComboEx(h, (uint)GetWindowLong(h, GWL_STYLE), c.After);
                 case ListSelection.Kind:
-                    if (ListSelection.IsNotRecorded(c.After)) return "the selection could not be recorded";
+                    if (ListSelection.IsNotRecorded(c.After)) return ListSelection.NotStoredText;
                     // the items are selected inside this call like a combo's choice: the owner's LVN_ITEMCHANGED handler runs now, in the order the values are set
                     return MenuListView.SelectItems(h, ListSelection.ItemsOf(c), takeFocus);
                 default:
@@ -323,6 +324,7 @@ static class DialogFill
     internal static FieldFillResult Verify(FieldChange c, string? current, FieldFillResult applied, string? shown = null)
     {
         if (current == null) return FieldFillResult.Fail(c.Label, "the field is gone after setting it");
+        if (c.Kind == ListSelection.Kind && ListSelection.IsNotRecorded(current)) return FieldFillResult.Fail(c.Label, ListSelection.UnreadableNow);
         return FillMatcher.Satisfied(c, current) ? applied : FieldFillResult.Fail(c.Label, $"value is \"{shown ?? current}\" after setting");
     }
 

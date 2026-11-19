@@ -170,6 +170,6 @@ public class RecordZoomTests
         Assert.Null(RecordZoomRules.FromHeader(Ev("{\"type\":\"state\"}")));
         Assert.Null(RecordZoomRules.DifferenceNote(null, "extents"));
         Assert.Null(RecordZoomRules.DifferenceNote("extents", "extents"));
-        Assert.Contains("recorded with \"lastEntity\" and is replayed with \"none\"", RecordZoomRules.DifferenceNote("lastEntity", "none"));
+        Assert.Contains("made with \"lastEntity\" and is replayed with \"none\"", RecordZoomRules.DifferenceNote("lastEntity", "none"));
     }
 }

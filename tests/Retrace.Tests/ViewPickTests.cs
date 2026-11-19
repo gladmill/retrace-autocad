@@ -110,10 +110,10 @@ public class ViewPickTests
         var nopoint = Pick();
         Assert.Equal(new[] { "(handent \"7C\")" }, Plan.TypedLines(EntityAnswer("entity", """{"handle":"7C","dxf":"LINE","view":""" + ViewJson + "}"), pick: nopoint));
         Assert.Contains(nopoint.Notes, n => n.Contains("no pick point"));
-        // no view recorded (a recording from before the view was kept)
+        // no view in the test (a recording from before the view was kept)
         var noview = Pick();
         Assert.Equal(new[] { "(handent \"7C\")" }, Plan.TypedLines(EntityAnswer("entity", Entity()), pick: noview));
-        Assert.Contains(noview.Notes, n => n.Contains("no view recorded"));
+        Assert.Contains(noview.Notes, n => n.Contains("no view in the test"));
         // the view cannot be shown here (another layout)
         var other = Pick(viewProblem: _ => "recorded in Model, the replay is in layout \"A\"");
         Assert.Equal(new[] { "(handent \"7C\")" }, Plan.TypedLines(EntityAnswer("entity", Entity(",\"view\":" + ViewJson)), pick: other));
@@ -194,7 +194,7 @@ public class ViewPickTests
         Assert.Equal(new[] { "(handent \"7E\")", "" }, Plan.TypedLines(EntityAnswer("selection", ClickSel()), pick: miss));
         Assert.Contains(miss.Notes, n => n.Contains("selected by handle"));
         Assert.Null(miss.View);
-        // no view recorded
+        // no view in the test
         var noview = Pick(command: "TRIM");
         Assert.Equal(new[] { "(handent \"7E\")", "" }, Plan.TypedLines(EntityAnswer("selection", ClickSel().Replace(",\"view\":" + ViewJson, "")), pick: noview));
         // a window (two clicks) or several objects stay with the handles, as before

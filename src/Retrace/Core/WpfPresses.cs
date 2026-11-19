@@ -88,7 +88,7 @@ public static class WpfPresses
         static string One(Unsupported u) => NativeParts.Phrase(u) ?? (u.Kind switch { "tabs" => "a tab control", "tree" => "a tree", "grid" => "a grid", "list" => "a list", _ => "a " + u.Kind }) + (string.IsNullOrEmpty(u.Name) ? "" : " \"" + u.Name + "\"");
         var names = parts.Select(One).Distinct().ToList();
         var list = names.Count == 1 ? names[0] : string.Join(", ", names.Take(names.Count - 1)) + " and " + names[^1];
-        return $"the dialog has {list}, which {(names.Count == 1 ? "is" : "are")} not recorded or replayed (what a person chose or switched there is not repeated)";
+        return $"the dialog has {list}, which the test does not cover (what a person chose or switched there is not repeated)";
     }
 
     /// <summary>The reason a value found no control in a WPF dialog, when that may be because it sits on a page of a tab control: the replay does not switch WPF tabs. Empty when the dialog has no tab control.</summary>

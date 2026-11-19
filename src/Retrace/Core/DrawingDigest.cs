@@ -181,7 +181,7 @@ public sealed class DrawingDigest
         if (checkModelSpace && expected.Count != actual.Count && diffs.Count == 0) diffs.Add($"entity count: expected {expected.Count}, got {actual.Count}");
         if (checkModelSpace && diffs.Count == 0 && !string.Equals(expected.Hash, actual.Hash, StringComparison.OrdinalIgnoreCase))
             diffs.Add(expected.Version < CurrentVersion && expected.ByType.Keys.Any(IsPlaced)
-                ? "geometry hash differs (checkpoint recorded with digest rules v1, which key text, blocks and dimensions differently, " +
+                ? "geometry hash differs (checkpoint made with digest rules v1, which key text, blocks and dimensions differently, " +
                   "so it cannot match any more: check the drawing, then record the test again)"
                 : "geometry hash differs");
         // layer state is appended last and does not count as "other diffs" for the hash line above: it is not part of the hash, so a

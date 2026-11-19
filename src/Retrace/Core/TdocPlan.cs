@@ -345,7 +345,7 @@ public static class TdocPlan
                 text = $"{TreeChecks.PathOf(c)}: {c.After}";
                 break;
             case ListSelection.Kind:
-                text = c.After.Length == 0 ? $"{label}: (nothing selected)" : $"{label}: {c.After}";
+                text = c.After.Length == 0 ? $"{label}: (nothing selected)" : ListSelection.IsNotRecorded(c.After) ? $"{label}: ({ListSelection.NotStoredText})" : $"{label}: {c.After}";
                 break;
             default:
                 text = c.After.Length == 0 ? $"{label}: (empty)" : $"{label}: {c.After}";

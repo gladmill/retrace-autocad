@@ -49,7 +49,7 @@ sealed class PickChecker
             Read();
             if (_cur == null) return "the current view cannot be read";
             var z = _ucs.CoordinateSystem3d.Zaxis;
-            if (!view.IsPlanOf(new[] { z.X, z.Y, z.Z })) return "the recorded view is not the plan view of the current UCS";
+            if (!view.IsPlanOf(new[] { z.X, z.Y, z.Z })) return "the view of the test is not the plan view of the current UCS";
             double aspect = _cur.Height > 0 ? _cur.Width / _cur.Height : 0;
             if (!(aspect > 0) || !(_px > 0)) return "the size of the window is unknown";
             double tol = _box * view.Fit(aspect).Height / _px;
@@ -73,7 +73,7 @@ sealed class PickChecker
 
             using var tr = db.TransactionManager.StartOpenCloseTransaction();
             if (tr.GetObject(id, OpenMode.ForRead) is not Entity target) return "the object is not an entity";
-            if (dxf != null && dxf != "?" && !string.Equals(target.GetRXClass().DxfName, dxf, StringComparison.OrdinalIgnoreCase)) return "the object is another kind than recorded";
+            if (dxf != null && dxf != "?" && !string.Equals(target.GetRXClass().DxfName, dxf, StringComparison.OrdinalIgnoreCase)) return "the object is another kind than in the test";
             if (nested && target.OwnerId == space) nested = false;   // it sits directly in the space: a direct pick
             if (!nested && PickableProblem(tr, target) is { } tp) return tp;
 

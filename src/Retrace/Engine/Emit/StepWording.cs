@@ -308,7 +308,7 @@ public static class StepWording
     /// "Choose **Metric**", "Choose `beauty` in **Category**", "Select `A › B` in **Parts** (was `A`)"; null when it says nothing (a radio that became "off").</summary>
     public static string? ChangeText(RecordingDialogValue v, Func<string?, string> text, Func<string?, string> code, bool bold, bool showWas = true)
     {
-        string Was(string before) => showWas && before.Length > 0 ? $" (was {code(before)})" : "";
+        string Was(string before) => showWas && before.Length > 0 && !(v.Kind == Retrace.Core.ListSelection.Kind && Retrace.Core.ListSelection.IsNotRecorded(before)) ? $" (was {code(before)})" : "";
         string B(string s) => Retrace.Core.ControlWords.Name(s, v.Kind, l => bold ? $"**{text(l)}**" : text(l));   // "#1012" (no name of its own) reads "the tree" / "the list"
         switch (v.Kind)
         {
@@ -374,12 +374,12 @@ public static class StepWording
     /// <summary>The session's name: the header `name`, else the file name.</summary>
     public static string SessionName(RecordingSession s) => string.IsNullOrWhiteSpace(s.HeaderStr("name")) ? s.Name : s.HeaderStr("name")!.Trim();
 
-    /// <summary>"Recorded 2026-10-08, with AutoCAD 2026 25.1.0.0, workspace Drafting" (no final period; empty if the header has none of it).</summary>
+    /// <summary>"Created 2026-10-08, with AutoCAD 2026 25.1.0.0, workspace Drafting" (no final period; empty if the header has none of it).</summary>
     public static string MetaLine(RecordingSession s)
     {
         var meta = new List<string>();
         var started = s.HeaderStr("started");
-        if (!string.IsNullOrWhiteSpace(started)) meta.Add("Recorded " + (started.Length >= 10 ? started[..10] : started));
+        if (!string.IsNullOrWhiteSpace(started)) meta.Add("Created " + (started.Length >= 10 ? started[..10] : started));
         var product = string.Join(" ", new[] { s.HeaderStr("product"), s.HeaderStr("autocad") }.Where(x => !string.IsNullOrEmpty(x)));
         if (product.Length > 0) meta.Add("with " + product);
         if (!string.IsNullOrWhiteSpace(s.HeaderStr("workspace"))) meta.Add($"workspace {s.HeaderStr("workspace")}");
@@ -548,7 +548,7 @@ public static class StepWording
                 {
                     var xy = arr.EnumerateArray().Take(2).Where(x => x.ValueKind == JsonValueKind.Number).Select(x => Num(x.GetDouble())).ToList();
                     if (xy.Count == 2 && a.By == "keys") return $"Type {Md.Code(string.Join(",", xy))} for {Md.Cell(what)}";
-                    if (xy.Count == 2) return $"Pick {Md.Cell(what)} (recorded at {string.Join(", ", xy)})";
+                    if (xy.Count == 2) return $"Pick {Md.Cell(what)} (picked at {string.Join(", ", xy)})";
                 }
                 return $"Pick {Md.Cell(what)}";
             }

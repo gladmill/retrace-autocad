@@ -8,10 +8,10 @@ public static class ScriptExport
     public static string Build(List<Step> steps, string sourceName)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"; Retrace export of {sourceName}");
+        sb.AppendLine($"; Export of {sourceName}");
         sb.AppendLine("; Plain commands and typed values only. Lines starting with ; are comments (use SCRIPT to run).");
         sb.AppendLine("; A step with a space in an answer (a layout name) is one (command ...) line: a script takes a space as Enter.");
-        sb.AppendLine("; Handles in (handent \"..\") belong to the drawing the session was recorded in.");
+        sb.AppendLine("; Handles in (handent \"..\") belong to the drawing the session started in.");
         for (int i = 0; i < steps.Count; i++)
         {
             var s = steps[i];
@@ -32,7 +32,7 @@ public static class ScriptExport
                     if (s.Drawing != null) { sb.AppendLine("; The rest of the recording happened in the drawing it opened and is not exported."); return sb.ToString(); }
                     break;
                 case "statusbar":
-                    sb.AppendLine($"; MANUAL: {s.Title} - not scriptable, do it on the status bar by hand and continue" + (s.Command != null ? $"; it starts {s.Command}" + (s.Answers.Count > 0 ? $" ({s.Answers.Count} answer(s) recorded)" : "") : ""));
+                    sb.AppendLine($"; MANUAL: {s.Title} - not scriptable, do it on the status bar by hand and continue" + (s.Command != null ? $"; it starts {s.Command}" + (s.Answers.Count > 0 ? $" ({s.Answers.Count} answer(s))" : "") : ""));
                     break;
                 case "open":
                     // a script keeps running in the drawing it started in, so it cannot go on in the one it opens: the export ends here
@@ -54,7 +54,7 @@ public static class ScriptExport
                     if (s.HadDialog) { sb.AppendLine($"; MANUAL: {s.Command} opened a dialog; run it by hand (use -{s.Command} for the command-line form if one exists)"); break; }
                     if (Plan.Problem(s) is { } problem) { sb.AppendLine($"; MANUAL: {problem}"); break; }
                     var text = Plan.InputText(s);
-                    if (string.IsNullOrEmpty(text)) { sb.AppendLine("; (no replayable input recorded)"); break; }
+                    if (string.IsNullOrEmpty(text)) { sb.AppendLine("; (no replayable input)"); break; }
                     // .scr: each line is Enter-terminated, so the "\n"-joined text maps one to one. Scripts cannot send Esc: drop it.
                     foreach (var line in text[..^1].Split('\n'))
                     {

@@ -38,9 +38,9 @@ public sealed class PickReplay
         if (_afterEdit) return Fallback($"{what} of {handle}: it follows a dialog that may have changed the drawing");
         if (prompt != null && !_seenPrompts.Add(prompt)) return Fallback($"{what} of {handle}: an earlier pick at this prompt may have changed the drawing");
         var pt = ViewSpec.Nums(value, "pick", 2);
-        if (pt == null) return Fallback($"{what} of {handle}: no pick point recorded");
+        if (pt == null) return Fallback($"{what} of {handle}: no pick point in the test");
         var view = ViewSpec.FromValue(value);
-        if (view == null) return Fallback($"{what} of {handle}: no view recorded");
+        if (view == null) return Fallback($"{what} of {handle}: no view in the test");
         if (Claim(view) is { } why) return Fallback($"{what} of {handle}: {why}");
         if (PickProblem?.Invoke(view, handle, dxf, pt, nested) is { } miss) { Release(); return Fallback($"{what} of {handle}: {miss}"); }
         return TypedSelection.PointLine(pt[0], pt[1], pt.Length > 2 ? pt[2] : 0);
@@ -66,7 +66,7 @@ public sealed class PickReplay
     public void ClicksNeedView(JsonElement value)
     {
         var view = ViewSpec.FromValue(value);
-        if (view == null) { Notes.Add("clicks replayed in the current view: no view recorded"); return; }
+        if (view == null) { Notes.Add("clicks replayed in the current view: no view in the test"); return; }
         if (Claim(view) is { } why) Notes.Add($"clicks replayed in the current view: {why}");
     }
 
@@ -101,7 +101,7 @@ public sealed class PickReplay
             || !double.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var y)) return null;
         var pt = new[] { x, y, parts.Length > 2 && double.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var z) ? z : 0 };
         var view = ViewSpec.FromValue(value);
-        if (view == null) { Notes.Add($"click on {handle}: no view recorded, selected by handle"); return null; }
+        if (view == null) { Notes.Add($"click on {handle}: no view in the test, selected by handle"); return null; }
         if (Claim(view) is { } why) { Notes.Add($"click on {handle}: {why}, selected by handle"); return null; }
         if (PickProblem?.Invoke(view, handle, dxf, pt, false) is { } miss) { Release(); Notes.Add($"click on {handle}: {miss}, selected by handle"); return null; }
         return clicks;
@@ -116,7 +116,7 @@ public sealed class PickReplay
     {
         if (ViewProblem == null) return "view cannot be restored here";
         // SetCurrentView inside a floating viewport changes the Viewport object (its scale and view; DBMOD and an undo entry): a replay never does that
-        if (view.Space == "viewport") return "recorded inside a floating viewport (a replay does not change a viewport's view)";
+        if (view.Space == "viewport") return "the test was made inside a floating viewport (a replay does not change a viewport's view)";
         if (ViewProblem(view) is { } p) return p;
         if (View != null && !View.Same(view)) return "the step needs two different views";
         View ??= view;

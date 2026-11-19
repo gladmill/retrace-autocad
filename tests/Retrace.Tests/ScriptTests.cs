@@ -80,11 +80,11 @@ public class ScriptTests : IDisposable
         var md = File.ReadAllText(Path.Combine(_dir, "s1", "steps.md"));
 
         Assert.StartsWith("# draw test\n", md);
-        Assert.Contains("Recorded 2026-10-10, with AutoCAD 2026 25.1.0.0, workspace Drafting.", md);
+        Assert.Contains("Created 2026-10-10, with AutoCAD 2026 25.1.0.0, workspace Drafting.", md);
         Assert.Contains("**Start with:** a new, empty drawing.", md);
         Assert.Contains("1. Click **Line**\n\n   *Ribbon › Home tab › Draw panel*", md);
-        Assert.Contains("   - Pick the first point (recorded at 0, 0)", md);
-        Assert.Contains("   - Pick the next point (recorded at 5, 5)", md);
+        Assert.Contains("   - Pick the first point (picked at 0, 0)", md);
+        Assert.Contains("   - Pick the next point (picked at 5, 5)", md);
         Assert.Contains("2. Type `DRAWGRID` and press Enter", md);
         Assert.Contains("   - Fill in the **Draw grid** dialog", md);
         Assert.Contains("3. **Check:** line drawn — the drawing should now have 1 LINE", md);
@@ -175,7 +175,7 @@ public class ScriptTests : IDisposable
         var howto = File.ReadAllText(Path.Combine(_out, "guide", "howto", "draw-test.md"));
 
         // the answers are worded the same in both; the step lines differ: the script's are short, with a location line (item 5), the guide's carry the whole path
-        foreach (var line in new[] { "   - Pick the first point (recorded at 0, 0)", "   - Pick the next point (recorded at 5, 5)" })
+        foreach (var line in new[] { "   - Pick the first point (picked at 0, 0)", "   - Pick the next point (picked at 5, 5)" })
         {
             Assert.Contains(line, script);
             Assert.Contains(line, howto);
